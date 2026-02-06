@@ -1,0 +1,643 @@
+import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
+import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
+import * as reqRepo from '../repositories/requisition.repository.js'
+import {
+  getRequisitionStatus,
+  getPendingAt,
+  parseEmployeeId,
+  getTATFromRequisition,
+  formatTotalTime,
+  tatReportStatusCondition
+} from '../utils/requisition.utils.js'
+
+export { parseEmployeeId }
+
+export async function getHistory(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const rows = await reqRepo.getRequisitionsByEmployeeId(eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getRequisitionItemsByReqIds(reqIds) : []
+  return rows.map(req => ({
+    id: req.req_id,
+    referenceNo: req.req_reference_no,
+    employeeId: req.req_emp_id,
+    location: req.req_location,
+    material: req.req_material,
+    requiredByDate: req.req_required_by_date || null,
+    business: req.req_business,
+    status: getRequisitionStatus(req),
+    hodApproval: req.req_hod_approval === 1,
+    hodApprovalDate: req.req_hod_approval_date,
+    committeeApproval: req.req_committee_approval === 1,
+    committeeApprovalDate: req.req_committee_approval_date,
+    ceoApproval: req.req_ceo_approval === 1,
+    ceoApprovalDate: req.req_ceo_approval_date,
+    createdAt: req.req_created_at,
+    isRejected: req.req_is_rejected === 1,
+    items: items.filter(i => i.req_id === req.req_id).map(i => ({
+      id: i.item_id,
+      desc: i.item_desc,
+      size: i.item_size,
+      brand: i.item_brand,
+      qty: i.item_qty,
+      estCost: i.item_est_cost,
+      remarks: i.item_remarks
+    }))
+  }))
+}
+
+export async function getTrackRecords(query) {
+  const page = Math.max(1, parseInt(query.page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
+  const offset = (page - 1) * limit
+  const total = await reqRepo.getTrackRecordsCount()
+  const totalPages = Math.max(1, Math.ceil(total / limit))
+  const rows = await reqRepo.getTrackRecordsAll(limit, offset)
+  const reqIds = rows.map(r => r.req_id)
+  const itemCounts = reqIds.length ? await reqRepo.getItemCountsByReqIds(reqIds) : []
+  const countByReq = Object.fromEntries((itemCounts || []).map(c => [c.req_id, parseInt(c.cnt, 10)]))
+  const data = rows.map(req => {
+    const status = getRequisitionStatus(req)
+    return {
+      requisitionId: req.req_id,
+      referenceNo: req.req_reference_no,
+      employeeId: req.req_emp_id,
+      creatorName: [req.first_name, req.last_name].filter(Boolean).join(' ').trim() || null,
+      creatorEmail: req.email || null,
+      departmentName: req.department_name || null,
+      createdAt: req.req_created_at,
+      requiredByDate: req.req_required_by_date || null,
+      status,
+      pendingAt: getPendingAt(status),
+      isRejected: req.req_is_rejected === 1,
+      itemCount: countByReq[req.req_id] ?? 0
+    }
+  })
+  return { data, pagination: { page, limit, total, totalPages } }
+}
+
+export async function getTrackRecordsByEmployee(employeeId, query) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const page = Math.max(1, parseInt(query.page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
+  const offset = (page - 1) * limit
+  const total = await reqRepo.getTrackRecordsCountByEmployee(eid)
+  const totalPages = Math.max(1, Math.ceil(total / limit))
+  const rows = await reqRepo.getTrackRecordsByEmployee(eid, limit, offset)
+  const reqIds = rows.map(r => r.req_id)
+  const itemCounts = reqIds.length ? await reqRepo.getItemCountsByReqIds(reqIds) : []
+  const countByReq = Object.fromEntries((itemCounts || []).map(c => [c.req_id, parseInt(c.cnt, 10)]))
+  const data = rows.map(req => {
+    const status = getRequisitionStatus(req)
+    return {
+      requisitionId: req.req_id,
+      referenceNo: req.req_reference_no,
+      employeeId: req.req_emp_id,
+      createdAt: req.req_created_at,
+      requiredByDate: req.req_required_by_date || null,
+      status,
+      pendingAt: getPendingAt(status),
+      isRejected: req.req_is_rejected === 1,
+      itemCount: countByReq[req.req_id] ?? 0
+    }
+  })
+  return { data, pagination: { page, limit, total, totalPages } }
+}
+
+export async function createRequisition(body) {
+  const { employeeId, location, material, requiredByDate, business, items } = body
+  if (!employeeId || !items || !Array.isArray(items) || items.length === 0) {
+    return { error: 'employeeId and at least one item are required', status: 400 }
+  }
+  const validItems = items.filter(it => {
+    const qty = it.itemQty ?? it.item_qty ?? 0
+    const hasData = (it.itemDesc && it.itemDesc.trim()) || (it.item_desc && String(it.item_desc).trim()) ||
+      (it.itemSize && it.itemSize.trim()) || (it.item_size && String(it.item_size).trim()) ||
+      (it.itemBrand && it.itemBrand.trim()) || (it.item_brand && String(it.item_brand).trim()) ||
+      (Number(qty) > 0)
+    return hasData
+  })
+  if (validItems.length === 0) {
+    return { error: 'Each item must have at least size, brand, or quantity', status: 400 }
+  }
+debugger
+  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business)
+  const reqId = created.req_id
+  const refNo = created.req_reference_no
+
+  for (const it of validItems) {
+    await reqRepo.insertRequisitionItem(reqId, it)
+  }
+
+  const deptId = await reqRepo.getCreatorDepartment(employeeId)
+  const hodId = await reqRepo.getHodByDepartment(deptId)
+  const creatorIsHod = hodId != null && hodId === parseInt(employeeId, 10)
+  const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
+
+  if (creatorIsCommittee) {
+    await reqRepo.autoAdvanceCommitteeRequisition(reqId)
+  } else if (creatorIsHod) {
+    await reqRepo.autoAdvanceHodRequisition(reqId)
+  }
+
+  try {
+    const creator = await reqRepo.getCreatorForQueue(employeeId)
+    if (isBullMQEnabled()) {
+      const q = getQueue()
+      const payload = {
+        event: 'requisition.created',
+        requisitionId: reqId,
+        referenceNo: refNo,
+        employeeId: parseInt(employeeId, 10),
+        creatorName: creator ? `${creator.first_name || ''} ${creator.last_name || ''}`.trim() : null,
+        creatorEmail: process.env.TEST_REMINDER_EMAIL || creator?.email || null,
+        departmentId: creator?.department_id ?? null,
+        departmentName: creator?.department_name ?? null,
+        itemCount: validItems.length,
+        requiredByDate: requiredByDate || null,
+        createdAt: new Date().toISOString()
+      }
+      await q.add('requisition-created', payload)
+      const testDelayMinutes = parseInt(process.env.TEST_REMINDER_AFTER_MINUTES || '0', 10)
+      if (testDelayMinutes > 0) {
+        await q.add('requisition-reminder-3day-test', payload, { delay: testDelayMinutes * 60 * 1000 })
+      }
+    }
+  } catch (publishErr) {
+    console.error('Requisition created but BullMQ add failed:', publishErr.message)
+  }
+
+  return { message: 'Requisition submitted successfully', requisitionId: reqId, referenceNo: refNo }
+}
+
+export async function getQueueStats() {
+  if (!isBullMQEnabled()) {
+    return {
+      enabled: false,
+      message: 'BullMQ not enabled (set REDIS_HOST or BULLMQ_REMINDER_ENABLED=1)'
+    }
+  }
+  const q = getQueue()
+  const counts = await q.getJobCounts()
+  const [waiting, completed] = await Promise.all([
+    q.getJobs(['waiting'], 0, 9),
+    q.getJobs(['completed'], 0, 9)
+  ])
+  return {
+    enabled: true,
+    queue: 'requisition-reminder',
+    counts: {
+      waiting: counts.waiting ?? 0,
+      active: counts.active ?? 0,
+      completed: counts.completed ?? 0,
+      failed: counts.failed ?? 0,
+      delayed: counts.delayed ?? 0
+    },
+    recentWaiting: waiting.map(j => ({ id: j.id, name: j.name, data: j.data, timestamp: j.timestamp })),
+    recentCompleted: completed.map(j => ({ id: j.id, name: j.name, data: j.data, finishedOn: j.finishedOn }))
+  }
+}
+
+export async function cancelDelayedJobs() {
+  if (!isBullMQEnabled()) {
+    return { ok: false, message: 'BullMQ not enabled' }
+  }
+  const q = getQueue()
+  const delayed = await q.getJobs(['delayed'], 0, 999)
+  let removed = 0
+  for (const job of delayed) {
+    if (job.name === 'check-reminders') continue
+    await job.remove()
+    removed++
+  }
+  return { ok: true, removed, message: `Removed ${removed} delayed job(s) (scheduler job left intact)` }
+}
+
+export async function sendTestEmail(to) {
+  if (!isEmailConfigured()) {
+    return {
+      error: 'SMTP not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env (e.g. Ethereal for testing).',
+      status: 400
+    }
+  }
+  const recipient = to || process.env.SMTP_USER
+  await sendRequisitionReminder({
+    to: recipient,
+    subject: 'Requisition – test email',
+    body: 'This is a test email from Employee Portal requisition flow. If you got this, SMTP is working.'
+  })
+  return { ok: true, message: 'Test email sent to ' + recipient, hint: 'Ethereal: check https://ethereal.email/messages' }
+}
+
+export async function getDebug(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const emp = await reqRepo.getEmployeeForDebug(eid)
+  if (!emp.length) return { error: 'Employee not found', status: 404 }
+  const e = emp[0]
+  const deptId = e.department_id
+  const hodId = await reqRepo.getHodByDepartment(deptId)
+  const youAreHod = hodId !== null && hodId === parseInt(employeeId, 10)
+  const youAreCommittee = await reqRepo.isCommitteeMember(eid)
+  const youAreCeo = await reqRepo.isCeoMember(eid)
+
+  let allReqs = []
+  let pendingHodCount = 0
+  let pendingCommitteeCount = 0
+  let pendingCeoCount = 0
+  try {
+    allReqs = await reqRepo.getLastRequisitions()
+    pendingHodCount = await reqRepo.getPendingHodCount(deptId, (e.department_name || '').trim().toLowerCase())
+    pendingCommitteeCount = await reqRepo.getPendingCommitteeCount()
+    pendingCeoCount = await reqRepo.getPendingCeoCount()
+  } catch (qerr) {
+    allReqs = [{ error: qerr.message }]
+  }
+
+  return {
+    you: {
+      employeeId: e.employee_id,
+      name: `${e.first_name} ${e.last_name}`,
+      departmentId: e.department_id,
+      departmentName: e.department_name,
+      employeeTypeName: e.emp_type_name,
+      designationName: e.designation_name
+    },
+    roles: { youAreHod, youAreCommittee, youAreCeo, hodOfYourDeptEmployeeId: hodId },
+    counts: {
+      pendingHodForYourDept: pendingHodCount,
+      pendingCommittee: pendingCommitteeCount,
+      pendingCeo: pendingCeoCount
+    },
+    lastRequisitions: allReqs
+  }
+}
+
+export async function getReportAll(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const emp = await reqRepo.getEmployeeDeptForReport(eid)
+  const deptId = emp?.department_id ?? null
+  const deptNameLower = emp?.department_name_lower ?? ''
+  const youAreHod = deptId != null && (await reqRepo.getHodByDepartment(deptId)) === eid
+  const [isCommittee, isCeo] = await Promise.all([
+    reqRepo.isCommitteeMember(eid),
+    reqRepo.isCeoMember(eid)
+  ])
+  const canView = youAreHod || isCommittee || isCeo
+  if (!canView) return []
+
+  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo
+  const rows = hodOnlyFilter
+    ? await reqRepo.getReportAllRequisitionsHod(deptId, deptNameLower)
+    : await reqRepo.getReportAllRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({
+    ...req,
+    status: getRequisitionStatus(req),
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
+}
+
+export async function getPendingHod(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const emp = await reqRepo.getEmployeeDept(employeeId)
+  if (!emp) return { error: 'Employee not found', status: 404 }
+  const deptId = emp.department_id
+  const deptName = (emp.department_name || '').trim().toLowerCase()
+  if (deptId == null && !deptName) return []
+  const hodId = await reqRepo.getHodByDepartment(deptId)
+  if (hodId == null || hodId !== eid) return []
+
+  const rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending HOD', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function getApprovedByHod(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const emp = await reqRepo.getEmployeeDept(employeeId)
+  if (!emp) return { error: 'Employee not found', status: 404 }
+  const deptId = emp.department_id
+  const deptName = (emp.department_name || '').trim().toLowerCase()
+  if (deptId == null && !deptName) return []
+  const hodId = await reqRepo.getHodByDepartment(deptId)
+  if (hodId == null || hodId !== eid) return []
+
+  const rows = await reqRepo.getApprovedByHodRequisitions(deptId, deptName)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function approveHod(body) {
+  const { requisitionId, approvedByEmployeeId, approved } = body
+  if (!requisitionId || approvedByEmployeeId == null) {
+    return { error: 'requisitionId and approvedByEmployeeId required', status: 400 }
+  }
+  const reqRow = await reqRepo.getRequisitionAndDepartment(requisitionId)
+  if (!reqRow.length) return { error: 'Requisition not found', status: 404 }
+  const hodId = await reqRepo.getHodByDepartment(reqRow[0].department_id)
+  if (hodId !== parseInt(approvedByEmployeeId, 10)) {
+    return { error: 'Only HOD of the same department can approve', status: 403 }
+  }
+  if (approved === false) {
+    await reqRepo.rejectRequisition(requisitionId)
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  await reqRepo.approveHod(requisitionId)
+  return { message: 'HOD approval recorded', status: 'Pending Committee' }
+}
+
+export async function getPendingCommittee(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isCommitteeMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingCommitteeRequisitions(eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending Committee', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function approveCommittee(body) {
+  const { requisitionId, approvedByEmployeeId, approved } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+  }
+  const ok = await reqRepo.isCommitteeMember(eid)
+  if (!ok) {
+    return { error: 'Only Committee members can approve. Check your Employee Type or Designation in Administration.', status: 403 }
+  }
+  if (approved === false) {
+    await reqRepo.rejectRequisition(reqId)
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  await reqRepo.approveCommittee(reqId)
+  return { message: 'Committee approval recorded', status: 'Pending CEO' }
+}
+
+export async function getPendingCeo(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isCeoMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingCeoRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending CEO', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function approveCeo(body) {
+  const { requisitionId, approvedByEmployeeId, approved } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+  }
+  const ok = await reqRepo.isCeoMember(eid)
+  if (!ok) {
+    return { error: 'Only CEO can approve. Check your Employee Type or Designation in Administration.', status: 403 }
+  }
+  if (approved === false) {
+    await reqRepo.rejectRequisition(reqId)
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  await reqRepo.approveCeo(reqId)
+  return { message: 'CEO approval recorded; forwarded to Procurement', status: 'Forwarded to Procurement' }
+}
+
+export async function getPendingProcurement(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingProcurementRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function acknowledgeProcurement(body) {
+  const { requisitionId, acknowledgedByEmployeeId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(acknowledgedByEmployeeId != null ? String(acknowledgedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId are required', status: 400 }
+  }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can acknowledge', status: 403 }
+  const rows = await reqRepo.getRequisitionForProcurementAck(reqId)
+  if (!rows.length) return { error: 'Requisition not found or not yet forwarded to Procurement', status: 404 }
+  await reqRepo.acknowledgeProcurement(reqId, eid)
+  return { message: 'Requisition acknowledged by Procurement', status: 'Acknowledged by Procurement - Add 3 Quotations' }
+}
+
+export async function updateQuotations(reqId, body) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const { quotation1Url, quotation2Url, quotation3Url, updatedByEmployeeId } = body
+  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
+  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can add quotations', status: 403 }
+  const rows = await reqRepo.getRequisitionForQuotations(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found or not acknowledged', status: 404 }
+  await reqRepo.updateQuotations(reqIdNum, quotation1Url, quotation2Url, quotation3Url)
+  return { message: 'Quotations updated', status: 'Quotations Added - Hand over to Finance' }
+}
+
+export async function uploadQuotations(reqId, files, updatedByEmployeeId) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
+  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can add quotations', status: 403 }
+  const rows = await reqRepo.getRequisitionForQuotations(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found or not acknowledged', status: 404 }
+  const { fileToDataUrl } = await import('../utils/file.utils.js')
+  const q1 = files.quotation1?.[0]
+  const q2 = files.quotation2?.[0]
+  const q3 = files.quotation3?.[0]
+  if (!q1 || !q2 || !q3) {
+    return { error: 'Upload all 3 quotation images (quotation1, quotation2, quotation3)', status: 400 }
+  }
+  const dataUrl1 = fileToDataUrl(q1)
+  const dataUrl2 = fileToDataUrl(q2)
+  const dataUrl3 = fileToDataUrl(q3)
+  if (!dataUrl1 || !dataUrl2 || !dataUrl3) {
+    return { error: 'Could not read uploaded image data', status: 400 }
+  }
+  await reqRepo.updateQuotationsUpload(reqIdNum, dataUrl1, dataUrl2, dataUrl3)
+  return {
+    message: 'Quotations uploaded',
+    status: 'Quotations Added - Hand over to Finance',
+    quotation1Url: dataUrl1,
+    quotation2Url: dataUrl2,
+    quotation3Url: dataUrl3
+  }
+}
+
+export async function setExpectedHandover(reqId, body) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const { expectedHandoverDate, updatedByEmployeeId } = body
+  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
+  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can set expected handover date', status: 403 }
+  const rows = await reqRepo.getRequisitionForExpectedHandover(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found or not in Procurement flow', status: 404 }
+  const dateVal = expectedHandoverDate && typeof expectedHandoverDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(expectedHandoverDate.trim())
+    ? expectedHandoverDate.trim()
+    : null
+  await reqRepo.setExpectedHandover(reqIdNum, dateVal)
+  return { message: 'Expected handover date updated', expectedHandoverDate: dateVal }
+}
+
+export async function handoverFinance(body) {
+  const { requisitionId, handedByEmployeeId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(handedByEmployeeId != null ? String(handedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and handedByEmployeeId are required', status: 400 }
+  }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can hand over to Finance', status: 403 }
+  const rows = await reqRepo.getRequisitionForHandover(reqId)
+  if (!rows.length) return { error: 'Requisition not found or not acknowledged', status: 404 }
+  const r = rows[0]
+  if (!r.req_quotation_1_url || !r.req_quotation_2_url || !r.req_quotation_3_url) {
+    return { error: 'Add all 3 quotation images before handing over to Finance', status: 400 }
+  }
+  await reqRepo.handoverToFinance(reqId)
+  return { message: 'Handed over to Finance', status: 'Pending Finance Approval' }
+}
+
+export async function getPendingFinance(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isFinanceHod(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingFinanceRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({
+    ...req,
+    status: 'Pending Finance Approval',
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
+}
+
+export async function approveFinance(body) {
+  const { requisitionId, approvedByEmployeeId, approvedQuotationIndex } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  const idx = approvedQuotationIndex != null ? parseInt(approvedQuotationIndex, 10) : null
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+  }
+  if (idx !== 1 && idx !== 2 && idx !== 3) {
+    return { error: 'approvedQuotationIndex must be 1, 2, or 3', status: 400 }
+  }
+  const ok = await reqRepo.isFinanceHod(eid)
+  if (!ok) return { error: 'Only Finance HOD can approve', status: 403 }
+  const rows = await reqRepo.getRequisitionForFinanceApproval(reqId)
+  if (!rows.length) return { error: 'Requisition not found or not pending finance approval', status: 404 }
+  await reqRepo.approveFinance(reqId, eid, idx)
+  return { message: 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: 'Finance Approved - Ready for Purchase' }
+}
+
+export async function getTatReport(query) {
+  const from = query.from
+  const to = query.to
+  const referenceNo = query.referenceNo ? String(query.referenceNo).trim() : ''
+  const creatorName = query.creatorName ? String(query.creatorName).trim() : ''
+  const status = query.status ? String(query.status).trim() : ''
+  const page = Math.max(1, parseInt(query.page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
+  const offset = (page - 1) * limit
+
+  const params = []
+  let whereClause = 'WHERE 1=1'
+  if (from) {
+    params.push(from)
+    whereClause += ` AND r.req_created_at >= $${params.length}::date`
+  }
+  if (to) {
+    params.push(to)
+    whereClause += ` AND r.req_created_at <= $${params.length}::date + interval '1 day'`
+  }
+  if (referenceNo) {
+    params.push('%' + referenceNo + '%')
+    whereClause += ` AND r.req_reference_no ILIKE $${params.length}`
+  }
+  if (creatorName) {
+    params.push('%' + creatorName + '%')
+    whereClause += ` AND (e.first_name || ' ' || e.last_name) ILIKE $${params.length}`
+  }
+  const statusSql = tatReportStatusCondition(status)
+  if (statusSql) whereClause += statusSql
+
+  const total = await reqRepo.getTatReportCount(whereClause, params)
+  const rows = await reqRepo.getTatReportData(whereClause, params, limit, offset)
+  const data = rows.map((row) => {
+    const { totalHours } = getTATFromRequisition(row)
+    const creatorNameVal = `${row.first_name || ''} ${row.last_name || ''}`.trim() || '—'
+    return {
+      requisitionId: row.req_id,
+      referenceNo: row.req_reference_no || '#' + row.req_id,
+      creatorName: creatorNameVal,
+      totalHours,
+      totalTimeFormatted: formatTotalTime(totalHours),
+      status: row.req_is_rejected === 1 ? 'Rejected' : getRequisitionStatus(row),
+      createdAt: row.req_created_at
+    }
+  })
+  return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 } }
+}
+
+export async function getTat(reqId) {
+  const rows = await reqRepo.getRequisitionRowForTat(reqId)
+  if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const row = rows[0]
+  const { buckets, totalHours } = getTATFromRequisition(row)
+  return {
+    requisitionId: row.req_id,
+    referenceNo: row.req_reference_no,
+    status: row.req_is_rejected === 1 ? 'Rejected' : getRequisitionStatus(row),
+    totalHours,
+    buckets
+  }
+}
+
+export async function getById(reqId) {
+  const rows = await reqRepo.getRequisitionById(reqId)
+  if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const reqRow = rows[0]
+  const items = await reqRepo.getRequisitionItems(reqId)
+  return {
+    ...reqRow,
+    requiredByDate: reqRow.req_required_by_date || null,
+    status: getRequisitionStatus(reqRow),
+    items: items.map(i => ({
+      item_id: i.item_id,
+      req_id: i.req_id,
+      item_desc: i.item_desc,
+      item_size: i.item_size,
+      item_brand: i.item_brand,
+      item_qty: i.item_qty,
+      item_est_cost: i.item_est_cost,
+      item_remarks: i.item_remarks
+    }))
+  }
+}
