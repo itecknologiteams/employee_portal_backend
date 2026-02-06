@@ -12,7 +12,7 @@ function sendResult(result, res, fallbackMessage) {
 
 export async function getHistory(req, res) {
   try {
-    const result = await requisitionService.getHistory(req.params.employeeId)
+    const result = await requisitionService.getHistory(req.params.employeeId, req.query)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {

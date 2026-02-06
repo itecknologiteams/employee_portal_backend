@@ -35,15 +35,36 @@ export async function getTrackRecordsAll(limit, offset) {
   `, [limit, offset])
 }
 
-export async function getTrackRecordsByEmployee(employeeId, limit, offset) {
-  return executeQuery(`
-    SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
-    ORDER BY r.req_created_at DESC
-    LIMIT $2 OFFSET $3
-  `, [employeeId, limit, offset])
+export async function getTrackRecordsByEmployee(employeeId, limit, offset, search) {
+  const hasSearch = search != null && String(search).trim() !== ''
+  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
+  if (hasSearch) {
+    return executeQuery(
+      `SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
+       AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2)
+       ORDER BY r.req_created_at DESC
+       LIMIT $3 OFFSET $4`,
+      [employeeId, pattern, limit, offset]
+    )
+  }
+  return executeQuery(
+    `SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
+     ORDER BY r.req_created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [employeeId, limit, offset]
+  )
 }
 
-export async function getTrackRecordsCountByEmployee(employeeId) {
+export async function getTrackRecordsCountByEmployee(employeeId, search) {
+  const hasSearch = search != null && String(search).trim() !== ''
+  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
+  if (hasSearch) {
+    const r = await executeQuery(
+      'SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1 AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, \'\') ILIKE $2)',
+      [employeeId, pattern]
+    )
+    return parseInt(r[0]?.total ?? 0, 10)
+  }
   const r = await executeQuery('SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1', [employeeId])
   return parseInt(r[0]?.total ?? 0, 10)
 }

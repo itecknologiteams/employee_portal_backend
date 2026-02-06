@@ -12,13 +12,19 @@ import {
 
 export { parseEmployeeId }
 
-export async function getHistory(employeeId) {
+export async function getHistory(employeeId, query = {}) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const rows = await reqRepo.getRequisitionsByEmployeeId(eid)
+  const page = Math.max(1, parseInt(query.page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
+  const offset = (page - 1) * limit
+  const search = query.search != null ? String(query.search).trim() : ''
+  const total = await reqRepo.getTrackRecordsCountByEmployee(eid, search || undefined)
+  const totalPages = Math.max(1, Math.ceil(total / limit))
+  const rows = await reqRepo.getTrackRecordsByEmployee(eid, limit, offset, search || undefined)
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getRequisitionItemsByReqIds(reqIds) : []
-  return rows.map(req => ({
+  const data = rows.map(req => ({
     id: req.req_id,
     referenceNo: req.req_reference_no,
     employeeId: req.req_emp_id,
@@ -45,6 +51,7 @@ export async function getHistory(employeeId) {
       remarks: i.item_remarks
     }))
   }))
+  return { data, pagination: { page, limit, total, totalPages } }
 }
 
 export async function getTrackRecords(query) {

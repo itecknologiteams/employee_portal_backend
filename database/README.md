@@ -29,7 +29,9 @@ To switch back to PostgreSQL, set `DB_DRIVER=postgres` (or remove `DB_DRIVER`) a
 
 ## PostgreSQL Database Setup
 
-## Prerequisites
+**Why do tables keep disappearing?** The backend does **not** run migrations or schema on startup. Tables exist only after you run a schema script. If the database is recreated (new machine, restored backup, someone ran `DROP DATABASE`, Docker reset, etc.), you must run the schema again. From the project root run: `npm run db:schema` (or use the psql command below).
+
+### Prerequisites
 
 1. Install PostgreSQL on your system
 2. Create a database named `employee_portal`

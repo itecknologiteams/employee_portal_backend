@@ -89,8 +89,14 @@ For requisition track-records and pagination, see [docs/TRACK_RECORDS_API.md](do
    For connection details and troubleshooting, see [CONNECTION_GUIDE.md](CONNECTION_GUIDE.md).
 
 4. **Database setup**
-   - **PostgreSQL:** Create database `employee_portal`, then run schema scripts under `database/` (e.g. `postgresql-schema.sql`, `users-schema.sql`, `requisition-schema.sql` as needed).
+   - **PostgreSQL:** Create database `employee_portal`, then run the full schema once:
+     ```bash
+     npm run db:schema
+     ```
+     Or manually: `psql -U postgres -d employee_portal -f database/postgresql-full-schema.sql`
    - **SQL Server:** Use `DB_DRIVER=sqlserver` and run the appropriate schema (e.g. `database/iteck_erp-schema.sql`).
+
+   **If you see "relation employees does not exist"** or tables keep disappearing: the backend does not run migrations on startup. Tables only exist after you run the schema. Run `npm run db:schema` again to recreate all tables. See [database/README.md](database/README.md) for details.
 
    Full steps and table descriptions: [database/README.md](database/README.md).
 
@@ -118,6 +124,7 @@ The app can run a daily job (BullMQ) that sends reminder emails for requisitions
 |---------|-------------|
 | `npm start` | Start the server |
 | `npm run dev` | Start with watch mode (auto-reload) |
+| `npm run db:schema` | Create/recreate all PostgreSQL tables (run when tables are missing) |
 | `npm run create-employee` | Create a test employee |
 | `npm run insert-user` | Insert user (script) |
 | `npm run insert-admin` | Insert admin user |
