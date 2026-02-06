@@ -3,6 +3,7 @@ import * as authRepo from '../repositories/auth.repository.js'
 
 export async function login(loginId, password) {
   try {
+    
     const userRows = await authRepo.findUserByUsername(loginId)
     if (userRows.length > 0) {
       const row = userRows[0]

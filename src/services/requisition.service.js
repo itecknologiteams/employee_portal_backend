@@ -337,7 +337,7 @@ export async function getApprovedByHod(employeeId) {
 }
 
 export async function approveHod(body) {
-  const { requisitionId, approvedByEmployeeId, approved } = body
+  const { requisitionId, approvedByEmployeeId, approved, boqItems } = body
   if (!requisitionId || approvedByEmployeeId == null) {
     return { error: 'requisitionId and approvedByEmployeeId required', status: 400 }
   }
@@ -350,6 +350,18 @@ export async function approveHod(body) {
   if (approved === false) {
     await reqRepo.rejectRequisition(requisitionId)
     return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  if (Array.isArray(boqItems) && boqItems.length > 0) {
+    for (const row of boqItems) {
+      const itemId = row.itemId != null ? parseInt(row.itemId, 10) : null
+      if (itemId == null || Number.isNaN(itemId)) continue
+      const size = row.size != null ? String(row.size).trim() : null
+      const qty = row.quantity != null ? parseInt(row.quantity, 10) : null
+      const brand = row.brand != null ? String(row.brand).trim() : null
+
+      const estCost = row.estCost != null ? String(row.estCost).trim() : null
+      await reqRepo.updateItemHodBoq(itemId, requisitionId, size, brand,qty, estCost)
+    }
   }
   await reqRepo.approveHod(requisitionId)
   return { message: 'HOD approval recorded', status: 'Pending Committee' }
@@ -367,7 +379,7 @@ export async function getPendingCommittee(employeeId) {
 }
 
 export async function approveCommittee(body) {
-  const { requisitionId, approvedByEmployeeId, approved } = body
+  const { requisitionId, approvedByEmployeeId, approved, approvedQuantities } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
   const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
@@ -380,6 +392,27 @@ export async function approveCommittee(body) {
   if (approved === false) {
     await reqRepo.rejectRequisition(reqId)
     return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  // On approve: approved quantity per item is mandatory
+  const items = await reqRepo.getRequisitionItems(reqId)
+  if (items.length === 0) {
+    return { error: 'Requisition has no items', status: 400 }
+  }
+  const byItemId = Array.isArray(approvedQuantities)
+    ? approvedQuantities.reduce((acc, x) => {
+        const id = x.itemId != null ? parseInt(x.itemId, 10) : null
+        const qty = x.approvedQty != null ? parseInt(x.approvedQty, 10) : null
+        if (id != null && !Number.isNaN(id) && qty != null && !Number.isNaN(qty) && qty >= 0) acc[id] = qty
+        return acc
+      }, {})
+    : {}
+  for (const it of items) {
+    if (byItemId[it.item_id] === undefined) {
+      return { error: 'Approved quantity is required for every item. Please enter quantity for each line item.', status: 400 }
+    }
+  }
+  for (const it of items) {
+    await reqRepo.updateItemCommitteeApprovedQty(it.item_id, byItemId[it.item_id])
   }
   await reqRepo.approveCommittee(reqId)
   return { message: 'Committee approval recorded', status: 'Pending CEO' }

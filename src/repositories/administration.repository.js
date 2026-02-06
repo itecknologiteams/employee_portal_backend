@@ -167,18 +167,19 @@ export async function deleteCity(id) {
   return {}
 }
 
-// Employees list (with fallbacks for missing tables)
+// Employees list – city_name is the selected city only (from employees.city_id)
 const employeesFullQuery = `
   SELECT e.employee_id AS id, e.employee_code AS code, e.first_name, e.last_name, e.email, e.phone,
     e.department_id, d.department_name, e.position, e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
-    (SELECT string_agg(c.city_name, ', ' ORDER BY c.city_name) FROM city c WHERE c.station_id = s.station_id) AS city_name,
+    e.city_id, c.city_name,
     e.is_active, e.join_date
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
   LEFT JOIN designation desg ON e.designation_id = desg.desg_id
   LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
   LEFT JOIN station s ON e.station_id = s.station_id
+  LEFT JOIN city c ON e.city_id = c.city_id
   ORDER BY e.first_name, e.last_name
 `
 
@@ -192,7 +193,7 @@ export async function listEmployees() {
           SELECT e.employee_id AS id, e.employee_code AS code, e.first_name, e.last_name, e.email, e.phone,
             e.department_id, d.department_name, e.position, NULL::integer AS designation_id, NULL AS designation_name,
             NULL::integer AS employee_type_id, NULL AS employee_type_name, NULL::integer AS station_id, NULL AS station_name,
-            NULL AS city_name, COALESCE(e.is_active, true) AS is_active, e.join_date
+            NULL::integer AS city_id, NULL AS city_name, COALESCE(e.is_active, true) AS is_active, e.join_date
           FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id
           ORDER BY e.first_name, e.last_name
         `)
@@ -204,7 +205,7 @@ export async function listEmployees() {
           FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id
           ORDER BY e.first_name, e.last_name
         `)
-        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_name: null }))
+        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null }))
       }
     }
     throw err
@@ -226,8 +227,8 @@ export async function findEmployeeByEmail(email) {
 
 const insertEmployeeFull = `INSERT INTO employees (
   employee_code, first_name, last_name, email, phone,
-  department_id, designation_id, employee_type_id, station_id, position, join_date, is_active
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`
+  department_id, designation_id, employee_type_id, station_id, city_id, position, join_date, is_active
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
 const insertEmployeeMinimal = `INSERT INTO employees (
   employee_code, first_name, last_name, email, phone,
   department_id, position, join_date, is_active
@@ -263,17 +264,17 @@ export async function createUser(username, hashedPassword, userType, empId) {
 }
 
 export async function updateEmployee(id, updates) {
-  const { firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, position, employeeCode, isActive } = updates
+  const { firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive } = updates
   let params = [
     firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
-    departmentId || null, designationId || null, employeeTypeId || null, stationId, position?.trim() || null,
+    departmentId || null, designationId || null, employeeTypeId || null, stationId, cityId ?? null, position?.trim() || null,
     employeeCode?.trim() || null
   ]
   const setClauses = [
     'first_name = $1', 'last_name = $2', 'email = $3', 'phone = $4',
-    'department_id = $5', 'designation_id = $6', 'employee_type_id = $7', 'station_id = $8', 'position = $9', 'employee_code = $10'
+    'department_id = $5', 'designation_id = $6', 'employee_type_id = $7', 'station_id = $8', 'city_id = $9', 'position = $10', 'employee_code = $11'
   ]
-  let idx = 11
+  let idx = 12
   if (typeof isActive === 'boolean') {
     setClauses.push(`is_active = $${idx}`)
     params.push(isActive)
@@ -305,14 +306,14 @@ export async function getEmployeeById(id) {
         e.department_id, d.department_name, e.position, e.designation_id, desg.desg_name AS designation_name,
         e.employee_type_id, et.emp_type_name AS employee_type_name,
         e.station_id, s.station_name,
-        (SELECT string_agg(c.city_name, ', ' ORDER BY c.city_name) FROM city c WHERE c.station_id = s.station_id) AS city_name,
-        (SELECT c.city_id FROM city c WHERE c.station_id = s.station_id ORDER BY c.city_name LIMIT 1) AS city_id,
+        e.city_id, c.city_name,
         e.is_active, e.join_date
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.department_id
       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
       LEFT JOIN station s ON e.station_id = s.station_id
+      LEFT JOIN city c ON e.city_id = c.city_id
       WHERE e.employee_id = $1
     `, [id])
   } catch (err) {

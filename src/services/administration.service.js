@@ -121,7 +121,7 @@ export async function createEmployee(body) {
   const paramsFull = [
     code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
     departmentId || null, designationId || null, employeeTypeId || null, resolvedStationId,
-    position?.trim() || null, joinDate, true
+    cityId ?? null, position?.trim() || null, joinDate, true
   ]
   const paramsMinimal = [
     code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
@@ -184,7 +184,7 @@ export async function updateEmployee(id, body) {
   }
   await adminRepo.updateEmployee(id, {
     firstName, lastName, email, phone, departmentId, designationId, employeeTypeId,
-    stationId: resolvedStationId, position, employeeCode, isActive
+    stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive
   })
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {

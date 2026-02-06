@@ -256,10 +256,24 @@ export async function rejectRequisition(requisitionId) {
   return executeQuery('UPDATE requisition SET req_is_rejected = 1 WHERE req_id = $1', [requisitionId])
 }
 
+export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost) {
+  return executeQuery(
+    `UPDATE requisition_items SET item_size = $1, item_brand = $2, item_qty = $3, item_est_cost = $4 WHERE item_id = $5 AND req_id = $6`,
+    [size || null, brand || null, (qty != null && !Number.isNaN(qty)) ? qty : null, estCost || null, itemId, reqId]
+  )
+}
+
 export async function approveHod(requisitionId) {
   return executeQuery(
     'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
     [requisitionId]
+  )
+}
+
+export async function updateItemCommitteeApprovedQty(itemId, qty) {
+  return executeQuery(
+    'UPDATE requisition_items SET committee_approved_qty = $1 WHERE item_id = $2',
+    [qty, itemId]
   )
 }
 

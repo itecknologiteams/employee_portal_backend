@@ -4,10 +4,11 @@ const profileQuery = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
     e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
     e.station_id, s.station_name,
-    (SELECT string_agg(c.city_name, ', ' ORDER BY c.city_name) FROM city c WHERE c.station_id = s.station_id) AS city_name
+    e.city_id, c.city_name
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
   LEFT JOIN station s ON e.station_id = s.station_id
+  LEFT JOIN city c ON e.city_id = c.city_id
   WHERE e.employee_id = $1
 `
 
