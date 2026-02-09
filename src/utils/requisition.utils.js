@@ -1,5 +1,7 @@
 export function getRequisitionStatus(row) {
   if (row.req_is_rejected === 1) return 'Rejected'
+  if (row.req_hod_acknowledged === 1) return 'Completed'
+  if (row.req_purchase_completed === 1) return 'Completed - Pending HOD Acknowledgment'
   if (row.req_finance_approval === 1) return 'Finance Approved - Ready for Purchase'
   if (row.req_handed_to_finance === 1) return 'Pending Finance Approval'
   if (row.req_procurement_ack === 1) {
@@ -47,7 +49,9 @@ export function getTATFromRequisition(row) {
     { name: 'Committee', start: row.req_hod_approval_date || null, end: row.req_committee_approval_date || null },
     { name: 'CEO', start: row.req_committee_approval_date || null, end: row.req_ceo_approval_date || null },
     { name: 'Procurement', start: row.req_ceo_approval_date || null, end: row.req_handed_to_finance_date || null },
-    { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null }
+    { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null },
+    { name: 'Procurement (complete)', start: row.req_finance_approval_date || null, end: row.req_purchase_completed_date || null },
+    { name: 'HOD Acknowledge', start: row.req_purchase_completed_date || null, end: row.req_hod_acknowledged_date || null }
   ]
   const withDuration = buckets.map((b) => {
     const hours = hoursBetween(b.start, b.end)
@@ -75,6 +79,7 @@ export function tatReportStatusCondition(status) {
   const s = (status || '').trim().toLowerCase()
   if (!s) return null
   if (s === 'rejected') return ` AND r.req_is_rejected = 1`
+  if (s === 'completed') return ` AND (COALESCE(r.req_is_rejected,0) = 0) AND (COALESCE(r.req_hod_acknowledged,0) = 1)`
   if (s === 'pending hod') return ` AND (COALESCE(r.req_is_rejected,0) = 0) AND (COALESCE(r.req_hod_approval,0) = 0)`
   if (s === 'pending committee') return ` AND (COALESCE(r.req_is_rejected,0) = 0) AND r.req_hod_approval = 1 AND (COALESCE(r.req_committee_approval,0) = 0)`
   if (s === 'pending ceo') return ` AND (COALESCE(r.req_is_rejected,0) = 0) AND r.req_committee_approval = 1 AND (COALESCE(r.req_ceo_approval,0) = 0)`

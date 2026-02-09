@@ -170,6 +170,34 @@ export async function getHodByDepartment(departmentId) {
   }
 }
 
+/** True if this employee is HOD of this department (by type or designation). */
+export async function isHodOfDepartment(employeeId, departmentId) {
+  if (employeeId == null || departmentId == null) return false
+  try {
+    const rows = await executeQuery(
+      `SELECT 1 FROM employees e
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
+       WHERE e.employee_id = $1 AND e.department_id = $2 AND e.is_active = true
+         AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+      [employeeId, departmentId]
+    )
+    return rows.length > 0
+  } catch (err) {
+    if (err.code === '42P01') {
+      try {
+        const rows = await executeQuery(
+          `SELECT 1 FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+           WHERE e.employee_id = $1 AND e.department_id = $2 AND e.is_active = true`,
+          [employeeId, departmentId]
+        )
+        return rows.length > 0
+      } catch (_) { return false }
+    }
+    throw err
+  }
+}
+
 export async function isCommitteeMember(employeeId) {
   try {
     const rows = await executeQuery(
@@ -337,6 +365,60 @@ export async function setExpectedHandover(reqId, dateVal) {
   return executeQuery('UPDATE requisition SET req_expected_handover_date = $2 WHERE req_id = $1', [reqId, dateVal])
 }
 
+export async function updateRequiredByDate(reqId, dateVal) {
+  return executeQuery('UPDATE requisition SET req_required_by_date = $2 WHERE req_id = $1', [reqId, dateVal])
+}
+
+/** Requisition eligible for Procurement to mark complete (finance approved, not rejected). */
+export async function getRequisitionForCompletePurchase(reqId) {
+  return executeQuery(
+    'SELECT req_id FROM requisition WHERE req_id = $1 AND COALESCE(req_is_rejected, 0) = 0 AND COALESCE(req_finance_approval, 0) = 1',
+    [reqId]
+  )
+}
+
+export async function updatePurchaseCompleted(reqId, completedByEmployeeId) {
+  return executeQuery(
+    'UPDATE requisition SET req_purchase_completed = 1, req_purchase_completed_date = CURRENT_TIMESTAMP, req_purchase_completed_by = $2 WHERE req_id = $1',
+    [reqId, completedByEmployeeId]
+  )
+}
+
+/** Requisitions completed by Procurement, pending HOD acknowledgment (same department as HOD). */
+export async function getPendingHodAcknowledgeList(deptId, deptName) {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+     FROM requisition r
+     JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.req_purchase_completed, 0) = 1
+       AND COALESCE(r.req_hod_acknowledged, 0) = 0
+       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+     ORDER BY r.req_purchase_completed_date DESC`,
+    [deptId, deptName]
+  )
+}
+
+/** Single requisition pending HOD acknowledgment (purchase completed, not yet acknowledged). */
+export async function getRequisitionForHodAcknowledge(reqId) {
+  return executeQuery(
+    `SELECT r.req_id, r.req_emp_id, e.department_id, d.department_name
+     FROM requisition r
+     JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE r.req_id = $1 AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
+    [reqId]
+  )
+}
+
+export async function updateHodAcknowledged(reqId, acknowledgedByEmployeeId) {
+  return executeQuery(
+    'UPDATE requisition SET req_hod_acknowledged = 1, req_hod_acknowledged_date = CURRENT_TIMESTAMP, req_hod_acknowledged_by = $2 WHERE req_id = $1',
+    [reqId, acknowledgedByEmployeeId]
+  )
+}
+
 export async function handoverToFinance(requisitionId) {
   return executeQuery(
     'UPDATE requisition SET req_handed_to_finance = 1, req_handed_to_finance_date = CURRENT_TIMESTAMP WHERE req_id = $1',
@@ -367,6 +449,20 @@ export async function getRequisitionRowForTat(reqId) {
       req_committee_approval, req_committee_approval_date, req_ceo_approval, req_ceo_approval_date,
       req_procurement_ack, req_handed_to_finance, req_handed_to_finance_date,
       req_finance_approval, req_finance_approval_date, req_quotation_1_url, req_quotation_2_url, req_quotation_3_url,
+      req_is_rejected,
+      req_purchase_completed, req_purchase_completed_date, req_hod_acknowledged, req_hod_acknowledged_date
+     FROM requisition WHERE req_id = $1`,
+    [reqId]
+  )
+}
+
+/** Fallback when req_purchase_completed / req_hod_acknowledged columns do not exist. */
+export async function getRequisitionRowForTatFallback(reqId) {
+  return executeQuery(
+    `SELECT req_id, req_reference_no, req_created_at, req_hod_approval, req_hod_approval_date,
+      req_committee_approval, req_committee_approval_date, req_ceo_approval, req_ceo_approval_date,
+      req_procurement_ack, req_handed_to_finance, req_handed_to_finance_date,
+      req_finance_approval, req_finance_approval_date, req_quotation_1_url, req_quotation_2_url, req_quotation_3_url,
       req_is_rejected
      FROM requisition WHERE req_id = $1`,
     [reqId]
@@ -388,14 +484,33 @@ export async function getEmployeeDept(employeeId) {
   return r[0]
 }
 
+/** HOD pending: (1) from employee – awaiting HOD approval, (2) from Procurement – complete, awaiting HOD acknowledgment. */
 export async function getPendingHodRequisitions(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0)
+       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+       AND (
+         ( (COALESCE(r.req_hod_approval, 0)::int = 0) AND (r.req_emp_id != $3) )
+         OR
+         ( (COALESCE(r.req_purchase_completed, 0) = 1) AND (COALESCE(r.req_hod_acknowledged, 0) = 0) )
+       )
+     ORDER BY r.req_created_at ASC`,
+    [deptId, deptName, excludeEmployeeId]
+  )
+}
+
+/** Fallback when req_purchase_completed / req_hod_acknowledged columns do not exist. */
+export async function getPendingHodRequisitionsFallback(deptId, deptName, excludeEmployeeId) {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND (COALESCE(r.req_hod_approval, 0)::int = 0)
-     AND r.req_emp_id != $3
-     AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+       AND r.req_emp_id != $3
+       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_created_at ASC`,
     [deptId, deptName, excludeEmployeeId]
   )
@@ -436,7 +551,20 @@ export async function getPendingCeoRequisitions() {
   )
 }
 
+/** Requisitions forwarded to Procurement (HOD+Committee+CEO approved), not yet marked complete by Procurement. */
 export async function getPendingProcurementRequisitions() {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE r.req_is_rejected = 0 AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
+       AND (COALESCE(r.req_purchase_completed, 0) = 0)
+     ORDER BY r.req_created_at ASC`
+  )
+}
+
+/** Fallback when req_purchase_completed column does not exist (pre-migration). */
+export async function getPendingProcurementRequisitionsFallback() {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
@@ -586,6 +714,24 @@ export async function getTatReportCount(whereClause, params) {
 }
 
 export async function getTatReportData(whereClause, params, limit, offset) {
+  return executeQuery(
+    `SELECT r.req_id, r.req_reference_no, r.req_created_at,
+       r.req_hod_approval, r.req_hod_approval_date, r.req_committee_approval, r.req_committee_approval_date,
+       r.req_ceo_approval, r.req_ceo_approval_date, r.req_procurement_ack, r.req_handed_to_finance,
+       r.req_handed_to_finance_date, r.req_finance_approval, r.req_finance_approval_date,
+       r.req_quotation_1_url, r.req_quotation_2_url, r.req_quotation_3_url, r.req_is_rejected,
+       r.req_purchase_completed, r.req_purchase_completed_date, r.req_hod_acknowledged, r.req_hod_acknowledged_date,
+       e.first_name, e.last_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     ${whereClause}
+     ORDER BY r.req_created_at DESC
+     LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
+    [...params, limit, offset]
+  )
+}
+
+/** TAT report data when req_purchase_completed / req_hod_acknowledged columns do not exist. */
+export async function getTatReportDataFallback(whereClause, params, limit, offset) {
   return executeQuery(
     `SELECT r.req_id, r.req_reference_no, r.req_created_at,
        r.req_hod_approval, r.req_hod_approval_date, r.req_committee_approval, r.req_committee_approval_date,

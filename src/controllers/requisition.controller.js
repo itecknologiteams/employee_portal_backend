@@ -109,6 +109,7 @@ export async function getReportAll(req, res) {
 
 export async function getPendingHod(req, res) {
   try {
+    debugger
     
     const result = await requisitionService.getPendingHod(req.params.employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
@@ -238,6 +239,52 @@ export async function setExpectedHandover(req, res) {
   } catch (error) {
     console.error('Expected handover date error:', error)
     res.status(500).json({ error: 'Failed to update expected handover date' })
+  }
+}
+
+export async function updateRequiredByDate(req, res) {
+  try {
+    const result = await requisitionService.updateRequiredByDate(req.params.reqId, req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Required by date update error:', error)
+    res.status(500).json({ error: 'Failed to update required by date' })
+  }
+}
+
+export async function completePurchase(req, res) {
+  try {
+    const result = await requisitionService.completePurchase(req.params.reqId, req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Complete purchase error:', error)
+    res.status(500).json({ error: 'Failed to mark complete' })
+  }
+}
+
+export async function getPendingHodAcknowledge(req, res) {
+  try {
+    const result = await requisitionService.getPendingHodAcknowledge(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    if (error.code === '42703') return res.json([])
+    console.error('Pending HOD acknowledge error:', error)
+    res.status(500).json({ error: 'Failed to fetch' })
+  }
+}
+
+export async function acknowledgeReceipt(req, res) {
+  try {
+    const result = await requisitionService.acknowledgeReceipt(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    if (error.code === '42703') return res.status(500).json({ error: 'Database migration required: run requisition-complete-hod-ack.sql' })
+    console.error('Acknowledge receipt error:', error)
+    res.status(500).json({ error: 'Failed to acknowledge receipt' })
   }
 }
 

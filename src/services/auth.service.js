@@ -1,9 +1,49 @@
 import bcrypt from 'bcryptjs'
 import * as authRepo from '../repositories/auth.repository.js'
 
+const ALL_PERMISSION_KEYS = [
+  'dashboard', 'profile', 'salary_slip', 'leave', 'feedback',
+  'requisition_create', 'requisition_pending', 'requisition_approved',
+  'requisition_reports', 'requisition_history', 'tat_report',
+  'extensions', 'administration', 'payroll'
+]
+
+const DEFAULT_USER_PERMISSIONS = [
+  'profile', 'salary_slip', 'leave', 'feedback',
+  'requisition_create', 'requisition_approved', 'requisition_history'
+]
+
+async function getPermissionsForRole(roleName) {
+  if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
+  try {
+    const rows = await authRepo.getRolePermissions(roleName)
+    const list = rows.map(r => r.permission_key).filter(k => ALL_PERMISSION_KEYS.includes(k))
+    if (roleName === 'User' && list.length === 0) return [...DEFAULT_USER_PERMISSIONS]
+    return list
+  } catch (err) {
+    if (err.code === '42P01') return roleName === 'User' ? [...DEFAULT_USER_PERMISSIONS] : []
+    throw err
+  }
+}
+
+async function getEffectivePermissions(empId, roleName) {
+  if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
+  try {
+    const overrideRows = await authRepo.getUserPermissionOverrides(empId)
+    if (overrideRows.length > 0) {
+      return overrideRows
+        .filter(r => r.allowed)
+        .map(r => r.permission_key)
+        .filter(k => ALL_PERMISSION_KEYS.includes(k))
+    }
+  } catch (err) {
+    if (err.code !== '42P01') throw err
+  }
+  return getPermissionsForRole(roleName)
+}
+
 export async function login(loginId, password) {
   try {
-    
     const userRows = await authRepo.findUserByUsername(loginId)
     if (userRows.length > 0) {
       const row = userRows[0]
@@ -14,13 +54,15 @@ export async function login(loginId, password) {
         ? await bcrypt.compare(password, row.password)
         : (row.password === password)
       if (valid) {
+        const permissions = await getEffectivePermissions(row.emp_id, row.user_type)
         return {
           employeeId: row.emp_id,
           name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
           email: row.email,
           department: row.department_name || '',
           position: '',
-          userType: row.user_type
+          userType: row.user_type,
+          permissions
         }
       }
     }
@@ -48,13 +90,15 @@ export async function login(loginId, password) {
   if (!isValidPassword) {
     return { error: 'Invalid username/email or password', status: 401 }
   }
+  const permissions = await getEffectivePermissions(employee.employee_id, 'User')
   return {
     employeeId: employee.employee_id,
     name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
     email: employee.email,
     department: employee.department_name || employee.department_id,
     position: employee.position,
-    userType: 'User'
+    userType: 'User',
+    permissions
   }
 }
 

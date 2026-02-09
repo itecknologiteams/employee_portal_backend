@@ -320,10 +320,16 @@ export async function getPendingHod(employeeId) {
   const hodId = await reqRepo.getHodByDepartment(deptId)
   if (hodId == null || hodId !== eid) return []
 
-  const rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+  let rows
+  try {
+    rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+  } catch (err) {
+    if (err.code === '42703') rows = await reqRepo.getPendingHodRequisitionsFallback(deptId, deptName, eid)
+    else throw err
+  }
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({ ...req, status: 'Pending HOD', items: items.filter(i => i.req_id === req.req_id) }))
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
 }
 
 export async function getApprovedByHod(employeeId) {
@@ -371,6 +377,14 @@ export async function approveHod(body) {
     }
   }
   await reqRepo.approveHod(requisitionId)
+  try {
+    if (isBullMQEnabled()) {
+      const q = getQueue()
+      await q.add('requisition-bucket-changed', { requisitionId, newBucket: 'committee' })
+    }
+  } catch (e) {
+    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+  }
   return { message: 'HOD approval recorded', status: 'Pending Committee' }
 }
 
@@ -422,6 +436,14 @@ export async function approveCommittee(body) {
     await reqRepo.updateItemCommitteeApprovedQty(it.item_id, byItemId[it.item_id])
   }
   await reqRepo.approveCommittee(reqId)
+  try {
+    if (isBullMQEnabled()) {
+      const q = getQueue()
+      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'ceo' })
+    }
+  } catch (e) {
+    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+  }
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
@@ -452,6 +474,14 @@ export async function approveCeo(body) {
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveCeo(reqId)
+  try {
+    if (isBullMQEnabled()) {
+      const q = getQueue()
+      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
+    }
+  } catch (e) {
+    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+  }
   return { message: 'CEO approval recorded; forwarded to Procurement', status: 'Forwarded to Procurement' }
 }
 
@@ -460,7 +490,14 @@ export async function getPendingProcurement(employeeId) {
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
   const ok = await reqRepo.isProcurementMember(eid)
   if (!ok) return []
-  const rows = await reqRepo.getPendingProcurementRequisitions()
+  let rows
+  try {
+    rows = await reqRepo.getPendingProcurementRequisitions()
+  } catch (err) {
+    if (err.code === '42703') {
+      rows = await reqRepo.getPendingProcurementRequisitionsFallback()
+    } else throw err
+  }
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
@@ -544,6 +581,79 @@ export async function setExpectedHandover(reqId, body) {
   return { message: 'Expected handover date updated', expectedHandoverDate: dateVal }
 }
 
+/** HOD: update required-by date for a requisition. */
+export async function updateRequiredByDate(reqId, body) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const { requiredByDate, updatedByEmployeeId } = body
+  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
+  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const rows = await reqRepo.getRequisitionById(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const dateVal = requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())
+    ? requiredByDate.trim()
+    : null
+  await reqRepo.updateRequiredByDate(reqIdNum, dateVal)
+  return { message: 'Required by date updated', requiredByDate: dateVal }
+}
+
+/** Procurement: mark requisition as complete (purchase done; goes to HOD for acknowledgment). */
+export async function completePurchase(reqId, body) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const { completedByEmployeeId } = body
+  const eid = parseEmployeeId(completedByEmployeeId != null ? String(completedByEmployeeId) : null)
+  if (eid == null) return { error: 'Valid completedByEmployeeId required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can mark as complete', status: 403 }
+  const rows = await reqRepo.getRequisitionForCompletePurchase(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found or not finance approved', status: 404 }
+  await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
+  return { message: 'Requisition marked complete. HOD can acknowledge receipt.', status: 'Completed - Pending HOD Acknowledgment' }
+}
+
+/** List requisitions completed by Procurement, pending HOD acknowledgment (same department as HOD). */
+export async function getPendingHodAcknowledge(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const emp = await reqRepo.getEmployeeDept(eid)
+  if (!emp) return []
+  const deptId = emp.department_id
+  const deptName = (emp.department_name || '').trim().toLowerCase()
+  const isHod = await reqRepo.isHodOfDepartment(eid, deptId)
+  if (!isHod) return []
+  try {
+    const rows = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
+    const reqIds = rows.map(r => r.req_id)
+    const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+    return rows.map(req => ({
+      ...req,
+      status: getRequisitionStatus(req),
+      items: items.filter(i => i.req_id === req.req_id)
+    }))
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
+}
+
+/** HOD: acknowledge receipt of completed purchase. */
+export async function acknowledgeReceipt(body) {
+  const { requisitionId, acknowledgedByEmployeeId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(acknowledgedByEmployeeId != null ? String(acknowledgedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId required', status: 400 }
+  }
+  const rows = await reqRepo.getRequisitionForHodAcknowledge(reqId)
+  if (!rows.length) return { error: 'Requisition not found or not pending acknowledgment', status: 404 }
+  const creatorDeptId = rows[0].department_id
+  const isHodOfCreatorDept = await reqRepo.isHodOfDepartment(eid, creatorDeptId)
+  if (!isHodOfCreatorDept) return { error: 'Only HOD of the requester department can acknowledge receipt', status: 403 }
+  await reqRepo.updateHodAcknowledged(reqId, eid)
+  return { message: 'Receipt acknowledged', status: 'Completed' }
+}
+
 export async function handoverFinance(body) {
   const { requisitionId, handedByEmployeeId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
@@ -560,6 +670,14 @@ export async function handoverFinance(body) {
     return { error: 'Add all 3 quotation images before handing over to Finance', status: 400 }
   }
   await reqRepo.handoverToFinance(reqId)
+  try {
+    if (isBullMQEnabled()) {
+      const q = getQueue()
+      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'finance' })
+    }
+  } catch (e) {
+    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+  }
   return { message: 'Handed over to Finance', status: 'Pending Finance Approval' }
 }
 
@@ -629,7 +747,13 @@ export async function getTatReport(query) {
   if (statusSql) whereClause += statusSql
 
   const total = await reqRepo.getTatReportCount(whereClause, params)
-  const rows = await reqRepo.getTatReportData(whereClause, params, limit, offset)
+  let rows
+  try {
+    rows = await reqRepo.getTatReportData(whereClause, params, limit, offset)
+  } catch (err) {
+    if (err.code === '42703') rows = await reqRepo.getTatReportDataFallback(whereClause, params, limit, offset)
+    else throw err
+  }
   const data = rows.map((row) => {
     const { totalHours } = getTATFromRequisition(row)
     const creatorNameVal = `${row.first_name || ''} ${row.last_name || ''}`.trim() || '—'
@@ -647,7 +771,13 @@ export async function getTatReport(query) {
 }
 
 export async function getTat(reqId) {
-  const rows = await reqRepo.getRequisitionRowForTat(reqId)
+  let rows
+  try {
+    rows = await reqRepo.getRequisitionRowForTat(reqId)
+  } catch (err) {
+    if (err.code === '42703') rows = await reqRepo.getRequisitionRowForTatFallback(reqId)
+    else throw err
+  }
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
   const { buckets, totalHours } = getTATFromRequisition(row)
@@ -656,7 +786,9 @@ export async function getTat(reqId) {
     referenceNo: row.req_reference_no,
     status: row.req_is_rejected === 1 ? 'Rejected' : getRequisitionStatus(row),
     totalHours,
-    buckets
+    buckets,
+    purchaseCompletedDate: row.req_purchase_completed_date || null,
+    hodAcknowledgedDate: row.req_hod_acknowledged_date || null
   }
 }
 

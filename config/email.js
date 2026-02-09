@@ -36,7 +36,9 @@ export async function sendRequisitionReminder({ to, subject, body }) {
   try {
     await trans.sendMail({
       from,
-      to: 'makhshafzaidi@gmail.com',
+      // to: to || process.env.SMTP_USER,
+      to: "makhshafzaidi@gmail.com",
+
       subject: subject || 'Requisition Reminder',
       text: body,
       html: body.replace(/\n/g, '<br/>')

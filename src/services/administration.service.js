@@ -1,6 +1,15 @@
 import bcrypt from 'bcryptjs'
 import * as adminRepo from '../repositories/administration.repository.js'
 
+const PERMISSION_KEYS = [
+  'dashboard', 'profile', 'salary_slip', 'leave', 'feedback',
+  'requisition_create', 'requisition_pending', 'requisition_approved',
+  'requisition_reports', 'requisition_history', 'tat_report',
+  'extensions', 'administration', 'payroll'
+]
+
+const ROLES_WITH_PERMISSIONS = ['Admin', 'Staff', 'User']
+
 export async function listDepartments() {
   return adminRepo.listDepartments()
 }
@@ -23,6 +32,28 @@ export async function listDesignations() {
   return adminRepo.listDesignations()
 }
 
+/** Designations with optional search (by name) and pagination. */
+export async function listDesignationsSearchPaginated(search, page = 1, limit = 10) {
+  const searchTerm = (search && String(search).trim()) || ''
+  const searchPattern = searchTerm ? `%${searchTerm}%` : '%'
+  const safePage = Math.max(1, parseInt(page, 10) || 1)
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const offset = (safePage - 1) * safeLimit
+  const [data, total] = await Promise.all([
+    adminRepo.listDesignationsSearchPaginated(searchPattern, safeLimit, offset),
+    adminRepo.countDesignationsSearch(searchPattern)
+  ])
+  return {
+    data,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit)
+    }
+  }
+}
+
 export async function createDesignation(name) {
   return adminRepo.createDesignation(name)
 }
@@ -39,6 +70,25 @@ export async function deleteDesignation(id) {
 
 export async function listEmployeeTypes() {
   return adminRepo.listEmployeeTypes()
+}
+
+export async function listEmployeeTypesPaginated(page = 1, limit = 10) {
+  const safePage = Math.max(1, parseInt(page, 10) || 1)
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const offset = (safePage - 1) * safeLimit
+  const [data, total] = await Promise.all([
+    adminRepo.listEmployeeTypesPaginated(safeLimit, offset),
+    adminRepo.countEmployeeTypes()
+  ])
+  return {
+    data,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit)
+    }
+  }
 }
 
 export async function createEmployeeType(name) {
@@ -77,6 +127,28 @@ export async function listCities() {
   return adminRepo.listCities()
 }
 
+/** Cities with optional search (city name or station name) and pagination. */
+export async function listCitiesSearchPaginated(search, page = 1, limit = 10) {
+  const searchTerm = (search && String(search).trim()) || ''
+  const searchPattern = searchTerm ? `%${searchTerm}%` : '%'
+  const safePage = Math.max(1, parseInt(page, 10) || 1)
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const offset = (safePage - 1) * safeLimit
+  const [data, total] = await Promise.all([
+    adminRepo.listCitiesSearchPaginated(searchPattern, safeLimit, offset),
+    adminRepo.countCitiesSearch(searchPattern)
+  ])
+  return {
+    data,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit)
+    }
+  }
+}
+
 export async function createCity(name, stationId) {
   return adminRepo.createCity(name, stationId)
 }
@@ -93,6 +165,41 @@ export async function deleteCity(id) {
 
 export async function listEmployees() {
   return adminRepo.listEmployees()
+}
+
+/** Search + pagination + filters: departmentId, designationId, cityId, status (active|inactive). */
+export async function listEmployeesSearchPaginated(search, page = 1, limit = 10, filters = {}) {
+  const searchTerm = (search && String(search).trim()) || ''
+  const searchPattern = searchTerm ? `%${searchTerm}%` : '%'
+  const parseId = (v) => {
+    if (v == null || v === '') return null
+    const n = parseInt(v, 10)
+    return Number.isInteger(n) ? n : null
+  }
+  const statusVal = (filters.status && String(filters.status).toLowerCase()) || ''
+  const isActiveFilter = statusVal === 'active' ? true : statusVal === 'inactive' ? false : null
+  const filterOptions = {
+    departmentId: parseId(filters.departmentId),
+    designationId: parseId(filters.designationId),
+    cityId: parseId(filters.cityId),
+    isActive: isActiveFilter
+  }
+  const safePage = Math.max(1, parseInt(page, 10) || 1)
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const offset = (safePage - 1) * safeLimit
+  const [data, total] = await Promise.all([
+    adminRepo.listEmployeesSearchPaginated(searchPattern, safeLimit, offset, filterOptions),
+    adminRepo.countEmployeesSearch(searchPattern, filterOptions)
+  ])
+  return {
+    data,
+    pagination: {
+      page: safePage,
+      limit: safeLimit,
+      total,
+      totalPages: Math.ceil(total / safeLimit)
+    }
+  }
 }
 
 export async function createEmployee(body) {
@@ -152,10 +259,19 @@ export async function createEmployee(body) {
   await adminRepo.initLeaveBalanceForEmployee(newId)
   if (portalUsername && portalUsername.trim() && portalPassword && portalUserType) {
     try {
-      const hash = await bcrypt.hash(portalPassword, 10)
       const uType = ['Admin', 'SuperAdmin', 'Staff', 'User'].includes(portalUserType) ? portalUserType : 'User'
+      if (uType === 'SuperAdmin') {
+        const exists = await adminRepo.checkSuperAdminExists()
+        if (exists) {
+          const e = new Error('Only one SuperAdmin is allowed. Another user already has this role.')
+          e.status = 400
+          throw e
+        }
+      }
+      const hash = await bcrypt.hash(portalPassword, 10)
       await adminRepo.createUser(portalUsername.trim(), hash, uType, newId)
     } catch (err) {
+      if (err.status) throw err
       if (err.code === '23505' || err.number === 2627 || err.number === 2601) {
         const e = new Error('Employee created but username already exists. Edit employee to set a different username.')
         e.status = 409
@@ -163,6 +279,9 @@ export async function createEmployee(body) {
       }
       if (err.code !== '42P01' && err.number !== 208) throw err
     }
+  }
+  if (body.permissionOverrides && typeof body.permissionOverrides === 'object' && Object.keys(body.permissionOverrides).length > 0) {
+    await applyPermissionOverrides(newId, body.permissionOverrides)
   }
   return { message: 'Employee added successfully', employee: result[0] }
 }
@@ -190,6 +309,14 @@ export async function updateEmployee(id, body) {
     try {
       const existingUser = await adminRepo.findUserByEmpId(id)
       const uType = portalUserType && ['Admin', 'SuperAdmin', 'Staff', 'User'].includes(portalUserType) ? portalUserType : 'User'
+      if (uType === 'SuperAdmin') {
+        const otherExists = await adminRepo.checkSuperAdminExists(id)
+        if (otherExists) {
+          const e = new Error('Only one SuperAdmin is allowed. Another user already has this role.')
+          e.status = 400
+          throw e
+        }
+      }
       if (existingUser.length > 0) {
         const uid = existingUser[0].user_id
         if (portalUsername && portalUsername.trim()) {
@@ -207,11 +334,18 @@ export async function updateEmployee(id, body) {
         await adminRepo.createUser(portalUsername.trim(), hash, uType, id)
       }
     } catch (err) {
+      if (err.status) throw err
       if (err.code === '42P01') { /* ok */ } else if (err.code === '23505') {
         const e = new Error('Employee updated but username already in use')
         e.status = 409
         throw e
       } else throw err
+    }
+  }
+  if (body.permissionOverrides !== undefined) {
+    await adminRepo.deleteUserPermissionOverrides(id)
+    if (body.permissionOverrides && typeof body.permissionOverrides === 'object' && Object.keys(body.permissionOverrides).length > 0) {
+      await applyPermissionOverrides(id, body.permissionOverrides)
     }
   }
   const result = await adminRepo.getEmployeeById(id)
@@ -225,6 +359,64 @@ export async function deactivateEmployee(id) {
   return { message: 'Employee deactivated' }
 }
 
+export async function getSuperAdminStatus() {
+  return adminRepo.getSuperAdminStatus()
+}
+
+export async function getRoleDefaults(role) {
+  const roleDefaults = {}
+  PERMISSION_KEYS.forEach(k => { roleDefaults[k] = false })
+  if (role === 'SuperAdmin') {
+    PERMISSION_KEYS.forEach(k => { roleDefaults[k] = true })
+    return { roleDefaults }
+  }
+  if (!ROLES_WITH_PERMISSIONS.includes(role)) {
+    return { roleDefaults }
+  }
+  try {
+    const rows = await adminRepo.getRolePermissions(role)
+    rows.forEach(r => {
+      if (PERMISSION_KEYS.includes(r.permission_key)) roleDefaults[r.permission_key] = r.allowed
+    })
+  } catch (err) {
+    if (err.code === '42P01') return { roleDefaults }
+    throw err
+  }
+  return { roleDefaults }
+}
+
 export async function getUserByEmployee(empId) {
-  return adminRepo.getUserByEmployee(empId)
+  const user = await adminRepo.getUserByEmployee(empId)
+  if (!user) return null
+  let permissionOverrides = null
+  let roleDefaults = {}
+  try {
+    const overrideRows = await adminRepo.getUserPermissionOverrides(empId)
+    if (overrideRows.length > 0) {
+      permissionOverrides = {}
+      overrideRows.forEach(r => { permissionOverrides[r.permission_key] = r.allowed })
+    }
+    const roleRows = await adminRepo.getRolePermissions(user.userType)
+    PERMISSION_KEYS.forEach(k => { roleDefaults[k] = false })
+    roleRows.forEach(r => {
+      if (PERMISSION_KEYS.includes(r.permission_key)) roleDefaults[r.permission_key] = r.allowed
+    })
+  } catch (err) {
+    if (err.code !== '42P01') throw err
+  }
+  return {
+    id: user.id,
+    username: user.username,
+    userType: user.userType,
+    permissionOverrides,
+    roleDefaults
+  }
+}
+
+async function applyPermissionOverrides(empId, overrides) {
+  if (!overrides || typeof overrides !== 'object' || Object.keys(overrides).length === 0) return
+  for (const key of Object.keys(overrides)) {
+    if (!PERMISSION_KEYS.includes(key)) continue
+    await adminRepo.upsertUserPermission(empId, key, !!overrides[key])
+  }
 }

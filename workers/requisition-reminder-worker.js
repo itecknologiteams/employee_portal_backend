@@ -181,6 +181,62 @@ export async function handleRequisitionCreated(data) {
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
 }
 
+const BUCKET_LABELS = {
+  hod: 'Pending HOD',
+  committee: 'Pending Committee',
+  ceo: 'Pending CEO',
+  procurement: 'Procurement',
+  finance: 'Pending Finance'
+}
+
+/**
+ * When a requisition moves to a new bucket (Committee / CEO / Procurement / Finance), notify that bucket's recipients.
+ */
+export async function handleRequisitionBucketChanged(data) {
+  const { requisitionId, newBucket } = data
+  if (!requisitionId || !newBucket) {
+    console.warn('[BullMQ] requisition-bucket-changed: missing requisitionId or newBucket')
+    return
+  }
+  const validBuckets = ['committee', 'ceo', 'procurement', 'finance']
+  if (!validBuckets.includes(newBucket)) {
+    console.warn('[BullMQ] requisition-bucket-changed: invalid newBucket', newBucket)
+    return
+  }
+  let row
+  try {
+    const rows = await executeQuery(
+      `SELECT r.req_id, r.req_reference_no, r.req_required_by_date,
+              e.first_name, e.last_name, e.department_id
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       WHERE r.req_id = $1`,
+      [requisitionId]
+    )
+    row = rows[0]
+  } catch (err) {
+    console.error('[BullMQ] requisition-bucket-changed: fetch failed', err.message)
+    return
+  }
+  if (!row) {
+    console.warn('[BullMQ] requisition-bucket-changed: requisition not found', requisitionId)
+    return
+  }
+  const toEmails = await getEmailsForBucket(newBucket, row.department_id)
+  if (!toEmails.length) {
+    console.log('[BullMQ] requisition-bucket-changed:', row.req_reference_no || requisitionId, '– no recipient for bucket', newBucket)
+    return
+  }
+  const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+  const refNo = row.req_reference_no || '#' + requisitionId
+  const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
+  const requiredBy = row.req_required_by_date || 'Not set'
+  const bucketLabel = BUCKET_LABELS[newBucket] || newBucket
+  const subject = `Requisition ${refNo} – new case in your queue (${bucketLabel})`
+  const body = `A requisition ${refNo} has been moved to your queue: ${bucketLabel}.\nCreator: ${creatorName}\nRequired by: ${requiredBy}\n\nView: ${baseUrl}`
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
+}
+
 /**
  * Testing: 3-day reminder – har 2 min, jis bucket me pending hai usi ko email (HOD / Committee / CEO / Procurement / Finance).
  */
@@ -213,7 +269,7 @@ export async function handleRequisitionReminder3DayTest(data) {
   const refNo = data.referenceNo || '#' + reqId
   const creatorName = data.creatorName || 'Employee'
   const requiredBy = data.requiredByDate || 'Not set'
-  const bucketLabel = { hod: 'Pending HOD', committee: 'Pending Committee', ceo: 'Pending CEO', procurement: 'Procurement', finance: 'Pending Finance' }[bucket] || bucket
+  const bucketLabel = BUCKET_LABELS[bucket] || bucket
   const subject = `Requisition ${refNo} – ${bucketLabel} (test reminder)`
   const body = `Requisition ${refNo} (required by ${requiredBy}) is pending at: ${bucketLabel}.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
@@ -231,6 +287,8 @@ export async function handleRequisitionReminder3DayTest(data) {
 export async function processJob(job) {
   if (job.name === 'requisition-created') {
     await handleRequisitionCreated(job.data)
+  } else if (job.name === 'requisition-bucket-changed') {
+    await handleRequisitionBucketChanged(job.data)
   } else if (job.name === 'requisition-reminder-3day-test') {
     await handleRequisitionReminder3DayTest(job.data)
   } else {

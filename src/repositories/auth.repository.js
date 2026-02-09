@@ -60,3 +60,17 @@ export async function initLeaveBalance(employeeId) {
     [employeeId]
   )
 }
+
+export async function getRolePermissions(roleName) {
+  return executeQuery(
+    'SELECT permission_key FROM role_permissions WHERE role_name = $1 AND allowed = true',
+    [roleName]
+  )
+}
+
+export async function getUserPermissionOverrides(empId) {
+  return executeQuery(
+    'SELECT permission_key, allowed FROM user_permissions WHERE emp_id = $1',
+    [empId]
+  )
+}

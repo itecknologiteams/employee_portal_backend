@@ -33,6 +33,8 @@ router.post('/employees', adminController.createEmployee)
 router.put('/employees/:id', adminController.updateEmployee)
 router.delete('/employees/:id', adminController.deactivateEmployee)
 
+router.get('/superadmin-status', adminController.getSuperAdminStatus)
+router.get('/role-defaults/:role', adminController.getRoleDefaults)
 router.get('/user-by-employee/:empId', adminController.getUserByEmployee)
 
 export default router

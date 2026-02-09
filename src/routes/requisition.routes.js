@@ -38,6 +38,14 @@ router.get('/pending/finance/:employeeId', requisitionController.getPendingFinan
 router.post('/approve/finance', requisitionController.approveFinance)
 router.get('/tat-report', requisitionController.getTatReport)
 router.get('/tat/:reqId', requisitionController.getTat)
+// HOD: update required-by date (must be before GET /:reqId)
+router.put('/required-by-date/:reqId', requisitionController.updateRequiredByDate)
+// Procurement: mark requisition complete (must be before GET /:reqId)
+router.post('/complete-purchase/:reqId', requisitionController.completePurchase)
+// List requisitions pending HOD acknowledgment (HOD only)
+router.get('/pending/hod-acknowledge/:employeeId', requisitionController.getPendingHodAcknowledge)
+// HOD: acknowledge receipt of completed purchase
+router.post('/acknowledge-receipt', requisitionController.acknowledgeReceipt)
 router.get('/:reqId', requisitionController.getById)
 
 export default router

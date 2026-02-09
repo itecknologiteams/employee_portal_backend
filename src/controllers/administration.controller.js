@@ -60,9 +60,14 @@ export async function deleteDepartment(req, res) {
   }
 }
 
-// Designations
+// Designations – pagination & search via query params (search, page, limit)
 export async function listDesignations(req, res) {
   try {
+    const { search, page, limit } = req.query
+    if (search !== undefined || page !== undefined || limit !== undefined) {
+      const result = await adminService.listDesignationsSearchPaginated(search, page, limit)
+      return res.json(result)
+    }
     const rows = await adminService.listDesignations()
     res.json(rows)
   } catch (error) {
@@ -111,8 +116,9 @@ export async function deleteDesignation(req, res) {
 // Employee types
 export async function listEmployeeTypes(req, res) {
   try {
-    const rows = await adminService.listEmployeeTypes()
-    res.json(rows)
+    const { page, limit } = req.query
+    const result = await adminService.listEmployeeTypesPaginated(page, limit)
+    res.json(result)
   } catch (error) {
     handleError(error, res, 'Failed to fetch employee types')
   }
@@ -204,9 +210,14 @@ export async function deleteStation(req, res) {
   }
 }
 
-// Cities
+// Cities – pagination & search via query params (search, page, limit)
 export async function listCities(req, res) {
   try {
+    const { search, page, limit } = req.query
+    if (search !== undefined || page !== undefined || limit !== undefined) {
+      const result = await adminService.listCitiesSearchPaginated(search, page, limit)
+      return res.json(result)
+    }
     const rows = await adminService.listCities()
     res.json(rows)
   } catch (error) {
@@ -253,9 +264,20 @@ export async function deleteCity(req, res) {
   }
 }
 
-// Employees
+// Employees – search, pagination, filters: departmentId, designationId, cityId, status (active|inactive)
 export async function listEmployees(req, res) {
   try {
+    const { search, page, limit, departmentId, designationId, cityId, status } = req.query
+    const hasFilters = [search, page, limit, departmentId, designationId, cityId, status].some(v => v !== undefined)
+    if (hasFilters) {
+      const result = await adminService.listEmployeesSearchPaginated(search, page, limit, {
+        departmentId,
+        designationId,
+        cityId,
+        status
+      })
+      return res.json(result)
+    }
     const rows = await adminService.listEmployees()
     res.json(rows)
   } catch (error) {
@@ -295,6 +317,29 @@ export async function deactivateEmployee(req, res) {
     res.json(result)
   } catch (error) {
     handleError(error, res, 'Failed to deactivate employee')
+  }
+}
+
+export async function getSuperAdminStatus(req, res) {
+  try {
+    const result = await adminService.getSuperAdminStatus()
+    res.json(result)
+  } catch (error) {
+    if (error.code === '42P01') return res.json({ exists: false, superAdminEmployeeId: null })
+    console.error('SuperAdmin status error:', error)
+    res.status(500).json({ error: 'Failed to check SuperAdmin status' })
+  }
+}
+
+export async function getRoleDefaults(req, res) {
+  try {
+    const { role } = req.params
+    const result = await adminService.getRoleDefaults(role)
+    res.json(result)
+  } catch (error) {
+    if (error.code === '42P01') return res.json({ roleDefaults: {} })
+    console.error('Get role defaults error:', error)
+    res.status(500).json({ error: 'Failed to fetch role defaults' })
   }
 }
 

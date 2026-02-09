@@ -14,7 +14,9 @@ import {
   requisitionRoutes,
   extensionsRoutes,
   authRoutes,
-  administrationRoutes
+  administrationRoutes,
+  payrollRoutes,
+  rolePermissionsRoutes
 } from './src/routes/index.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
 
@@ -70,6 +72,8 @@ app.use('/api/requisition', requisitionRoutes)
 app.use('/api/extensions', extensionsRoutes)
 app.use('/api/auth', authRoutes)
 app.use('/api/administration', administrationRoutes)
+app.use('/api/payroll', payrollRoutes)
+app.use('/api/role-permissions', rolePermissionsRoutes)
 
 app.get('/api/health', (req, res) => {
   res.json({
