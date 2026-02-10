@@ -1,7 +1,17 @@
 import * as leaveRepo from '../repositories/leave.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
 const defaultBalance = { annual: 15, sick: 10, personal: 5 }
+
+const LEAVE_EMAIL_SICK_CASUAL = process.env.LEAVE_EMAIL_SICK_CASUAL || 'anas.ahmed@itecknologi.com'
+const LEAVE_EMAIL_ANNUAL = process.env.LEAVE_EMAIL_ANNUAL || 'hr@itecknologi.com'
+
+function getLeaveNotificationEmail(leaveType) {
+  const t = (leaveType && String(leaveType).trim().toLowerCase()) || ''
+  if (t.includes('sick') || t.includes('casual')) return LEAVE_EMAIL_SICK_CASUAL
+  return LEAVE_EMAIL_ANNUAL
+}
 
 function parseEmployeeId(employeeId) {
   if (employeeId == null || employeeId === '') return null
@@ -50,13 +60,45 @@ export async function createLeaveRequest(data) {
     }
   }
   const result = await leaveRepo.createLeaveRequest(employeeId, leaveType, startDate, endDate, reason, initialStatus)
+  const leaveRequestId = result[0].leave_request_id
+
+  if (isEmailConfigured()) {
+    const transport = getEmailTransport()
+    if (transport) {
+      try {
+        const to = getLeaveNotificationEmail(leaveType)
+        const subject = `New Leave Request – ${(leaveType && String(leaveType).trim()) || 'Leave'}`
+        const body = [
+          `Leave Request ID: ${leaveRequestId}`,
+          `Employee ID: ${employeeId}`,
+          `Leave Type: ${leaveType || '—'}`,
+          `Start Date: ${startDate || '—'}`,
+          `End Date: ${endDate || '—'}`,
+          '',
+          'Reason:',
+          reason ? String(reason).trim() : '—'
+        ].join('\n')
+        console.log('📧 [Leave] Sending to:', to, '| Subject:', subject)
+        await transport.sendMail({
+          from: EMAIL_FROM,
+          to,
+          subject,
+          text: body
+        })
+        console.log('📧 [Leave] SENT OK →', to)
+      } catch (err) {
+        console.error('📧 [Leave] FAILED →', to, '| Error:', err.message)
+      }
+    }
+  }
+
   return {
     message: 'Leave request submitted successfully',
-    leaveRequestId: result[0].leave_request_id
+    leaveRequestId
   }
 }
 
-/** Update leave request status. Two-step flow: Pending (HOD) -> Pending HR or Rejected; Pending HR (HR) -> Approved or Rejected. */
+/** Update leave request status. HR can approve/reject from Pending or Pending HR. HOD can set Pending -> Pending HR or Rejected. */
 export async function updateLeaveStatus(leaveRequestId, body) {
   const { status, approvedByEmployeeId } = body || {}
   const reqId = parseInt(leaveRequestId, 10)
@@ -71,6 +113,15 @@ export async function updateLeaveStatus(leaveRequestId, body) {
   const current = (leave.status || 'Pending').trim()
 
   if (current === 'Pending') {
+    // HR can approve or reject directly without HOD approval
+    if (normalizedStatus === 'Approved' || normalizedStatus === 'Rejected') {
+      const isHr = await reqRepo.isHrMember(eid)
+      if (!isHr) return { error: 'Only HR can approve or reject at this stage', status: 403 }
+      const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
+      if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+      return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
+    }
+    // HOD can set Pending HR (forward to HR) or Rejected
     if (normalizedStatus !== 'Pending HR' && normalizedStatus !== 'Rejected') {
       return { error: 'HOD can set status to Pending HR (approve for next step) or Rejected', status: 400 }
     }

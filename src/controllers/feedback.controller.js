@@ -1,5 +1,15 @@
 import * as feedbackService from '../services/feedback.service.js'
 
+export async function getAllFeedback(req, res) {
+  try {
+    const result = await feedbackService.getAllFeedback(req.query)
+    return res.json(result)
+  } catch (error) {
+    console.error('Get all feedback error:', error)
+    return res.status(500).json({ error: 'Failed to fetch feedback records' })
+  }
+}
+
 export async function getFeedbackHistory(req, res) {
   try {
     const employeeId = req.params.employeeId ?? req.params.employee_id

@@ -57,6 +57,29 @@ export async function getFeedbackHistory(employeeId) {
   return feedbackRepo.getFeedbackHistory(eid)
 }
 
+export async function getAllFeedback(query = {}) {
+  const page = Math.max(1, parseInt(query.page, 10) || 1)
+  const limit = Math.min(500, Math.max(1, parseInt(query.limit, 10) || 100))
+  const offset = (page - 1) * limit
+  const [rows, total] = await Promise.all([
+    feedbackRepo.getAllFeedback(limit, offset),
+    feedbackRepo.getFeedbackCount()
+  ])
+  const data = rows.map(r => ({
+    id: r.id,
+    subject: r.subject,
+    category: r.category,
+    message: r.message,
+    rating: r.rating,
+    status: r.status,
+    createdAt: r.created_at
+  }))
+  return {
+    data,
+    pagination: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) }
+  }
+}
+
 export async function submitFeedback(data) {
   const { employeeId, employee_id, subject, category, message, rating } = data
   const validationErrors = []
@@ -117,20 +140,22 @@ export async function submitFeedback(data) {
         ].join('\n')
 
         if (departmentEmail) {
+          const toEmail = departmentEmail
+          console.log('📧 [Feedback] Sending to:', toEmail, '| Subject:', emailSubject)
           await transport.sendMail({
             from: EMAIL_FROM,
-            to: "makhshafzaidi@gmail.com",
+            to: toEmail,
             subject: emailSubject,
             text: emailBody,
             replyTo: employeeEmail || undefined
           })
-          console.log('✅ Feedback email sent:', { to: departmentEmail, subject: emailSubject })
+          console.log('📧 [Feedback] SENT OK →', toEmail)
           emailSent = true
         } else {
           console.warn('Feedback email recipient not configured. Skipping send.')
         }
       } catch (emailError) {
-        console.error('Feedback email error:', emailError.message)
+        console.error('📧 [Feedback] FAILED | Error:', emailError.message)
       }
     }
   } else {

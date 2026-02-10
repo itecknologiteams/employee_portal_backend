@@ -39,17 +39,23 @@ export async function sendRequisitionReminder({ to, subject, body }) {
     return
   }
   const from = EMAIL_FROM
+  const recipient = (to && String(to).trim()) || process.env.SMTP_USER
+  if (!recipient) {
+    console.warn('Requisition email: no recipient (to) and no SMTP_USER. Skip.')
+    return
+  }
+  const subj = subject || 'Requisition Reminder'
+  console.log('📧 [Email] Sending to:', recipient, '| Subject:', subj)
   try {
     await trans.sendMail({
       from,
-     to:"makhshafzaidi@gmail.com",
-
-      subject: subject || 'Requisition Reminder',
+      to: recipient,
+      subject: subj,
       text: body,
       html: body.replace(/\n/g, '<br/>')
     })
-    console.log('✅ Requisition email sent:', { to: to || process.env.SMTP_USER, subject: subject || 'Requisition Reminder' })
+    console.log('📧 [Email] SENT OK →', recipient)
   } catch (err) {
-    console.error('Requisition reminder email failed:', err.message)
+    console.error('📧 [Email] FAILED →', recipient, '| Error:', err.message)
   }
 }
