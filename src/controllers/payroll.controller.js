@@ -31,7 +31,7 @@ export async function createPeriod(req, res) {
     const result = await payrollService.createPeriod({ name, startDate, endDate, workingDays: days })
     res.status(201).json(result)
   } catch (err) {
-    if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run payroll-schema.sql.' })
+    if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     console.error('Payroll period create error:', err)
     res.status(500).json({ error: err.message || 'Failed to create period' })
   }
@@ -98,7 +98,7 @@ export async function runPayroll(req, res) {
     })
   } catch (err) {
     if (err.code === '42P01') {
-      return res.status(500).json({ error: 'Payroll tables not found. Run payroll-schema.sql.' })
+      return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     }
     console.error('Payroll run error:', err)
     await repo.setPeriodDraft(req.params.id).catch(() => {})
@@ -112,7 +112,7 @@ export async function closePeriod(req, res) {
     if (!result) return res.status(400).json({ error: 'Period not found or already closed' })
     res.json({ message: 'Period closed', id: result.id })
   } catch (err) {
-    if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found' })
+    if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     res.status(500).json({ error: 'Failed to close period' })
   }
 }
@@ -149,7 +149,7 @@ export async function saveDesignationAllowances(req, res) {
     if (result.error) return res.status(400).json({ error: result.error })
     res.json({ message: 'Designation allowances saved' })
   } catch (err) {
-    if (err.code === '42P01') return res.status(404).json({ error: 'designation_allowance table not found' })
+    if (err.code === '42P01') return res.status(404).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     console.error('Save designation allowances error:', err)
     res.status(500).json({ error: err.message || 'Failed to save' })
   }
@@ -188,7 +188,7 @@ export async function saveSalaryStructure(req, res) {
     const result = await payrollService.saveSalaryStructure(req.body)
     res.status(201).json(result)
   } catch (err) {
-    if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found' })
+    if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     if (err.code === '23503') return res.status(400).json({ error: 'Employee not found' })
     console.error('Salary structure save error:', err)
     res.status(500).json({ error: err.message || 'Failed to save structure' })

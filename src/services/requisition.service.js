@@ -233,7 +233,8 @@ export async function sendTestEmail(to) {
   await sendRequisitionReminder({
     to: recipient,
     subject: 'Requisition – test email',
-    body: 'This is a test email from Employee Portal requisition flow. If you got this, SMTP is working.'
+    body: 'This is a test email from Employee Portal requisition flow. If you got this, SMTP is working.',
+    meta: { event: 'test', ref: '' }
   })
   return { ok: true, message: 'Test email sent to ' + recipient, hint: 'Ethereal: check https://ethereal.email/messages' }
 }

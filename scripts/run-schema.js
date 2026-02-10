@@ -22,7 +22,7 @@ async function runSchema() {
     process.exit(1)
   }
 
-  const schemaPath = path.join(__dirname, '..', 'database', 'postgresql-full-schema.sql')
+  const schemaPath = path.join(__dirname, '..', 'database', 'schema.sql')
   if (!fs.existsSync(schemaPath)) {
     console.error('Schema file not found:', schemaPath)
     process.exit(1)

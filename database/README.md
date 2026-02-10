@@ -51,14 +51,18 @@ CREATE DATABASE employee_portal;
 \c employee_portal;
 ```
 
-### 2. Run Schema Script
+### 2. Run Schema Script (single file – all tables)
+
+One schema file creates every table, index, trigger, and seed data:
 
 ```bash
-# From the server directory
+# From the project root
 psql -U postgres -d employee_portal -f database/schema.sql
 ```
 
-Or manually run the SQL commands from `schema.sql`
+Or from psql: `\c employee_portal` then `\i database/schema.sql`
+
+**Tables created:** `departments`, `designation`, `employee_type`, `station`, `city`, `employees`, `users`, `leave_balance`, `leave_requests`, `feedback`, `salary_slips`, `requisition`, `requisition_items`, and legacy `department`. No other schema files are required.
 
 ### 3. Create Test Employee
 
@@ -134,39 +138,19 @@ After setup, you can login with:
 
 ## Users Table (Portal Authentication)
 
-Run after the main schema to enable username-based login and user types:
-
-```bash
-psql -U postgres -d employee_portal -f database/users-schema.sql
-```
-
-Creates `users` table:
+The `users` table is created by `schema.sql`. It has:
 
 - `user_id` – primary key
 - `username` – VARCHAR(25), unique
 - `password` – VARCHAR(255), bcrypt hash
-- `user_type` – ENUM: Admin, SuperAdmin, Staff, User
+- `user_type` – Admin, SuperAdmin, Staff, User
 - `emp_id` – FK to employees(employee_id), one user per employee
 
-Login accepts **username** or **email** plus password: if a matching `users` row exists (by username), that is used; otherwise login falls back to `employees` (by email). In Administration → Employees, use the **Portal credentials** section beneath employee details to set username, password, and user type for each employee.
+Login accepts **username** or **email** plus password: if a matching `users` row exists (by username), that is used; otherwise login falls back to `employees` (by email). In Administration → Employees, use the **Portal credentials** section to set username, password, and user type.
 
-## Requisition Schema (HOD → Committee → CEO → Procurement)
+## Requisition (HOD → Committee → CEO → Procurement → Finance)
 
-After the main schema is applied, run the requisition schema to add approval hierarchy tables:
-
-```bash
-psql -U postgres -d employee_portal -f database/requisition-schema.sql
-```
-
-This creates:
-
-- `department` – Dep_ID, Dep_Name (synced from `departments`)
-- `designation` – Desg_ID, Desg_Name
-- `employee_type` – Emp_Type_Id, Emp_Type_Name (Employee, HOD, Committee, CEO, Procurement)
-- `requisition` – with HOD/Committee/CEO approval columns and reference number
-- `requisition_items` – line items per requisition
-
-It also adds `designation_id` and `employee_type_id` to `employees`. To enable the approval flow, set `employee_type_id` on employees:
+`requisition` and `requisition_items` are in `schema.sql`. To enable the approval flow, set `employee_type_id` on employees:
 
 ```sql
 -- Example: set employee 1 as HOD of their department
@@ -188,16 +172,38 @@ API endpoints:
 - **Forwarded to Procurement**: `GET /api/requisition/pending/procurement/:employeeId`
 - **Approve/Reject**: `POST /api/requisition/approve/hod`, `.../approve/committee`, `.../approve/ceo` – body: `{ requisitionId, approvedByEmployeeId, approved: true|false }`
 
-## Database Tables
+## Database Tables (all in `schema.sql`)
 
-- `employees` - Employee information (plus designation_id, employee_type_id for requisition flow)
-- `departments` - Department information
-- `department` - Dep_ID, Dep_Name (requisition spec)
-- `designation` - Designation list
-- `employee_type` - Employee type (Employee, HOD, Committee, CEO, Procurement)
-- `salary_slips` - Salary records
-- `leave_balance` - Leave balances
-- `leave_requests` - Leave requests
-- `feedback` - Feedback submissions
-- `requisition` - Requisition with HOD/Committee/CEO approval and reference number
-- `requisition_items` - Line items per requisition
+| Table | Purpose |
+|-------|---------|
+| `departments` | Department list |
+| `designation` | Designation (Employee, HOD, Manager, CEO, etc.) |
+| `employee_type` | Type for approval flow (HOD, Committee, CEO, Procurement, Finance) |
+| `station` | Station (employees assigned to a station) |
+| `city` | City, linked to station |
+| `employees` | Employee info, FKs to department, designation, employee_type, station, city |
+| `users` | Portal login (username, password, user_type, emp_id) |
+| `role_permissions` | Default permissions per role (Admin, Staff, User): role_name, permission_key, allowed |
+| `user_permissions` | Per-employee permission overrides: emp_id, permission_key, allowed |
+| `leave_balance` | Annual/sick/personal leave per employee |
+| `leave_requests` | Leave requests |
+| `feedback` | Feedback submissions |
+| `salary_slips` | Salary records |
+| `requisition` | Requisition with full approval workflow and reference number |
+| `requisition_items` | Line items (with HOD BOQ and Committee approved qty) |
+| `payroll_period` | Payroll period (name, start/end date, working days, status) |
+| `payroll_slip` | Generated slip per employee per period (gross, allowances, deductions, net) |
+| `payroll_period_employee_override` | Override working days / other allowance-deduction per employee per period |
+| `designation_allowance` | Fixed allowance per designation |
+| `employee_salary_structure` | Basic + allowances (medical, conveyance, HRA, etc.) per employee |
+| `department` | Legacy Dep_ID, Dep_Name (synced from `departments`) |
+
+## Other schema files (can be removed)
+
+After using the single `schema.sql`, these are **redundant** and can be deleted if you no longer need them for reference or migrations:
+
+- `postgresql-schema.sql`, `postgresql-full-schema.sql` – superseded by `schema.sql`
+- `users-schema.sql` – `users` is in `schema.sql`
+- `requisition-schema.sql` – requisition tables are in `schema.sql`
+
+Migrations (`migration-*.sql`, `requisition-*-migration-pg.sql`, etc.) were one-time changes; their column/table changes are already included in `schema.sql`. Keep migration files only if you need to track history.

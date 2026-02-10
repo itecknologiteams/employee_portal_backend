@@ -93,7 +93,7 @@ For requisition track-records and pagination, see [docs/TRACK_RECORDS_API.md](do
      ```bash
      npm run db:schema
      ```
-     Or manually: `psql -U postgres -d employee_portal -f database/postgresql-full-schema.sql`
+     Or manually: `psql -U postgres -d employee_portal -f database/schema.sql`
    - **SQL Server:** Use `DB_DRIVER=sqlserver` and run the appropriate schema (e.g. `database/iteck_erp-schema.sql`).
 
    **If you see "relation employees does not exist"** or tables keep disappearing: the backend does not run migrations on startup. Tables only exist after you run the schema. Run `npm run db:schema` again to recreate all tables. See [database/README.md](database/README.md) for details.
