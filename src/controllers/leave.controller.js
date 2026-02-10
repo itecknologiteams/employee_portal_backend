@@ -34,3 +34,47 @@ export async function createLeaveRequest(req, res) {
     res.status(500).json({ error: 'Failed to create leave request' })
   }
 }
+
+export async function getPendingHod(req, res) {
+  try {
+    const result = await leaveService.getPendingHod(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending HOD leaves error:', error)
+    res.status(500).json({ error: 'Failed to fetch pending leave requests' })
+  }
+}
+
+export async function getHrList(req, res) {
+  try {
+    const result = await leaveService.getHrList(req.params.employeeId, req.query)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('HR leave list error:', error)
+    res.status(500).json({ error: 'Failed to fetch leave list' })
+  }
+}
+
+export async function getPendingHr(req, res) {
+  try {
+    const result = await leaveService.getPendingHr(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('HR pending leaves error:', error)
+    res.status(500).json({ error: 'Failed to fetch HR pending list' })
+  }
+}
+
+export async function updateLeaveStatus(req, res) {
+  try {
+    const result = await leaveService.updateLeaveStatus(req.params.leaveRequestId, req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('Update leave status error:', error)
+    res.status(500).json({ error: 'Failed to update leave status' })
+  }
+}

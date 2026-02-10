@@ -246,6 +246,36 @@ export async function isCeoMember(employeeId) {
   }
 }
 
+/** True if employee is CEO, COO, or Director (by employee_type or designation). Used so their leave goes direct to HR. */
+export async function isSeniorExecutiveForLeave(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT 1 FROM employees e
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
+         AND (et.emp_type_name IN ('CEO', 'COO', 'Director'))
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+         AND (desg.desg_name ILIKE '%CEO%' OR desg.desg_name ILIKE '%COO%' OR desg.desg_name ILIKE '%Director%')
+       WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+      [employeeId]
+    )
+    return rows.length > 0
+  } catch (err) {
+    if (err.code === '42P01') {
+      try {
+        const rows = await executeQuery(
+          `SELECT 1 FROM employees e
+           INNER JOIN designation desg ON e.designation_id = desg.desg_id
+             AND (desg.desg_name ILIKE '%CEO%' OR desg.desg_name ILIKE '%COO%' OR desg.desg_name ILIKE '%Director%')
+           WHERE e.employee_id = $1`,
+          [employeeId]
+        )
+        return rows.length > 0
+      } catch (_) { return false }
+    }
+    throw err
+  }
+}
+
 export async function isProcurementMember(employeeId) {
   try {
     const rows = await executeQuery(
@@ -288,6 +318,38 @@ export async function isFinanceHod(employeeId) {
           [employeeId]
         )
         return rows.length > 0
+      } catch (_) { return false }
+    }
+    throw err
+  }
+}
+
+/** True if employee is HR (employee_type or designation contains HR) or has portal role Admin/Staff (can view all leaves). */
+export async function isHrMember(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT 1 FROM employees e
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HR'
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND (desg.desg_name ILIKE '%HR%' OR desg.desg_name = 'Human Resource')
+       LEFT JOIN users u ON e.employee_id = u.emp_id
+       WHERE e.employee_id = $1
+         AND ( (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL) OR (u.user_type IN ('Admin', 'Staff')) )`,
+      [employeeId]
+    )
+    return rows.length > 0
+  } catch (err) {
+    if (err.code === '42P01') {
+      try {
+        const byType = await executeQuery(
+          `SELECT 1 FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HR' WHERE e.employee_id = $1`,
+          [employeeId]
+        )
+        if (byType.length > 0) return true
+        const byDesg = await executeQuery(
+          `SELECT 1 FROM employees e INNER JOIN designation desg ON e.designation_id = desg.desg_id AND (desg.desg_name ILIKE '%HR%' OR desg.desg_name = 'Human Resource') WHERE e.employee_id = $1`,
+          [employeeId]
+        )
+        return byDesg.length > 0
       } catch (_) { return false }
     }
     throw err
