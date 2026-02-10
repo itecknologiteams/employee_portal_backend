@@ -27,6 +27,7 @@ async function getPermissionsForRole(roleName) {
 }
 
 async function getEffectivePermissions(empId, roleName) {
+  debugger
   if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
   try {
     const overrideRows = await authRepo.getUserPermissionOverrides(empId)

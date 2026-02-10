@@ -18,6 +18,7 @@ import {
   payrollRoutes,
   rolePermissionsRoutes
 } from './src/routes/index.js'
+import { requestLogger } from './src/middleware/requestLogger.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -60,6 +61,7 @@ app.use(cors({
 }))
 app.use(bodyParser.json())
 app.use(bodyParser.urlencoded({ extended: true }))
+app.use(requestLogger)
 
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')))
 
