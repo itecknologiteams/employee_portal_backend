@@ -1,13 +1,16 @@
 import { executeQuery } from '../../config/database.js'
 
-// Full profile: department, designation, employee_type, station, city
+// Full profile: department, designation, employee_type, station, city + extended profile fields
 const profileQueryFull = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
     e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
     e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name,
     e.station_id, s.station_name,
-    e.city_id, c.city_name
+    e.city_id, c.city_name,
+    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+    e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.emergency_contact_number, e.employee_extension, e.personal_cell_number, e.region
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
   LEFT JOIN designation desg ON e.designation_id = desg.desg_id
@@ -17,7 +20,7 @@ const profileQueryFull = `
   WHERE e.employee_id = $1
 `
 
-// Fallback when station/city tables missing (still return e.station_id, e.city_id for reference)
+// Fallback when station/city tables missing (no extended columns so old DBs work)
 const profileQueryNoStationCity = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
     e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
@@ -31,7 +34,7 @@ const profileQueryNoStationCity = `
   WHERE e.employee_id = $1
 `
 
-// Fallback when designation/employee_type/station/city tables missing
+// Fallback when designation/employee_type/station/city tables missing (no extended columns)
 const profileQueryMinimal = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
     e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,

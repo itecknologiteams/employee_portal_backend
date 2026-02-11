@@ -34,7 +34,23 @@ export async function getProfile(employeeId) {
     cityId: employee.city_id ?? null,
     bio: employee.bio ?? 'No bio available',
     employeeTypeName: employeeTypeName ?? null,
-    designationName: designationName ?? null
+    designationName: designationName ?? null,
+    // Extended profile fields (after migration) + profile image
+    profileImage: employee.profile_picture ?? null,
+    homeAddress: employee.address ?? null,
+    dateOfBirth: employee.date_of_birth ?? null,
+    fatherName: employee.father_name ?? null,
+    gender: employee.gender ?? null,
+    maritalStatus: employee.marital_status ?? null,
+    religion: employee.religion ?? null,
+    grade: employee.grade ?? null,
+    cnicNumber: employee.cnic_number ?? null,
+    cnicIssueDate: employee.cnic_issue_date ?? null,
+    cnicExpiryDate: employee.cnic_expiry_date ?? null,
+    emergencyContactNumber: employee.emergency_contact_number ?? null,
+    employeeExtension: employee.employee_extension ?? null,
+    personalCellNumber: employee.personal_cell_number ?? null,
+    region: employee.region ?? null
   }
 }
 
