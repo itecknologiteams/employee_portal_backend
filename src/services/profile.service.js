@@ -1,4 +1,5 @@
 import * as profileRepo from '../repositories/profile.repository.js'
+import * as reqRepo from '../repositories/requisition.repository.js'
 
 export async function getProfile(employeeId) {
   const result = await profileRepo.getProfile(employeeId)
@@ -37,7 +38,38 @@ export async function getProfile(employeeId) {
   }
 }
 
+/** Submit profile update request (HR bucket). No direct DB update; HR must approve. */
 export async function updateProfile(employeeId, data) {
-  await profileRepo.updateProfile(employeeId, data)
-  return { message: 'Profile updated successfully' }
+  await profileRepo.createOrUpdateProfileChangeRequest(employeeId, data)
+  return { message: 'Profile update request submitted for HR approval' }
+}
+
+export async function getMyPendingRequest(employeeId) {
+  return profileRepo.getPendingProfileChangeRequest(employeeId)
+}
+
+/** HR only: list all pending profile change requests. */
+export async function getHrPendingProfileRequests(hrEmployeeId) {
+  const isHr = await reqRepo.isHrMember(hrEmployeeId)
+  if (!isHr) return { error: 'Only HR can view pending profile change requests', status: 403 }
+  const list = await profileRepo.getAllPendingProfileChangeRequests()
+  return { list }
+}
+
+/** HR only: approve request and apply to employees. */
+export async function hrApproveProfileRequest(requestId, hrEmployeeId) {
+  const isHr = await reqRepo.isHrMember(hrEmployeeId)
+  if (!isHr) return { error: 'Only HR can approve profile change requests', status: 403 }
+  const result = await profileRepo.approveProfileChangeRequest(requestId, hrEmployeeId)
+  if (!result) return { error: 'Request not found or already processed', status: 404 }
+  return { message: 'Profile change approved and applied', request: result }
+}
+
+/** HR only: reject request. */
+export async function hrRejectProfileRequest(requestId, hrEmployeeId) {
+  const isHr = await reqRepo.isHrMember(hrEmployeeId)
+  if (!isHr) return { error: 'Only HR can reject profile change requests', status: 403 }
+  const result = await profileRepo.rejectProfileChangeRequest(requestId, hrEmployeeId)
+  if (!result) return { error: 'Request not found or already processed', status: 404 }
+  return { message: 'Profile change rejected', request: result }
 }

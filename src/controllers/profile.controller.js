@@ -17,11 +17,78 @@ export async function getProfile(req, res) {
 export async function updateProfile(req, res) {
   try {
     const { employeeId } = req.params
-    const { email, phone, address, bio } = req.body
-    await profileService.updateProfile(employeeId, { email, phone, address, bio })
-    res.json({ message: 'Profile updated successfully' })
+    const data = req.body || {}
+    const result = await profileService.updateProfile(employeeId, data)
+    res.json(result)
   } catch (error) {
     console.error('Profile update error:', error)
-    res.status(500).json({ error: 'Failed to update profile' })
+    res.status(500).json({ error: 'Failed to submit profile update request' })
+  }
+}
+
+/** GET /profile/:employeeId/pending – employee's own pending request */
+export async function getMyPendingProfileRequest(req, res) {
+  try {
+    const { employeeId } = req.params
+    const pending = await profileService.getMyPendingRequest(employeeId)
+    if (!pending) return res.status(404).json({ message: 'No pending profile change request' })
+    res.json(pending)
+  } catch (error) {
+    console.error('Pending profile request error:', error)
+    res.status(500).json({ error: 'Failed to fetch pending request' })
+  }
+}
+
+/** GET /profile/change-requests?hrEmployeeId= – HR: list all pending profile change requests */
+export async function getChangeRequests(req, res) {
+  try {
+    const hrEmployeeId = req.query.hrEmployeeId || req.body?.hrEmployeeId
+    if (!hrEmployeeId) {
+      return res.status(400).json({ error: 'hrEmployeeId is required (query or body)' })
+    }
+    const result = await profileService.getHrPendingProfileRequests(hrEmployeeId)
+    if (result.error) {
+      return res.status(result.status || 403).json({ error: result.error })
+    }
+    res.json(result)
+  } catch (error) {
+    console.error('Change requests list error:', error)
+    res.status(500).json({ error: 'Failed to fetch change requests' })
+  }
+}
+
+/** POST /profile/change-requests/approve – HR: approve and apply */
+export async function approveChangeRequest(req, res) {
+  try {
+    const { requestId, hrEmployeeId } = req.body || {}
+    if (!requestId || !hrEmployeeId) {
+      return res.status(400).json({ error: 'requestId and hrEmployeeId are required' })
+    }
+    const result = await profileService.hrApproveProfileRequest(Number(requestId), Number(hrEmployeeId))
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error })
+    }
+    res.json(result)
+  } catch (error) {
+    console.error('Approve change request error:', error)
+    res.status(500).json({ error: 'Failed to approve request' })
+  }
+}
+
+/** POST /profile/change-requests/reject – HR: reject */
+export async function rejectChangeRequest(req, res) {
+  try {
+    const { requestId, hrEmployeeId } = req.body || {}
+    if (!requestId || !hrEmployeeId) {
+      return res.status(400).json({ error: 'requestId and hrEmployeeId are required' })
+    }
+    const result = await profileService.hrRejectProfileRequest(Number(requestId), Number(hrEmployeeId))
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error })
+    }
+    res.json(result)
+  } catch (error) {
+    console.error('Reject change request error:', error)
+    res.status(500).json({ error: 'Failed to reject request' })
   }
 }
