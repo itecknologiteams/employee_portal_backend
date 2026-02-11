@@ -18,6 +18,25 @@ const PERMISSION_KEYS = [
   'payroll'
 ]
 
+/** Permission key in camelCase (e.g. salary_slip -> salarySlip) for frontend compatibility. */
+function toCamelCase(key) {
+  return key.replace(/_([a-z])/g, (_, c) => c.toUpperCase())
+}
+
+/** Get allowed value from payload: accept both snake_case and camelCase keys so frontend can send either. */
+function getAllowedFromPerms(perms, key) {
+  if (perms == null || typeof perms !== 'object') return false
+  if (key in perms) return !!perms[key]
+  const camel = toCamelCase(key)
+  return !!perms[camel]
+}
+
+/** True if payload has this key (snake or camel) so we can do merge semantics and not overwrite missing keys. */
+function permKeyPresentInPayload(perms, key) {
+  if (perms == null || typeof perms !== 'object') return false
+  return key in perms || toCamelCase(key) in perms
+}
+
 function buildByRoleFromRows(rows) {
   const byRole = {}
   ROLES.forEach(r => { byRole[r] = {} })
@@ -49,7 +68,8 @@ export async function savePermissions(permissions) {
     const perms = permissions[role]
     if (!perms || typeof perms !== 'object') continue
     for (const key of PERMISSION_KEYS) {
-      const allowed = !!perms[key]
+      if (!permKeyPresentInPayload(perms, key)) continue
+      const allowed = getAllowedFromPerms(perms, key)
       await rolePermissionsRepo.upsertRolePermission(role, key, allowed)
     }
   }

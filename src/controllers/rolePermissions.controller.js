@@ -12,7 +12,7 @@ export async function getRolePermissions(req, res) {
     res.json(result)
   } catch (err) {
     if (err.code === '42P01') {
-      return res.status(503).json({ error: 'Role permissions are not set up. Run the role_permissions migration.' })
+      return res.status(503).json({ error: 'Role permissions are not set up. Run database/schema.sql.' })
     }
     console.error('GET role-permissions error:', err)
     res.status(500).json({ error: 'Failed to load role permissions' })
@@ -34,7 +34,7 @@ export async function putRolePermissions(req, res) {
     res.json(result)
   } catch (err) {
     if (err.code === '42P01') {
-      return res.status(503).json({ error: 'Role permissions are not set up. Run the role_permissions migration.' })
+      return res.status(503).json({ error: 'Role permissions are not set up. Run database/schema.sql.' })
     }
     console.error('PUT role-permissions error:', err)
     res.status(500).json({ error: 'Failed to save role permissions' })

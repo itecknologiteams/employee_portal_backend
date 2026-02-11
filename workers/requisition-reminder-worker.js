@@ -155,7 +155,7 @@ export async function processRequisitionReminders() {
       console.warn(`Requisition ${reqId}: no recipient for bucket ${bucket}. Skip.`)
       continue
     }
-    await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
+    await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'reminder_daily', ref: refNo } })
     try {
       await redis.set(key, String(now))
       const ttlDays = 3
@@ -178,7 +178,7 @@ export async function handleRequisitionCreated(data) {
   }
   const subject = `New requisition ${refNo} – pending your approval`
   const body = `A new requisition ${refNo} has been submitted by ${creatorName}.\nRequired by: ${data.requiredByDate || 'Not set'}\nItems: ${data.itemCount || 0}\n\nView: ${baseUrl}`
-  await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'requisition_created', ref: refNo } })
 }
 
 const BUCKET_LABELS = {
@@ -234,7 +234,7 @@ export async function handleRequisitionBucketChanged(data) {
   const bucketLabel = BUCKET_LABELS[newBucket] || newBucket
   const subject = `Requisition ${refNo} – new case in your queue (${bucketLabel})`
   const body = `A requisition ${refNo} has been moved to your queue: ${bucketLabel}.\nCreator: ${creatorName}\nRequired by: ${requiredBy}\n\nView: ${baseUrl}`
-  await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'bucket_changed', ref: refNo, bucket: newBucket } })
 }
 
 /**
@@ -272,7 +272,7 @@ export async function handleRequisitionReminder3DayTest(data) {
   const bucketLabel = BUCKET_LABELS[bucket] || bucket
   const subject = `Requisition ${refNo} – ${bucketLabel} (test reminder)`
   const body = `Requisition ${refNo} (required by ${requiredBy}) is pending at: ${bucketLabel}.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
-  await sendRequisitionReminder({ to: toEmails.join(','), subject, body })
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'reminder_3day_test', ref: refNo, bucket } })
 
   const delayMinutes = parseInt(process.env.TEST_REMINDER_AFTER_MINUTES || '2', 10)
   if (delayMinutes > 0) {
