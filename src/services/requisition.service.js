@@ -167,10 +167,7 @@ debugger
         createdAt: new Date().toISOString()
       }
       await q.add('requisition-created', payload)
-      const testDelayMinutes = parseInt(process.env.TEST_REMINDER_AFTER_MINUTES || '0', 10)
-      if (testDelayMinutes > 0) {
-        await q.add('requisition-reminder-3day-test', payload, { delay: testDelayMinutes * 60 * 1000 })
-      }
+      // Test reminder (requisition-reminder-3day-test) disabled for production
     }
   } catch (publishErr) {
     console.error('Requisition created but BullMQ add failed:', publishErr.message)
