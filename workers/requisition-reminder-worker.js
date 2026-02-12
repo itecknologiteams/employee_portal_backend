@@ -2,8 +2,9 @@ import { executeQuery } from '../config/database.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
 
-const TWO_HOURS_MS = 2 * 60 * 60 * 1000
-const ONE_HOUR_MS = 60 * 60 * 1000
+const SIX_HOURS_MS = 6 * 60 * 60 * 1000   // 3 days left → email every 6 hr
+const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
+const ONE_HOUR_MS = 60 * 60 * 1000        // last day → email every 1 hr
 
 function getRequisitionBucket(row) {
   if (row.req_is_rejected === 1) return null
@@ -122,13 +123,13 @@ export async function processRequisitionReminders() {
     let body = ''
 
     if (daysLeft === 3) {
-      if (lastSent === null) {
+      if (lastSent === null || (now - lastSent) >= SIX_HOURS_MS) {
         shouldSend = true
         subject = `Requisition ${refNo} – 3 days until required by date`
         body = `Requisition ${refNo} (required by ${row.req_required_by_date}) has 3 days remaining.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
       }
     } else if (daysLeft === 2) {
-      if (lastSent === null || (now - lastSent) >= TWO_HOURS_MS) {
+      if (lastSent === null || (now - lastSent) >= THREE_HOURS_MS) {
         shouldSend = true
         subject = `Requisition ${refNo} – 2 days until required by date`
         body = `Requisition ${refNo} (required by ${row.req_required_by_date}) has 2 days remaining.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
@@ -238,7 +239,7 @@ export async function handleRequisitionBucketChanged(data) {
 }
 
 /**
- * Testing: 3-day reminder – har 2 min, jis bucket me pending hai usi ko email (HOD / Committee / CEO / Procurement / Finance).
+ * Testing: 3-day reminder – optional re-queue for testing. Production reminders use 3d=6hr, 2d=3hr, last day=1hr.
  */
 export async function handleRequisitionReminder3DayTest(data) {
   const reqId = data.requisitionId
@@ -274,7 +275,8 @@ export async function handleRequisitionReminder3DayTest(data) {
   const body = `Requisition ${refNo} (required by ${requiredBy}) is pending at: ${bucketLabel}.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'reminder_3day_test', ref: refNo, bucket } })
 
-  const delayMinutes = parseInt(process.env.TEST_REMINDER_AFTER_MINUTES || '2', 10)
+  // Re-queue only if explicitly set (default 0 = no repeat; was 2 min for testing)
+  const delayMinutes = parseInt(process.env.TEST_REMINDER_AFTER_MINUTES || '0', 10)
   if (delayMinutes > 0) {
     const q = getQueue()
     await q.add('requisition-reminder-3day-test', data, { delay: delayMinutes * 60 * 1000 })
