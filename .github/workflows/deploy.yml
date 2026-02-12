@@ -1,4 +1,4 @@
-name: Deploy Backend (SSH)
+name: Deploy Backend (Self-hosted)
 
 on:
   push:
@@ -6,20 +6,15 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.PROD_HOST }}
-          username: ${{ secrets.PROD_USER }}
-          key: ${{ secrets.PROD_SSH_KEY }}
-          script: |
-            set -e
-            cd /opt/backend
-            git fetch --all
-            git reset --hard origin/main
-            npm ci --omit=dev
-            npm run build --if-present
-            pm2 restart backend-employee-portal || pm2 start npm --name backend-employee-portal -- start
-            pm2 save
+      - name: Update code and restart
+        run: |
+          set -e
+          cd /opt/backend
+          git fetch --all
+          git reset --hard origin/main
+          npm ci --omit=dev
+          npm run build --if-present
+          pm2 restart backend-employee-portal || pm2 start npm --name backend-employee-portal -- start
+          pm2 save
