@@ -139,9 +139,18 @@ export async function getCreatorForQueue(employeeId) {
   return r[0] || null
 }
 
-// Role helpers
+// Role helpers: check employee_hod_departments first, then fall back to employee_type/designation
 export async function getHodByDepartment(departmentId) {
   if (departmentId == null) return null
+  try {
+    const hodRows = await executeQuery(
+      'SELECT h.employee_id FROM employee_hod_departments h INNER JOIN employees e ON e.employee_id = h.employee_id AND e.is_active = true WHERE h.department_id = $1 LIMIT 1',
+      [departmentId]
+    )
+    if (hodRows[0]?.employee_id != null) return parseInt(hodRows[0].employee_id, 10)
+  } catch (err) {
+    if (err.code !== '42P01') { /* table may not exist */ }
+  }
   try {
     const q = `
       SELECT e.employee_id FROM employees e
@@ -170,9 +179,18 @@ export async function getHodByDepartment(departmentId) {
   }
 }
 
-/** True if this employee is HOD of this department (by type or designation). */
+/** True if this employee is HOD of this department (employee_hod_departments first, then by type or designation). */
 export async function isHodOfDepartment(employeeId, departmentId) {
   if (employeeId == null || departmentId == null) return false
+  try {
+    const hodRows = await executeQuery(
+      'SELECT 1 FROM employee_hod_departments WHERE employee_id = $1 AND department_id = $2 LIMIT 1',
+      [employeeId, departmentId]
+    )
+    if (hodRows.length > 0) return true
+  } catch (err) {
+    if (err.code !== '42P01') { /* table may not exist */ }
+  }
   try {
     const rows = await executeQuery(
       `SELECT 1 FROM employees e

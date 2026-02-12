@@ -82,6 +82,7 @@ export async function listEmployeeTypesPaginated(page = 1, limit = 10) {
   ])
   return {
     data,
+    total,
     pagination: {
       page: safePage,
       limit: safeLimit,
@@ -164,7 +165,21 @@ export async function deleteCity(id) {
 }
 
 export async function listEmployees() {
-  return adminRepo.listEmployees()
+  const rows = await adminRepo.listEmployees()
+  const hodMap = await buildHodDepartmentIdsMap(rows.map((r) => r.id))
+  return rows.map((r) => ({ ...r, hod_department_ids: hodMap[r.id] || [] }))
+}
+
+/** Build map employee_id -> [department_id] for HOD departments */
+async function buildHodDepartmentIdsMap(employeeIds) {
+  const map = {}
+  if (!employeeIds.length) return map
+  const rows = await adminRepo.getHodDepartmentIdsByEmployeeIds(employeeIds)
+  for (const r of rows) {
+    if (!map[r.employee_id]) map[r.employee_id] = []
+    map[r.employee_id].push(r.department_id)
+  }
+  return map
 }
 
 /** Search + pagination + filters: departmentId, designationId, cityId, status (active|inactive). */
@@ -191,8 +206,10 @@ export async function listEmployeesSearchPaginated(search, page = 1, limit = 10,
     adminRepo.listEmployeesSearchPaginated(searchPattern, safeLimit, offset, filterOptions),
     adminRepo.countEmployeesSearch(searchPattern, filterOptions)
   ])
+  const hodMap = await buildHodDepartmentIdsMap(data.map((r) => r.id))
+  const dataWithHod = data.map((r) => ({ ...r, hod_department_ids: hodMap[r.id] || [] }))
   return {
-    data,
+    data: dataWithHod,
     pagination: {
       page: safePage,
       limit: safeLimit,
@@ -206,7 +223,7 @@ export async function createEmployee(body) {
   const {
     employeeCode, firstName, lastName, email, phone, departmentId,
     designationId, employeeTypeId, stationId, cityId, position,
-    portalUsername, portalPassword, portalUserType
+    portalUsername, portalPassword, portalUserType, hodDepartmentIds
   } = body
   if (!firstName || !lastName || !email) {
     const err = new Error('First name, last name and email are required')
@@ -257,6 +274,8 @@ export async function createEmployee(body) {
   const result = await adminRepo.getEmployeeByEmail(email)
   const newId = result[0].id
   await adminRepo.initLeaveBalanceForEmployee(newId)
+  const hodIds = Array.isArray(hodDepartmentIds) ? hodDepartmentIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)) : []
+  if (hodIds.length > 0) await adminRepo.setHodDepartments(newId, hodIds)
   if (portalUsername && portalUsername.trim() && portalPassword && portalUserType) {
     try {
       const uType = ['Admin', 'SuperAdmin', 'Staff', 'User'].includes(portalUserType) ? portalUserType : 'User'
@@ -290,7 +309,7 @@ export async function updateEmployee(id, body) {
   const {
     employeeCode, firstName, lastName, email, phone, departmentId,
     designationId, employeeTypeId, stationId, cityId, position, isActive,
-    portalUsername, portalPassword, portalUserType
+    portalUsername, portalPassword, portalUserType, hodDepartmentIds
   } = body
   if (!firstName || !lastName || !email) {
     const err = new Error('First name, last name and email are required')
@@ -348,9 +367,14 @@ export async function updateEmployee(id, body) {
       await applyPermissionOverrides(id, body.permissionOverrides)
     }
   }
+  if (hodDepartmentIds !== undefined) {
+    const hodIds = Array.isArray(hodDepartmentIds) ? hodDepartmentIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)) : []
+    await adminRepo.setHodDepartments(id, hodIds)
+  }
   const result = await adminRepo.getEmployeeById(id)
   if (!result.length) return { notFound: true }
-  return result[0]
+  const hodIds = await adminRepo.getHodDepartmentIds(id)
+  return { ...result[0], hod_department_ids: hodIds }
 }
 
 export async function deactivateEmployee(id) {

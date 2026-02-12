@@ -86,6 +86,15 @@ CREATE INDEX IF NOT EXISTS idx_employees_station ON employees(station_id);
 CREATE INDEX IF NOT EXISTS idx_employees_city ON employees(city_id);
 CREATE INDEX IF NOT EXISTS idx_employees_active ON employees(is_active);
 
+-- Employee HOD departments (one employee can be HOD of multiple departments)
+CREATE TABLE IF NOT EXISTS employee_hod_departments (
+    employee_id INTEGER NOT NULL REFERENCES employees(employee_id) ON DELETE CASCADE,
+    department_id INTEGER NOT NULL REFERENCES departments(department_id) ON DELETE CASCADE,
+    PRIMARY KEY (employee_id, department_id)
+);
+CREATE INDEX IF NOT EXISTS idx_employee_hod_departments_department ON employee_hod_departments(department_id);
+CREATE INDEX IF NOT EXISTS idx_employee_hod_departments_employee ON employee_hod_departments(employee_id);
+
 -- -----------------------------------------------------------------------------
 -- 3. Portal login (users)
 -- -----------------------------------------------------------------------------
@@ -281,6 +290,8 @@ CREATE TABLE IF NOT EXISTS payroll_period_employee_override (
     working_days INTEGER,
     other_allowance DECIMAL(18,2) DEFAULT 0,
     other_deduction DECIMAL(18,2) DEFAULT 0,
+    loan DECIMAL(18,2) DEFAULT 0,
+    salary_advance DECIMAL(18,2) DEFAULT 0,
     PRIMARY KEY (payroll_period_id, employee_id)
 );
 
@@ -295,10 +306,17 @@ CREATE TABLE IF NOT EXISTS employee_salary_structure (
     basic_salary DECIMAL(18,2) DEFAULT 0,
     medical_allowance DECIMAL(18,2) DEFAULT 0,
     conveyance_allowance DECIMAL(18,2) DEFAULT 0,
+    conveyance_liters_allowance DECIMAL(18,2) DEFAULT 0,
+    communication_allowance DECIMAL(18,2) DEFAULT 0,
     house_rent_allowance DECIMAL(18,2) DEFAULT 0,
     utilities_allowance DECIMAL(18,2) DEFAULT 0,
     meal_allowance DECIMAL(18,2) DEFAULT 0,
     other_allowance DECIMAL(18,2) DEFAULT 0,
+    arrears DECIMAL(18,2) DEFAULT 0,
+    incremental_arrears DECIMAL(18,2) DEFAULT 0,
+    bike_maintenance_allowance DECIMAL(18,2) DEFAULT 0,
+    incentives DECIMAL(18,2) DEFAULT 0,
+    device_reimbursement DECIMAL(18,2) DEFAULT 0,
     eobi_fixed DECIMAL(18,2) DEFAULT 0,
     effective_from DATE,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
