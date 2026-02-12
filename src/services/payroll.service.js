@@ -80,7 +80,9 @@ export async function getOverrides(periodId) {
     {
       workingDays: parseInt(o.working_days, 10),
       otherAllowance: parseFloat(o.other_allowance) || 0,
-      otherDeduction: parseFloat(o.other_deduction) || 0
+      otherDeduction: parseFloat(o.other_deduction) || 0,
+      loan: parseFloat(o.loan) || 0,
+      salaryAdvance: parseFloat(o.salary_advance) || 0
     }
   ]))
   const employees = await repo.getActiveEmployees()
@@ -93,6 +95,8 @@ export async function getOverrides(periodId) {
       workingDays: ov ? ov.workingDays : defaultDays,
       otherAllowance: ov ? ov.otherAllowance : 0,
       otherDeduction: ov ? ov.otherDeduction : 0,
+      loan: ov ? ov.loan : 0,
+      salaryAdvance: ov ? ov.salaryAdvance : 0,
       isOverride: !!ov
     }
   })
@@ -113,9 +117,11 @@ export async function saveOverrides(periodId, overridesList) {
       if (isNaN(days) || days < 0) days = defaultDays
       const otherAllowance = parseFloat(item.otherAllowance) || 0
       const otherDeduction = parseFloat(item.otherDeduction) || 0
-      const hasOverride = days !== defaultDays || otherAllowance !== 0 || otherDeduction !== 0
+      const loan = parseFloat(item.loan) || 0
+      const salaryAdvance = parseFloat(item.salaryAdvance) || 0
+      const hasOverride = days !== defaultDays || otherAllowance !== 0 || otherDeduction !== 0 || loan !== 0 || salaryAdvance !== 0
       if (hasOverride) {
-        await repo.upsertOverride(periodId, empId, days, otherAllowance, otherDeduction)
+        await repo.upsertOverride(periodId, empId, days, otherAllowance, otherDeduction, loan, salaryAdvance)
       }
     }
   }
@@ -146,7 +152,9 @@ export async function runPayroll(periodId) {
     {
       workingDays: parseInt(o.working_days, 10),
       otherAllowance: parseFloat(o.other_allowance) || 0,
-      otherDeduction: parseFloat(o.other_deduction) || 0
+      otherDeduction: parseFloat(o.other_deduction) || 0,
+      loan: parseFloat(o.loan) || 0,
+      salaryAdvance: parseFloat(o.salary_advance) || 0
     }
   ]))
 
@@ -158,15 +166,24 @@ export async function runPayroll(periodId) {
     const empWorkingDaysClamped = Math.max(1, Math.min(empWorkingDays, workingDays))
     const periodOtherAllowance = override ? override.otherAllowance : 0
     const periodOtherDeduction = override ? override.otherDeduction : 0
+    const periodLoan = override ? override.loan : 0
+    const periodSalaryAdvance = override ? override.salaryAdvance : 0
 
     const struct = structMap.get(eid) || {}
     const basic = parseFloat(struct.basic_salary) || 0
     const medical = parseFloat(struct.medical_allowance) || 0
     const conveyance = parseFloat(struct.conveyance_allowance) || 0
+    const conveyanceLiters = parseFloat(struct.conveyance_liters_allowance) || 0
+    const communication = parseFloat(struct.communication_allowance) || 0
     const hra = parseFloat(struct.house_rent_allowance) || 0
     const utilities = parseFloat(struct.utilities_allowance) || 0
     const meal = parseFloat(struct.meal_allowance) || 0
     const otherAll = parseFloat(struct.other_allowance) || 0
+    const arrears = parseFloat(struct.arrears) || 0
+    const incrementalArrears = parseFloat(struct.incremental_arrears) || 0
+    const bikeMaintenance = parseFloat(struct.bike_maintenance_allowance) || 0
+    const incentives = parseFloat(struct.incentives) || 0
+    const deviceReimb = parseFloat(struct.device_reimbursement) || 0
     const desgFixed = emp.designation_id ? (desgAllowanceMap.get(emp.designation_id) || 0) : 0
     const eobiFixed = parseFloat(struct.eobi_fixed) || 130
 
@@ -177,11 +194,11 @@ export async function runPayroll(periodId) {
     absentDays = Math.min(absentDays, empWorkingDaysClamped)
     const paidDays = Math.max(0, empWorkingDaysClamped - absentDays)
 
-    const totalAllowances = medical + conveyance + hra + utilities + meal + otherAll + desgFixed + periodOtherAllowance
+    const totalAllowances = medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance
     const grossSalary = (basic + totalAllowances) * (paidDays / empWorkingDaysClamped)
     const eobiDeduction = eobiFixed
-    const absentDeduction = (basic + (medical + conveyance + hra + utilities + meal + otherAll + desgFixed + periodOtherAllowance)) * (absentDays / empWorkingDaysClamped)
-    const totalDeductions = eobiDeduction + absentDeduction + periodOtherDeduction
+    const absentDeduction = (basic + (medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance)) * (absentDays / empWorkingDaysClamped)
+    const totalDeductions = eobiDeduction + absentDeduction + periodOtherDeduction + periodLoan + periodSalaryAdvance
     const netSalary = Math.max(0, grossSalary - totalDeductions)
 
     await repo.upsertPayrollSlip({
@@ -272,20 +289,28 @@ export async function listSalaryStructures(search, page, limit) {
   const offset = (page - 1) * limit
   const total = await repo.countActiveEmployees(searchParam)
   const rows = await repo.listSalaryStructures(searchParam, limit, offset)
+  const num = (v) => (v != null && v !== '') ? parseFloat(v) : null
   return {
     data: rows.map((r) => ({
       id: r.structure_id,
       employeeId: r.employee_id,
       employeeName: [r.first_name, r.last_name].filter(Boolean).join(' ').trim(),
       employeeCode: r.employee_code,
-      basicSalary: r.basic_salary != null ? parseFloat(r.basic_salary) : null,
-      medicalAllowance: r.medical_allowance != null ? parseFloat(r.medical_allowance) : null,
-      conveyanceAllowance: r.conveyance_allowance != null ? parseFloat(r.conveyance_allowance) : null,
-      houseRentAllowance: r.house_rent_allowance != null ? parseFloat(r.house_rent_allowance) : null,
-      utilitiesAllowance: r.utilities_allowance != null ? parseFloat(r.utilities_allowance) : null,
-      mealAllowance: r.meal_allowance != null ? parseFloat(r.meal_allowance) : null,
-      otherAllowance: r.other_allowance != null ? parseFloat(r.other_allowance) : null,
-      eobiFixed: r.eobi_fixed != null ? parseFloat(r.eobi_fixed) : null,
+      basicSalary: num(r.basic_salary),
+      medicalAllowance: num(r.medical_allowance),
+      conveyanceAllowance: num(r.conveyance_allowance),
+      conveyanceLitersAllowance: num(r.conveyance_liters_allowance),
+      communicationAllowance: num(r.communication_allowance),
+      houseRentAllowance: num(r.house_rent_allowance),
+      utilitiesAllowance: num(r.utilities_allowance),
+      mealAllowance: num(r.meal_allowance),
+      otherAllowance: num(r.other_allowance),
+      arrears: num(r.arrears),
+      incrementalArrears: num(r.incremental_arrears),
+      bikeMaintenanceAllowance: num(r.bike_maintenance_allowance),
+      incentives: num(r.incentives),
+      deviceReimbursement: num(r.device_reimbursement),
+      eobiFixed: num(r.eobi_fixed),
       effectiveFrom: r.effective_from
     })),
     total,
@@ -295,67 +320,58 @@ export async function listSalaryStructures(search, page, limit) {
   }
 }
 
-export async function getSalaryStructureByEmployee(employeeId) {
-  const r = await repo.getSalaryStructureByEmployee(employeeId)
-  if (!r) return null
+const mapStructureRow = (r) => {
+  const num = (v) => (v != null && v !== '') ? parseFloat(v) : null
   return {
     id: r.id,
     employeeId: r.employee_id,
-    basicSalary: parseFloat(r.basic_salary),
-    medicalAllowance: parseFloat(r.medical_allowance),
-    conveyanceAllowance: parseFloat(r.conveyance_allowance),
-    houseRentAllowance: parseFloat(r.house_rent_allowance),
-    utilitiesAllowance: parseFloat(r.utilities_allowance),
-    mealAllowance: parseFloat(r.meal_allowance),
-    otherAllowance: parseFloat(r.other_allowance),
-    eobiFixed: parseFloat(r.eobi_fixed),
+    basicSalary: num(r.basic_salary),
+    medicalAllowance: num(r.medical_allowance),
+    conveyanceAllowance: num(r.conveyance_allowance),
+    conveyanceLitersAllowance: num(r.conveyance_liters_allowance),
+    communicationAllowance: num(r.communication_allowance),
+    houseRentAllowance: num(r.house_rent_allowance),
+    utilitiesAllowance: num(r.utilities_allowance),
+    mealAllowance: num(r.meal_allowance),
+    otherAllowance: num(r.other_allowance),
+    arrears: num(r.arrears),
+    incrementalArrears: num(r.incremental_arrears),
+    bikeMaintenanceAllowance: num(r.bike_maintenance_allowance),
+    incentives: num(r.incentives),
+    deviceReimbursement: num(r.device_reimbursement),
+    eobiFixed: num(r.eobi_fixed),
     effectiveFrom: r.effective_from,
     effectiveTo: r.effective_to
   }
 }
 
+export async function getSalaryStructureByEmployee(employeeId) {
+  const r = await repo.getSalaryStructureByEmployee(employeeId)
+  if (!r) return null
+  return mapStructureRow(r)
+}
+
 export async function saveSalaryStructure(body) {
-  const {
-    employeeId,
-    basicSalary,
-    medicalAllowance,
-    conveyanceAllowance,
-    houseRentAllowance,
-    utilitiesAllowance,
-    mealAllowance,
-    otherAllowance,
-    eobiFixed
-  } = body
-  const basic = parseFloat(basicSalary) || 0
-  const medical = parseFloat(medicalAllowance) || 0
-  const conveyance = parseFloat(conveyanceAllowance) || 0
-  const hra = parseFloat(houseRentAllowance) || 0
-  const utilities = parseFloat(utilitiesAllowance) || 0
-  const meal = parseFloat(mealAllowance) || 0
-  const other = parseFloat(otherAllowance) || 0
-  const eobi = parseFloat(eobiFixed) || 130
-  const out = await repo.upsertSalaryStructure({
-    employeeId,
-    basicSalary: basic,
-    medicalAllowance: medical,
-    conveyanceAllowance: conveyance,
-    houseRentAllowance: hra,
-    utilitiesAllowance: utilities,
-    mealAllowance: meal,
-    otherAllowance: other,
-    eobiFixed: eobi
-  })
-  const r = out[0]
-  return {
-    id: r.id,
-    employeeId: r.employee_id,
-    basicSalary: parseFloat(r.basic_salary),
-    medicalAllowance: parseFloat(r.medical_allowance),
-    conveyanceAllowance: parseFloat(r.conveyance_allowance),
-    houseRentAllowance: parseFloat(r.house_rent_allowance),
-    utilitiesAllowance: parseFloat(r.utilities_allowance),
-    mealAllowance: parseFloat(r.meal_allowance),
-    otherAllowance: parseFloat(r.other_allowance),
-    eobiFixed: parseFloat(r.eobi_fixed)
+  const n = (v) => parseFloat(v) || 0
+  const payload = {
+    employeeId: body.employeeId,
+    basicSalary: n(body.basicSalary),
+    medicalAllowance: n(body.medicalAllowance),
+    conveyanceAllowance: n(body.conveyanceAllowance),
+    conveyanceLitersAllowance: n(body.conveyanceLitersAllowance),
+    communicationAllowance: n(body.communicationAllowance),
+    houseRentAllowance: n(body.houseRentAllowance),
+    utilitiesAllowance: n(body.utilitiesAllowance),
+    mealAllowance: n(body.mealAllowance),
+    otherAllowance: n(body.otherAllowance),
+    arrears: n(body.arrears),
+    incrementalArrears: n(body.incrementalArrears),
+    bikeMaintenanceAllowance: n(body.bikeMaintenanceAllowance),
+    incentives: n(body.incentives),
+    deviceReimbursement: n(body.deviceReimbursement),
+    eobiFixed: n(body.eobiFixed) || 130
   }
+  const out = await repo.upsertSalaryStructure(payload)
+  const r = out[0]
+  return mapStructureRow(r)
 }

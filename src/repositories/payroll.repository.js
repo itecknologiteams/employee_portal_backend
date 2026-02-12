@@ -94,10 +94,21 @@ export async function closePeriod(id) {
 // ---------- Overrides ----------
 export async function getOverridesByPeriod(periodId) {
   return executeQuery(
-    `SELECT employee_id, working_days, COALESCE(other_allowance, 0) AS other_allowance, COALESCE(other_deduction, 0) AS other_deduction
+    `SELECT employee_id, working_days, COALESCE(other_allowance, 0) AS other_allowance, COALESCE(other_deduction, 0) AS other_deduction,
+            COALESCE(loan, 0) AS loan, COALESCE(salary_advance, 0) AS salary_advance
      FROM payroll_period_employee_override WHERE payroll_period_id = $1`,
     [periodId]
-  )
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT employee_id, working_days, COALESCE(other_allowance, 0) AS other_allowance, COALESCE(other_deduction, 0) AS other_deduction,
+                 0 AS loan, 0 AS salary_advance
+         FROM payroll_period_employee_override WHERE payroll_period_id = $1`,
+        [periodId]
+      )
+    }
+    throw err
+  })
 }
 
 export async function getActiveEmployees() {
@@ -113,13 +124,25 @@ export async function deleteOverridesForPeriod(periodId) {
   )
 }
 
-export async function upsertOverride(periodId, employeeId, workingDays, otherAllowance, otherDeduction) {
+export async function upsertOverride(periodId, employeeId, workingDays, otherAllowance, otherDeduction, loan = 0, salaryAdvance = 0) {
   await executeQuery(
-    `INSERT INTO payroll_period_employee_override (payroll_period_id, employee_id, working_days, other_allowance, other_deduction)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (payroll_period_id, employee_id) DO UPDATE SET working_days = EXCLUDED.working_days, other_allowance = EXCLUDED.other_allowance, other_deduction = EXCLUDED.other_deduction`,
-    [periodId, employeeId, workingDays, otherAllowance, otherDeduction]
-  )
+    `INSERT INTO payroll_period_employee_override (payroll_period_id, employee_id, working_days, other_allowance, other_deduction, loan, salary_advance)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (payroll_period_id, employee_id) DO UPDATE SET
+       working_days = EXCLUDED.working_days, other_allowance = EXCLUDED.other_allowance, other_deduction = EXCLUDED.other_deduction,
+       loan = EXCLUDED.loan, salary_advance = EXCLUDED.salary_advance`,
+    [periodId, employeeId, workingDays, otherAllowance, otherDeduction, loan, salaryAdvance]
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        `INSERT INTO payroll_period_employee_override (payroll_period_id, employee_id, working_days, other_allowance, other_deduction)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (payroll_period_id, employee_id) DO UPDATE SET working_days = EXCLUDED.working_days, other_allowance = EXCLUDED.other_allowance, other_deduction = EXCLUDED.other_deduction`,
+        [periodId, employeeId, workingDays, otherAllowance, otherDeduction]
+      )
+    }
+    throw err
+  })
 }
 
 // ---------- Run payroll ----------
@@ -133,12 +156,21 @@ export async function getDesignationAllowances() {
   return executeQuery(`SELECT desg_id, fixed_allowance FROM designation_allowance`).catch(() => [])
 }
 
+const salaryStructureColumns = `employee_id, basic_salary, medical_allowance, conveyance_allowance,
+  conveyance_liters_allowance, communication_allowance, house_rent_allowance, utilities_allowance, meal_allowance,
+  other_allowance, arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement, eobi_fixed`
+const salaryStructureColumnsLegacy = `employee_id, basic_salary, medical_allowance, conveyance_allowance,
+  house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed`
+
 export async function getSalaryStructures() {
   return executeQuery(
-    `SELECT employee_id, basic_salary, medical_allowance, conveyance_allowance, house_rent_allowance,
-            utilities_allowance, meal_allowance, other_allowance, eobi_fixed
-     FROM employee_salary_structure`
-  )
+    `SELECT ${salaryStructureColumns} FROM employee_salary_structure`
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(`SELECT ${salaryStructureColumnsLegacy} FROM employee_salary_structure`)
+    }
+    throw err
+  })
 }
 
 export async function getApprovedLeavesInRange(startDate, endDate) {
@@ -151,10 +183,21 @@ export async function getApprovedLeavesInRange(startDate, endDate) {
 
 export async function getOverridesForRun(periodId) {
   return executeQuery(
-    `SELECT employee_id, working_days, COALESCE(other_allowance, 0) AS other_allowance, COALESCE(other_deduction, 0) AS other_deduction
+    `SELECT employee_id, working_days, COALESCE(other_allowance, 0) AS other_allowance, COALESCE(other_deduction, 0) AS other_deduction,
+            COALESCE(loan, 0) AS loan, COALESCE(salary_advance, 0) AS salary_advance
      FROM payroll_period_employee_override WHERE payroll_period_id = $1`,
     [periodId]
-  )
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT employee_id, working_days, COALESCE(other_allowance, 0) AS other_allowance, COALESCE(other_deduction, 0) AS other_deduction,
+                 0 AS loan, 0 AS salary_advance
+         FROM payroll_period_employee_override WHERE payroll_period_id = $1`,
+        [periodId]
+      )
+    }
+    throw err
+  })
 }
 
 export async function upsertPayrollSlip(slip) {
@@ -259,7 +302,9 @@ export async function listSalaryStructures(searchParam, limit, offset) {
   const listQuery = `
     SELECT e.employee_id, e.first_name, e.last_name, e.employee_code,
            s.id AS structure_id, s.basic_salary, s.medical_allowance, s.conveyance_allowance,
+           s.conveyance_liters_allowance, s.communication_allowance,
            s.house_rent_allowance, s.utilities_allowance, s.meal_allowance, s.other_allowance,
+           s.arrears, s.incremental_arrears, s.bike_maintenance_allowance, s.incentives, s.device_reimbursement,
            s.eobi_fixed, s.effective_from
     FROM employees e
     LEFT JOIN employee_salary_structure s ON s.employee_id = e.employee_id
@@ -267,7 +312,23 @@ export async function listSalaryStructures(searchParam, limit, offset) {
     ORDER BY e.first_name, e.last_name
     LIMIT ${searchParam ? '$2' : '$1'} OFFSET ${searchParam ? '$3' : '$2'}
   `
-  return executeQuery(listQuery, params)
+  return executeQuery(listQuery, params).catch((err) => {
+    if (err.code === '42703') {
+      const legacyQuery = `
+        SELECT e.employee_id, e.first_name, e.last_name, e.employee_code,
+               s.id AS structure_id, s.basic_salary, s.medical_allowance, s.conveyance_allowance,
+               s.house_rent_allowance, s.utilities_allowance, s.meal_allowance, s.other_allowance,
+               s.eobi_fixed, s.effective_from
+        FROM employees e
+        LEFT JOIN employee_salary_structure s ON s.employee_id = e.employee_id
+        WHERE e.is_active = true ${searchCondition}
+        ORDER BY e.first_name, e.last_name
+        LIMIT ${searchParam ? '$2' : '$1'} OFFSET ${searchParam ? '$3' : '$2'}
+      `
+      return executeQuery(legacyQuery, params)
+    }
+    throw err
+  })
 }
 
 export async function getSalaryStructureByEmployee(employeeId) {
@@ -279,30 +340,81 @@ export async function getSalaryStructureByEmployee(employeeId) {
 }
 
 export async function upsertSalaryStructure(data) {
+  const fullParams = [
+    data.employeeId, data.basicSalary ?? 0, data.medicalAllowance ?? 0, data.conveyanceAllowance ?? 0,
+    data.conveyanceLitersAllowance ?? 0, data.communicationAllowance ?? 0,
+    data.houseRentAllowance ?? 0, data.utilitiesAllowance ?? 0, data.mealAllowance ?? 0, data.otherAllowance ?? 0,
+    data.arrears ?? 0, data.incrementalArrears ?? 0, data.bikeMaintenanceAllowance ?? 0, data.incentives ?? 0, data.deviceReimbursement ?? 0,
+    data.eobiFixed ?? 130
+  ]
   await executeQuery(
     `INSERT INTO employee_salary_structure (
       employee_id, basic_salary, medical_allowance, conveyance_allowance,
-      house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      conveyance_liters_allowance, communication_allowance,
+      house_rent_allowance, utilities_allowance, meal_allowance, other_allowance,
+      arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement,
+      eobi_fixed
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
     ON CONFLICT (employee_id) DO UPDATE SET
       basic_salary = EXCLUDED.basic_salary,
       medical_allowance = EXCLUDED.medical_allowance,
       conveyance_allowance = EXCLUDED.conveyance_allowance,
+      conveyance_liters_allowance = EXCLUDED.conveyance_liters_allowance,
+      communication_allowance = EXCLUDED.communication_allowance,
       house_rent_allowance = EXCLUDED.house_rent_allowance,
       utilities_allowance = EXCLUDED.utilities_allowance,
       meal_allowance = EXCLUDED.meal_allowance,
       other_allowance = EXCLUDED.other_allowance,
+      arrears = EXCLUDED.arrears,
+      incremental_arrears = EXCLUDED.incremental_arrears,
+      bike_maintenance_allowance = EXCLUDED.bike_maintenance_allowance,
+      incentives = EXCLUDED.incentives,
+      device_reimbursement = EXCLUDED.device_reimbursement,
       eobi_fixed = EXCLUDED.eobi_fixed,
       updated_at = CURRENT_TIMESTAMP`,
-    [
-      data.employeeId, data.basicSalary, data.medicalAllowance, data.conveyanceAllowance,
-      data.houseRentAllowance, data.utilitiesAllowance, data.mealAllowance, data.otherAllowance, data.eobiFixed
-    ]
-  )
+    fullParams
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        `INSERT INTO employee_salary_structure (
+          employee_id, basic_salary, medical_allowance, conveyance_allowance,
+          house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+        ON CONFLICT (employee_id) DO UPDATE SET
+          basic_salary = EXCLUDED.basic_salary,
+          medical_allowance = EXCLUDED.medical_allowance,
+          conveyance_allowance = EXCLUDED.conveyance_allowance,
+          house_rent_allowance = EXCLUDED.house_rent_allowance,
+          utilities_allowance = EXCLUDED.utilities_allowance,
+          meal_allowance = EXCLUDED.meal_allowance,
+          other_allowance = EXCLUDED.other_allowance,
+          eobi_fixed = EXCLUDED.eobi_fixed,
+          updated_at = CURRENT_TIMESTAMP`,
+        [
+          data.employeeId, data.basicSalary ?? 0, data.medicalAllowance ?? 0, data.conveyanceAllowance ?? 0,
+          data.houseRentAllowance ?? 0, data.utilitiesAllowance ?? 0, data.mealAllowance ?? 0, data.otherAllowance ?? 0, data.eobiFixed ?? 130
+        ]
+      )
+    }
+    throw err
+  })
   return executeQuery(
     `SELECT id, employee_id, basic_salary, medical_allowance, conveyance_allowance,
-            house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed
+            conveyance_liters_allowance, communication_allowance,
+            house_rent_allowance, utilities_allowance, meal_allowance, other_allowance,
+            arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement,
+            eobi_fixed
      FROM employee_salary_structure WHERE employee_id = $1`,
     [data.employeeId]
-  )
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT id, employee_id, basic_salary, medical_allowance, conveyance_allowance,
+                house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed
+         FROM employee_salary_structure WHERE employee_id = $1`,
+        [data.employeeId]
+      )
+    }
+    throw err
+  })
 }

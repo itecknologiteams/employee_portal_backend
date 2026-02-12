@@ -546,3 +546,47 @@ export async function upsertUserPermission(empId, permissionKey, allowed) {
     if (err.code !== '42P01') throw err
   }
 }
+
+// Employee HOD departments (one employee can be HOD of multiple departments)
+export async function getHodDepartmentIds(employeeId) {
+  try {
+    const rows = await executeQuery(
+      'SELECT department_id FROM employee_hod_departments WHERE employee_id = $1 ORDER BY department_id',
+      [employeeId]
+    )
+    return rows.map((r) => r.department_id)
+  } catch (err) {
+    if (err.code === '42P01') return []
+    throw err
+  }
+}
+
+export async function getHodDepartmentIdsByEmployeeIds(employeeIds) {
+  if (!Array.isArray(employeeIds) || employeeIds.length === 0) return []
+  try {
+    const rows = await executeQuery(
+      'SELECT employee_id, department_id FROM employee_hod_departments WHERE employee_id = ANY($1::int[])',
+      [employeeIds]
+    )
+    return rows
+  } catch (err) {
+    if (err.code === '42P01') return []
+    throw err
+  }
+}
+
+export async function setHodDepartments(employeeId, departmentIds) {
+  try {
+    await executeQuery('DELETE FROM employee_hod_departments WHERE employee_id = $1', [employeeId])
+    const ids = Array.isArray(departmentIds) ? departmentIds.filter((id) => id != null && Number.isInteger(Number(id))) : []
+    for (const deptId of ids) {
+      await executeQuery(
+        'INSERT INTO employee_hod_departments (employee_id, department_id) VALUES ($1, $2) ON CONFLICT (employee_id, department_id) DO NOTHING',
+        [employeeId, deptId]
+      )
+    }
+  } catch (err) {
+    if (err.code === '42P01') return
+    throw err
+  }
+}

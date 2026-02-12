@@ -73,7 +73,7 @@ export async function getOverrides(req, res) {
 
 export async function saveOverrides(req, res) {
   try {
-    const { overrides: overridesList } = req.body || {}
+    const overridesList = Array.isArray(req.body) ? req.body : (req.body?.overrides ?? [])
     const result = await payrollService.saveOverrides(req.params.id, overridesList)
     if (!result) return res.status(404).json({ error: 'Period not found' })
     if (result.error) return res.status(400).json({ error: result.error })
@@ -144,7 +144,7 @@ export async function listDesignationAllowances(req, res) {
 
 export async function saveDesignationAllowances(req, res) {
   try {
-    const { allowances } = req.body || {}
+    const allowances = Array.isArray(req.body) ? req.body : (req.body?.allowances ?? [])
     const result = await payrollService.saveDesignationAllowances(allowances)
     if (result.error) return res.status(400).json({ error: result.error })
     res.json({ message: 'Designation allowances saved' })
