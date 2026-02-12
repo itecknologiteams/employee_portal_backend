@@ -31,6 +31,20 @@ export async function getEmployeeForPasswordChange(employeeId) {
   )
 }
 
+export async function getUserForPasswordChange(employeeId) {
+  return executeQuery(
+    'SELECT user_id, password FROM users WHERE emp_id = $1',
+    [employeeId]
+  )
+}
+
+export async function updateUserPassword(userId, hashedPassword) {
+  return executeQuery(
+    'UPDATE users SET password = $1 WHERE user_id = $2',
+    [hashedPassword, userId]
+  )
+}
+
 export async function updatePassword(employeeId, hashedPassword) {
   return executeQuery(
     `UPDATE employees SET password_hash = $1, password_updated_at = CURRENT_TIMESTAMP WHERE employee_id = $2`,

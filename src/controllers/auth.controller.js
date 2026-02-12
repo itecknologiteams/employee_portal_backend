@@ -20,6 +20,7 @@ export async function login(req, res) {
 
 export async function changePassword(req, res) {
   try {
+    debugger
     const { employeeId, currentPassword, newPassword } = req.body
     if (!employeeId || !currentPassword || !newPassword) {
       return res.status(400).json({ error: 'All fields are required' })

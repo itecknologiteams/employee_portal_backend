@@ -13,6 +13,10 @@ const DEFAULT_USER_PERMISSIONS = [
   'requisition_create', 'requisition_approved', 'requisition_history'
 ]
 
+function isBcryptHash(value) {
+  return typeof value === 'string' && /^\$2[aby]\$/.test(value)
+}
+
 async function getPermissionsForRole(roleName) {
   if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
   try {
@@ -51,7 +55,7 @@ export async function login(loginId, password) {
       if (!row.is_active) {
         return { error: 'Account is deactivated. Please contact HR.', status: 403 }
       }
-      const valid = row.password.startsWith('$2a$')
+      const valid = isBcryptHash(row.password)
         ? await bcrypt.compare(password, row.password)
         : (row.password === password)
       if (valid) {
@@ -81,7 +85,7 @@ export async function login(loginId, password) {
     return { error: 'Account is deactivated. Please contact HR.', status: 403 }
   }
   let isValidPassword = false
-  if (employee.password_hash && employee.password_hash.startsWith('$2a$')) {
+  if (isBcryptHash(employee.password_hash)) {
     isValidPassword = await bcrypt.compare(password, employee.password_hash)
   } else if (employee.password_hash) {
     isValidPassword = (employee.password_hash === password)
@@ -104,13 +108,30 @@ export async function login(loginId, password) {
 }
 
 export async function changePassword(employeeId, currentPassword, newPassword) {
+  const userRows = await authRepo.getUserForPasswordChange(employeeId)
+    
+  if (userRows.length > 0) {
+    const user = userRows[0]
+    const userValid = isBcryptHash(user.password)
+      ? await bcrypt.compare(currentPassword, user.password)
+      : (user.password === currentPassword)
+    if (userValid) {
+      const saltRounds = 10
+      const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
+      await authRepo.updateUserPassword(user.user_id, hashedPassword)
+      // Keep employees table in sync for email-based login
+      await authRepo.updatePassword(employeeId, hashedPassword)
+      return { message: 'Password changed successfully' }
+    }
+  }
+
   const verifyResult = await authRepo.getEmployeeForPasswordChange(employeeId)
   if (verifyResult.length === 0) {
     return { error: 'Employee not found', status: 404 }
   }
   const employee = verifyResult[0]
   let isValidPassword = false
-  if (employee.password_hash && employee.password_hash.startsWith('$2a$')) {
+  if (isBcryptHash(employee.password_hash)) {
     isValidPassword = await bcrypt.compare(currentPassword, employee.password_hash)
   } else {
     isValidPassword = (employee.password_hash === currentPassword || employee.password === currentPassword)
@@ -121,6 +142,9 @@ export async function changePassword(employeeId, currentPassword, newPassword) {
   const saltRounds = 10
   const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
   await authRepo.updatePassword(employeeId, hashedPassword)
+  if (userRows.length > 0) {
+    await authRepo.updateUserPassword(userRows[0].user_id, hashedPassword)
+  }
   return { message: 'Password changed successfully' }
 }
 
