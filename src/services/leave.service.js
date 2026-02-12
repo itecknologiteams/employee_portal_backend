@@ -131,6 +131,32 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     }
     const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
     if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+    if (normalizedStatus === 'Pending HR' && isEmailConfigured()) {
+      const transport = getEmailTransport()
+      if (transport) {
+        try {
+          const to = getLeaveNotificationEmail(leave.leave_type)
+          const subject = `Leave request forwarded to HR – pending your approval (ID: ${reqId})`
+          const body = [
+            'A leave request has been forwarded by HOD and is now in your HR bucket.',
+            '',
+            `Leave Request ID: ${reqId}`,
+            `Employee ID: ${leave.employee_id}`,
+            `Leave Type: ${leave.leave_type || '—'}`,
+            `Start Date: ${leave.start_date || '—'}`,
+            `End Date: ${leave.end_date || '—'}`,
+            '',
+            'Reason:',
+            (leave.reason && String(leave.reason).trim()) || '—'
+          ].join('\n')
+          console.log('📧 [Leave] HR notify: Sending to:', to, '| Subject:', subject)
+          await transport.sendMail({ from: EMAIL_FROM, to, subject, text: body })
+          console.log('📧 [Leave] HR notify SENT OK →', to)
+        } catch (err) {
+          console.error('📧 [Leave] HR notify FAILED:', err.message)
+        }
+      }
+    }
     return { message: normalizedStatus === 'Rejected' ? 'Leave request rejected' : 'Leave forwarded to HR', status: normalizedStatus }
   }
 

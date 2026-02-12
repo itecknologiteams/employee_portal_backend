@@ -1,5 +1,6 @@
 import * as profileRepo from '../repositories/profile.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
 export async function getProfile(employeeId) {
   const result = await profileRepo.getProfile(employeeId)
@@ -54,9 +55,37 @@ export async function getProfile(employeeId) {
   }
 }
 
+const PROFILE_HR_EMAIL = process.env.PROFILE_HR_EMAIL || process.env.LEAVE_EMAIL_ANNUAL || 'hr@itecknologi.com'
+
 /** Submit profile update request (HR bucket). No direct DB update; HR must approve. */
 export async function updateProfile(employeeId, data) {
-  await profileRepo.createOrUpdateProfileChangeRequest(employeeId, data)
+  const result = await profileRepo.createOrUpdateProfileChangeRequest(employeeId, data)
+  const requestId = (Array.isArray(result) && result[0]) ? result[0].id : (result && result.id)
+
+  if (isEmailConfigured()) {
+    const transport = getEmailTransport()
+    if (transport) {
+      try {
+        const to = PROFILE_HR_EMAIL
+        const subject = `New profile change request – pending HR approval (Employee ID: ${employeeId})`
+        const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+        const body = [
+          'A profile update request has been submitted and is in your HR bucket.',
+          '',
+          `Employee ID: ${employeeId}`,
+          requestId != null ? `Request ID: ${requestId}` : '',
+          '',
+          `View pending requests: ${baseUrl}`
+        ].filter(Boolean).join('\n')
+        console.log('📧 [Profile] HR notify: Sending to:', to, '| Subject:', subject)
+        await transport.sendMail({ from: EMAIL_FROM, to, subject, text: body })
+        console.log('📧 [Profile] HR notify SENT OK →', to)
+      } catch (err) {
+        console.error('📧 [Profile] HR notify FAILED:', err.message)
+      }
+    }
+  }
+
   return { message: 'Profile update request submitted for HR approval' }
 }
 
