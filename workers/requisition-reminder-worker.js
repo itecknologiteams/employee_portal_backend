@@ -2,6 +2,12 @@ import { executeQuery } from '../config/database.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
 
+/** Dashboard URL for requisition emails (replace localhost with actual frontend). */
+function getRequisitionDashboardUrl() {
+  const base = process.env.BASE_URL || 'http://192.168.21.31:5173'
+  return base.replace(/\/$/, '') + '/dashboard'
+}
+
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000   // 3 days left → email every 6 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
 const ONE_HOUR_MS = 60 * 60 * 1000        // last day → email every 1 hr
@@ -100,7 +106,7 @@ export async function processRequisitionReminders() {
     return
   }
 
-  const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+  const dashboardUrl = getRequisitionDashboardUrl()
 
   for (const row of rows) {
     const reqId = row.req_id
@@ -126,13 +132,13 @@ export async function processRequisitionReminders() {
       if (lastSent === null || (now - lastSent) >= SIX_HOURS_MS) {
         shouldSend = true
         subject = `Requisition ${refNo} – 3 days until required by date`
-        body = `Requisition ${refNo} (required by ${row.req_required_by_date}) has 3 days remaining.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
+        body = `Requisition ${refNo} (required by ${row.req_required_by_date}) has 3 days remaining.\nCreator: ${creatorName}\n\nView: ${dashboardUrl}`
       }
     } else if (daysLeft === 2) {
       if (lastSent === null || (now - lastSent) >= THREE_HOURS_MS) {
         shouldSend = true
         subject = `Requisition ${refNo} – 2 days until required by date`
-        body = `Requisition ${refNo} (required by ${row.req_required_by_date}) has 2 days remaining.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
+        body = `Requisition ${refNo} (required by ${row.req_required_by_date}) has 2 days remaining.\nCreator: ${creatorName}\n\nView: ${dashboardUrl}`
       }
     } else if (daysLeft <= 1) {
       if (lastSent === null || (now - lastSent) >= ONE_HOUR_MS) {
@@ -140,7 +146,7 @@ export async function processRequisitionReminders() {
         subject = daysLeft === 0
           ? `Requisition ${refNo} – due today`
           : `Requisition ${refNo} – 1 day until required by date`
-        body = `Requisition ${refNo} (required by ${row.req_required_by_date}) ${daysLeft === 0 ? 'is due today.' : 'has 1 day remaining.'}\nCreator: ${creatorName}\n\nView: ${baseUrl}`
+        body = `Requisition ${refNo} (required by ${row.req_required_by_date}) ${daysLeft === 0 ? 'is due today.' : 'has 1 day remaining.'}\nCreator: ${creatorName}\n\nView: ${dashboardUrl}`
       }
     }
 
@@ -169,16 +175,42 @@ export async function processRequisitionReminders() {
  * Handle requisition-created job: e.g. notify HOD of new requisition.
  */
 export async function handleRequisitionCreated(data) {
-  const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+  const dashboardUrl = getRequisitionDashboardUrl()
   const refNo = data.referenceNo || '#' + data.requisitionId
   const creatorName = data.creatorName || 'Employee'
+  const requiredBy = data.requiredByDate || 'Not set'
   const toEmails = data.departmentId != null ? await getHodEmailForDepartment(data.departmentId) : []
   if (!toEmails.length) {
     console.log('[BullMQ] requisition-created:', refNo, '– no HOD email, skip notify')
     return
   }
+
+  let summaryLines = []
+  try {
+    const items = await executeQuery(
+      'SELECT item_desc, item_qty, item_size, item_brand FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+      [data.requisitionId]
+    )
+    summaryLines = (items || []).map((it) => {
+      const desc = (it.item_desc || '').trim() || '—'
+      const qty = it.item_qty != null ? it.item_qty : '—'
+      const part = it.item_size || it.item_brand ? ` (${[it.item_size, it.item_brand].filter(Boolean).join(', ')})` : ''
+      return `  • ${desc}${part} – Qty: ${qty}`
+    })
+  } catch (_) {}
+  if (summaryLines.length === 0) summaryLines.push(`  • ${data.itemCount || 0} item(s) – see portal for details`)
+
   const subject = `New requisition ${refNo} – pending your approval`
-  const body = `A new requisition ${refNo} has been submitted by ${creatorName}.\nRequired by: ${data.requiredByDate || 'Not set'}\nItems: ${data.itemCount || 0}\n\nView: ${baseUrl}`
+  const body = [
+    `A new requisition ${refNo} has been submitted by ${creatorName}.`,
+    '',
+    `Required by date: ${requiredBy}`,
+    '',
+    'Summary:',
+    ...summaryLines,
+    '',
+    `View: ${dashboardUrl}`
+  ].join('\n')
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'requisition_created', ref: refNo } })
 }
 
@@ -228,13 +260,13 @@ export async function handleRequisitionBucketChanged(data) {
     console.log('[BullMQ] requisition-bucket-changed:', row.req_reference_no || requisitionId, '– no recipient for bucket', newBucket)
     return
   }
-  const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+  const dashboardUrl = getRequisitionDashboardUrl()
   const refNo = row.req_reference_no || '#' + requisitionId
   const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
   const requiredBy = row.req_required_by_date || 'Not set'
   const bucketLabel = BUCKET_LABELS[newBucket] || newBucket
   const subject = `Requisition ${refNo} – new case in your queue (${bucketLabel})`
-  const body = `A requisition ${refNo} has been moved to your queue: ${bucketLabel}.\nCreator: ${creatorName}\nRequired by: ${requiredBy}\n\nView: ${baseUrl}`
+  const body = `A requisition ${refNo} has been moved to your queue: ${bucketLabel}.\nCreator: ${creatorName}\nRequired by: ${requiredBy}\n\nView: ${dashboardUrl}`
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'bucket_changed', ref: refNo, bucket: newBucket } })
 }
 
@@ -266,13 +298,13 @@ export async function handleRequisitionReminder3DayTest(data) {
     return
   }
 
-  const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+  const dashboardUrl = getRequisitionDashboardUrl()
   const refNo = data.referenceNo || '#' + reqId
   const creatorName = data.creatorName || 'Employee'
   const requiredBy = data.requiredByDate || 'Not set'
   const bucketLabel = BUCKET_LABELS[bucket] || bucket
   const subject = `Requisition ${refNo} – ${bucketLabel} (test reminder)`
-  const body = `Requisition ${refNo} (required by ${requiredBy}) is pending at: ${bucketLabel}.\nCreator: ${creatorName}\n\nView: ${baseUrl}`
+  const body = `Requisition ${refNo} (required by ${requiredBy}) is pending at: ${bucketLabel}.\nCreator: ${creatorName}\n\nView: ${dashboardUrl}`
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'reminder_3day_test', ref: refNo, bucket } })
 
   // Re-queue only if explicitly set (default 0 = no repeat; was 2 min for testing)
