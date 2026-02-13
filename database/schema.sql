@@ -184,6 +184,73 @@ CREATE TABLE IF NOT EXISTS salary_slips (
 CREATE INDEX IF NOT EXISTS idx_salary_slips_employee ON salary_slips(employee_id);
 CREATE INDEX IF NOT EXISTS idx_salary_slips_month ON salary_slips(month_year);
 
+-- Old salary slips (legacy Pay Sheet data imported from SQL Server; display-only)
+CREATE TABLE IF NOT EXISTS old_salary_slip (
+    id SERIAL PRIMARY KEY,
+    employee_id INTEGER NOT NULL REFERENCES employees(employee_id) ON DELETE CASCADE,
+    pay_month DATE NOT NULL,
+    period_label VARCHAR(100),
+    basic_salary DECIMAL(18,2) DEFAULT 0,
+    gross_salary DECIMAL(18,2) DEFAULT 0,
+    total_allowances DECIMAL(18,2) DEFAULT 0,
+    total_deductions DECIMAL(18,2) DEFAULT 0,
+    net_salary DECIMAL(18,2) NOT NULL,
+    status VARCHAR(50) DEFAULT 'Paid',
+    remarks TEXT,
+    source_employee_code VARCHAR(50),
+    source_slip_id INTEGER,
+    payroll_id INTEGER,
+    hr_emp_id INTEGER,
+    co_id INTEGER,
+    dept_id INTEGER,
+    m_days INTEGER,
+    w_days INTEGER,
+    a_days INTEGER,
+    j_l_days INTEGER,
+    basic_salary_1 DECIMAL(18,2),
+    medical_allowance_2 DECIMAL(18,2),
+    conveyance_fixed_allowance_3 DECIMAL(18,2),
+    overtime_allowance_4 DECIMAL(18,2),
+    house_rent_allowance_5 DECIMAL(18,2),
+    utilities_allowance_6 DECIMAL(18,2),
+    meal_allowance_7 DECIMAL(18,2),
+    arrears_8 DECIMAL(18,2),
+    bike_maintainence_9 DECIMAL(18,2),
+    incentives_tech_10 DECIMAL(18,2),
+    device_reimbursment_11 DECIMAL(18,2),
+    communication_12 DECIMAL(18,2),
+    incentives_kpi_13 DECIMAL(18,2),
+    other_allowance_14 DECIMAL(18,2),
+    loan_15 DECIMAL(18,2),
+    advance_salary_16 DECIMAL(18,2),
+    eobi_17 DECIMAL(18,2),
+    income_tax_18 DECIMAL(18,2),
+    absent_days_19 DECIMAL(18,2),
+    device_deduction_20 DECIMAL(18,2),
+    over_utilization_mobile_21 DECIMAL(18,2),
+    vehicle_fuel_deduction_22 DECIMAL(18,2),
+    pandamic_deduction_23 DECIMAL(18,2),
+    late_days_24 DECIMAL(18,2),
+    other_deduction_25 DECIMAL(18,2),
+    mobile_installment_26 DECIMAL(18,2),
+    food_panda_27 DECIMAL(18,2),
+    conveyance_liters_allowance_28 DECIMAL(18,2),
+    leaves_29 DECIMAL(18,2),
+    incremental_arrears_31 DECIMAL(18,2),
+    tot_gross_salary DECIMAL(18,2),
+    tot_allowances DECIMAL(18,2),
+    tot_net_gross_allowances DECIMAL(18,2),
+    tot_deductions DECIMAL(18,2),
+    tot_ac_to_wd DECIMAL(18,2),
+    tot_net_salary DECIMAL(18,2),
+    salary_status VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_old_salary_slip_employee ON old_salary_slip(employee_id);
+CREATE INDEX IF NOT EXISTS idx_old_salary_slip_pay_month ON old_salary_slip(pay_month);
+CREATE INDEX IF NOT EXISTS idx_old_salary_slip_hr_emp_id ON old_salary_slip(hr_emp_id);
+CREATE INDEX IF NOT EXISTS idx_old_salary_slip_payroll_id ON old_salary_slip(payroll_id);
+
 -- -----------------------------------------------------------------------------
 -- 7. Requisition (approval workflow: HOD → Committee → CEO → Procurement → Finance)
 -- -----------------------------------------------------------------------------
