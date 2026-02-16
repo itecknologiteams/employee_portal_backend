@@ -14,6 +14,15 @@ const ONE_HOUR_MS = 60 * 60 * 1000        // last day → email every 1 hr
 
 function getRequisitionBucket(row) {
   if (row.req_is_rejected === 1) return null
+  
+  // If purchase completed, route to appropriate bucket based on creator role
+  if (row.req_purchase_completed === 1 && row.req_hod_acknowledged !== 1) {
+    const creatorRole = row.req_creator_role
+    if (creatorRole === 'CEO') return 'ceo'
+    if (creatorRole === 'Committee') return 'committee'
+    return 'hod' // Default to HOD for regular employees or HOD-created requisitions
+  }
+  
   if (row.req_finance_approval === 1) return null
   if (row.req_handed_to_finance === 1) return 'finance'
   if (row.req_procurement_ack === 1) return 'procurement'

@@ -77,11 +77,11 @@ export async function getItemCountsByReqIds(reqIds) {
   )
 }
 
-export async function createRequisition(employeeId, location, material, requiredByDate, business) {
+export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole) {
   await executeQuery(
-    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd']
+    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null]
   )
   const r = await executeQuery(
     'SELECT req_id, req_reference_no FROM requisition WHERE req_emp_id = $1 ORDER BY req_created_at DESC LIMIT 1',
@@ -117,14 +117,26 @@ export async function getCreatorDepartment(employeeId) {
 export async function autoAdvanceCommitteeRequisition(reqId) {
   return executeQuery(
     `UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP,
-      req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1`,
+      req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP, req_creator_role = 'Committee' WHERE req_id = $1`,
     [reqId]
   )
 }
 
 export async function autoAdvanceHodRequisition(reqId) {
   return executeQuery(
-    `UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1`,
+    `UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_creator_role = 'HOD' WHERE req_id = $1`,
+    [reqId]
+  )
+}
+
+export async function autoAdvanceCeoRequisition(reqId) {
+  return executeQuery(
+    `UPDATE requisition SET 
+      req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP,
+      req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP,
+      req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP,
+      req_creator_role = 'CEO' 
+     WHERE req_id = $1`,
     [reqId]
   )
 }
@@ -475,6 +487,7 @@ export async function getPendingHodAcknowledgeList(deptId, deptName) {
        AND COALESCE(r.req_purchase_completed, 0) = 1
        AND COALESCE(r.req_hod_acknowledged, 0) = 0
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+       AND (r.req_creator_role IS NULL OR r.req_creator_role = '' OR r.req_creator_role = 'HOD')
      ORDER BY r.req_purchase_completed_date DESC`,
     [deptId, deptName]
   )
@@ -483,7 +496,7 @@ export async function getPendingHodAcknowledgeList(deptId, deptName) {
 /** Single requisition pending HOD acknowledgment (purchase completed, not yet acknowledged). */
 export async function getRequisitionForHodAcknowledge(reqId) {
   return executeQuery(
-    `SELECT r.req_id, r.req_emp_id, e.department_id, d.department_name
+    `SELECT r.req_id, r.req_emp_id, r.req_creator_role, e.department_id, d.department_name
      FROM requisition r
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
@@ -613,8 +626,14 @@ export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
     `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND (COALESCE(r.req_hod_approval, 0)::int = 1)
-     AND (COALESCE(r.req_committee_approval, 0)::int = 0) AND r.req_emp_id != $1
+     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) 
+     AND (
+       -- Normal pending Committee approval
+       ((COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_committee_approval, 0)::int = 0) AND r.req_emp_id != $1)
+       OR
+       -- Completed requisitions created by Committee awaiting acknowledgment
+       (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'Committee')
+     )
      ORDER BY r.req_created_at ASC`,
     [excludeEmployeeId]
   )
@@ -625,8 +644,14 @@ export async function getPendingCeoRequisitions() {
     `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE r.req_is_rejected = 0 AND r.req_hod_approval = 1 AND r.req_committee_approval = 1
-     AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL)
+     WHERE r.req_is_rejected = 0 
+     AND (
+       -- Normal pending CEO approval
+       (r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL))
+       OR
+       -- Completed requisitions created by CEO awaiting acknowledgment
+       (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'CEO')
+     )
      ORDER BY r.req_created_at ASC`
   )
 }

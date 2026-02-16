@@ -1,7 +1,17 @@
 export function getRequisitionStatus(row) {
   if (row.req_is_rejected === 1) return 'Rejected'
   if (row.req_hod_acknowledged === 1) return 'Completed'
-  if (row.req_purchase_completed === 1) return 'Completed - Pending HOD Acknowledgment'
+  if (row.req_purchase_completed === 1) {
+    // Customize status based on who created the requisition
+    const creatorRole = row.req_creator_role
+    if (creatorRole === 'CEO') {
+      return 'Completed - Pending CEO Acknowledgment'
+    } else if (creatorRole === 'Committee') {
+      return 'Completed - Pending Committee Acknowledgment'
+    } else {
+      return 'Completed - Pending HOD Acknowledgment'
+    }
+  }
   if (row.req_finance_approval === 1) return 'Finance Approved - Ready for Purchase'
   if (row.req_handed_to_finance === 1) return 'Pending Finance Approval'
   if (row.req_procurement_ack === 1) {

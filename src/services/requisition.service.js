@@ -129,8 +129,25 @@ export async function createRequisition(body) {
   if (validItems.length === 0) {
     return { error: 'Each item must have at least size, brand, or quantity', status: 400 }
   }
+
+  const deptId = await reqRepo.getCreatorDepartment(employeeId)
+  const hodId = await reqRepo.getHodByDepartment(deptId)
+  const creatorIsHod = hodId != null && hodId === parseInt(employeeId, 10)
+  const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
+  const creatorIsCeo = await reqRepo.isCeoMember(employeeId)
+
+  // Determine creator role for acknowledgment routing
+  let creatorRole = null
+  if (creatorIsCeo) {
+    creatorRole = 'CEO'
+  } else if (creatorIsCommittee) {
+    creatorRole = 'Committee'
+  } else if (creatorIsHod) {
+    creatorRole = 'HOD'
+  }
+
 debugger
-  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business)
+  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole)
   const reqId = created.req_id
   const refNo = created.req_reference_no
 
@@ -138,15 +155,40 @@ debugger
     await reqRepo.insertRequisitionItem(reqId, it)
   }
 
-  const deptId = await reqRepo.getCreatorDepartment(employeeId)
-  const hodId = await reqRepo.getHodByDepartment(deptId)
-  const creatorIsHod = hodId != null && hodId === parseInt(employeeId, 10)
-  const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
-
-  if (creatorIsCommittee) {
+  // Auto-advance based on creator role
+  if (creatorIsCeo) {
+    await reqRepo.autoAdvanceCeoRequisition(reqId)
+    // Notify Procurement that requisition is ready
+    try {
+      if (isBullMQEnabled()) {
+        const q = getQueue()
+        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
+      }
+    } catch (e) {
+      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+    }
+  } else if (creatorIsCommittee) {
     await reqRepo.autoAdvanceCommitteeRequisition(reqId)
+    // Notify CEO that requisition is ready
+    try {
+      if (isBullMQEnabled()) {
+        const q = getQueue()
+        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'ceo' })
+      }
+    } catch (e) {
+      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+    }
   } else if (creatorIsHod) {
     await reqRepo.autoAdvanceHodRequisition(reqId)
+    // Notify Committee that requisition is ready
+    try {
+      if (isBullMQEnabled()) {
+        const q = getQueue()
+        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'committee' })
+      }
+    } catch (e) {
+      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+    }
   }
 
   try {
@@ -635,7 +677,7 @@ export async function getPendingHodAcknowledge(employeeId) {
   }
 }
 
-/** HOD: acknowledge receipt of completed purchase. */
+/** HOD/Committee/CEO: acknowledge receipt of completed purchase based on creator role. */
 export async function acknowledgeReceipt(body) {
   const { requisitionId, acknowledgedByEmployeeId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
@@ -645,9 +687,33 @@ export async function acknowledgeReceipt(body) {
   }
   const rows = await reqRepo.getRequisitionForHodAcknowledge(reqId)
   if (!rows.length) return { error: 'Requisition not found or not pending acknowledgment', status: 404 }
+  
   const creatorDeptId = rows[0].department_id
-  const isHodOfCreatorDept = await reqRepo.isHodOfDepartment(eid, creatorDeptId)
-  if (!isHodOfCreatorDept) return { error: 'Only HOD of the requester department can acknowledge receipt', status: 403 }
+  const creatorRole = rows[0].req_creator_role
+
+  // Determine who can acknowledge based on creator role
+  let canAcknowledge = false
+  let errorMessage = 'You are not authorized to acknowledge this requisition'
+
+  if (creatorRole === 'CEO') {
+    // CEO must acknowledge
+    const isCeo = await reqRepo.isCeoMember(eid)
+    canAcknowledge = isCeo
+    errorMessage = 'Only CEO can acknowledge requisitions created by CEO'
+  } else if (creatorRole === 'Committee') {
+    // Committee member must acknowledge
+    const isCommittee = await reqRepo.isCommitteeMember(eid)
+    canAcknowledge = isCommittee
+    errorMessage = 'Only Committee members can acknowledge requisitions created by Committee'
+  } else {
+    // HOD or regular employee - HOD of creator's department must acknowledge
+    const isHodOfCreatorDept = await reqRepo.isHodOfDepartment(eid, creatorDeptId)
+    canAcknowledge = isHodOfCreatorDept
+    errorMessage = 'Only HOD of the requester department can acknowledge receipt'
+  }
+
+  if (!canAcknowledge) return { error: errorMessage, status: 403 }
+  
   await reqRepo.updateHodAcknowledged(reqId, eid)
   return { message: 'Receipt acknowledged', status: 'Completed' }
 }
