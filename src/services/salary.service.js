@@ -4,7 +4,7 @@ function monthLabelFromDate(date) {
   return date ? new Date(date).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : null
 }
 
-/** List all salary slips for employee: payroll_slip first, then legacy. Id format: "p-123" or "s-456". */
+/** List all salary slips for employee: payroll_slip, then old_salary_slip, then legacy. Id format: "p-123", "o-456", "s-789". */
 export async function listSlips(employeeId) {
   const result = []
 
@@ -22,6 +22,24 @@ export async function listSlips(employeeId) {
       deductions: parseFloat(row.total_deductions ?? 0),
       netSalary: parseFloat(row.net_salary ?? 0),
       status: row.status || 'Generated',
+      remarks: row.remarks || ''
+    })
+  })
+
+  const oldSlips = await salaryRepo.listOldSlipsForEmployee(employeeId)
+  oldSlips.forEach((row) => {
+    const monthLabel = row.period_label || monthLabelFromDate(row.pay_month) || 'Old slip'
+    result.push({
+      id: `o-${row.id}`,
+      source: 'old',
+      payrollId: null,
+      month: monthLabel,
+      payMonth: row.pay_month || null,
+      grossSalary: parseFloat(row.gross_salary ?? 0),
+      allowances: parseFloat(row.total_allowances ?? 0),
+      deductions: parseFloat(row.total_deductions ?? 0),
+      netSalary: parseFloat(row.net_salary ?? 0),
+      status: row.status || 'Paid',
       remarks: row.remarks || ''
     })
   })
@@ -53,10 +71,38 @@ export async function listSlips(employeeId) {
   return result
 }
 
-/** Get one slip by id ("p-123" or "s-456") with employeeId for auth. */
+/** List only old (imported) salary slips for an employee. For the "Old salary slips" tab. */
+export async function listOldSlipsOnly(employeeId) {
+  const oldSlips = await salaryRepo.listOldSlipsForEmployee(employeeId)
+  return oldSlips.map((row) => {
+    const monthLabel = row.period_label || monthLabelFromDate(row.pay_month) || 'Old slip'
+    return {
+      id: row.id,
+      slipId: `o-${row.id}`,
+      source: 'old',
+      payrollId: null,
+      month: monthLabel,
+      payMonth: row.pay_month || null,
+      grossSalary: parseFloat(row.gross_salary ?? 0),
+      allowances: parseFloat(row.total_allowances ?? 0),
+      deductions: parseFloat(row.total_deductions ?? 0),
+      netSalary: parseFloat(row.net_salary ?? 0),
+      status: row.status || 'Paid',
+      remarks: row.remarks || ''
+    }
+  })
+}
+
+/** Get one old slip by numeric id (for GET /old-slip/:id). Same shape as getSlipById for old slips. */
+export async function getOldSlipById(id, employeeId) {
+  return getSlipById(`o-${id}`, employeeId)
+}
+
+/** Get one slip by id ("p-123", "o-456", or "s-789") with employeeId for auth. */
 export async function getSlipById(rawId, employeeId) {
   const isPayroll = String(rawId).startsWith('p-')
-  const numericId = isPayroll ? String(rawId).replace(/^p-/, '') : String(rawId).replace(/^s-/, '')
+  const isOld = String(rawId).startsWith('o-')
+  const numericId = isPayroll ? String(rawId).replace(/^p-/, '') : isOld ? String(rawId).replace(/^o-/, '') : String(rawId).replace(/^s-/, '')
 
   if (isPayroll) {
     const slip = await salaryRepo.getPayrollSlipById(numericId, employeeId)
@@ -78,6 +124,68 @@ export async function getSlipById(rawId, employeeId) {
       totNetSalary: parseFloat(slip.net_salary ?? 0),
       remarks: slip.remarks || '',
       salaryStatus: slip.status || 'Generated'
+    }
+  }
+
+  if (isOld) {
+    const slip = await salaryRepo.getOldSlipById(numericId, employeeId)
+    if (!slip) return null
+    const emp = await salaryRepo.getEmployeeBasicInfo(employeeId)
+    const monthLabel = slip.period_label || monthLabelFromDate(slip.pay_month) || 'Old slip'
+    const name = emp ? [emp.first_name, emp.last_name].filter(Boolean).join(' ').trim() : '—'
+    const f = (v) => parseFloat(v ?? 0)
+    return {
+      id: `o-${slip.id}`,
+      payrollId: slip.payroll_id ?? null,
+      month: monthLabel,
+      payMonth: slip.pay_month || null,
+      employeeName: name || '—',
+      employeeCode: emp?.employee_code || '—',
+      email: emp?.email || '—',
+      mDays: slip.m_days,
+      wDays: slip.w_days,
+      aDays: slip.a_days,
+      jlDays: slip.j_l_days,
+      grossSalary: f(slip.gross_salary),
+      basicSalary1: f(slip.basic_salary_1),
+      medicalAllowance2: f(slip.medical_allowance_2),
+      conveyanceFixed3: f(slip.conveyance_fixed_allowance_3),
+      overtime4: f(slip.overtime_allowance_4),
+      houseRent5: f(slip.house_rent_allowance_5),
+      utilities6: f(slip.utilities_allowance_6),
+      meal7: f(slip.meal_allowance_7),
+      arrears8: f(slip.arrears_8),
+      bikeMaintainence9: f(slip.bike_maintainence_9),
+      incentivesTech10: f(slip.incentives_tech_10),
+      deviceReimbursment11: f(slip.device_reimbursment_11),
+      communication12: f(slip.communication_12),
+      incentivesKpi13: f(slip.incentives_kpi_13),
+      otherAllowance14: f(slip.other_allowance_14),
+      loan15: f(slip.loan_15),
+      advanceSalary16: f(slip.advance_salary_16),
+      eobi17: f(slip.eobi_17),
+      incomeTax18: f(slip.income_tax_18),
+      absentDays19: f(slip.absent_days_19),
+      deviceDeduction20: f(slip.device_deduction_20),
+      overUtilizationMobile21: f(slip.over_utilization_mobile_21),
+      vehicleFuel22: f(slip.vehicle_fuel_deduction_22),
+      pandamic23: f(slip.pandamic_deduction_23),
+      lateDays24: f(slip.late_days_24),
+      otherDeduction25: f(slip.other_deduction_25),
+      mobileInstallment26: f(slip.mobile_installment_26),
+      foodPanda27: f(slip.food_panda_27),
+      conveyanceLiters28: f(slip.conveyance_liters_allowance_28),
+      leaves29: f(slip.leaves_29),
+      incrementalArrears31: f(slip.incremental_arrears_31),
+      totGrossSalary: f(slip.tot_gross_salary) || f(slip.gross_salary),
+      totAllowances: f(slip.tot_allowances) || f(slip.total_allowances),
+      totNetGrossAllowances: f(slip.tot_net_gross_allowances),
+      totDeductions: f(slip.tot_deductions) || f(slip.total_deductions),
+      totAcToWd: f(slip.tot_ac_to_wd),
+      totNetSalary: f(slip.tot_net_salary) || f(slip.net_salary),
+      remarks: slip.remarks || '',
+      salaryStatus: slip.salary_status || slip.status || 'Paid',
+      source: 'old'
     }
   }
 
@@ -142,6 +250,13 @@ export async function getSlipById(rawId, employeeId) {
   }
 }
 
+/** Bulk create old salary slips (for import from SQL Server). Each item: employeeId, payMonth, periodLabel?, basicSalary?, grossSalary, totalAllowances, totalDeductions, netSalary, status?, remarks?, sourceEmployeeCode? */
+export async function createOldSalarySlips(slips) {
+  if (!Array.isArray(slips) || slips.length === 0) return { created: 0, ids: [] }
+  const created = await salaryRepo.createOldSalarySlips(slips)
+  return { created: created.length, ids: created.map((c) => c.id) }
+}
+
 /** Legacy: current month salary (latest slip by payroll_id for employee via hr_emp_id). */
 export async function getCurrentSalary(employeeId) {
   const hrIds = await salaryRepo.getHrEmpIdsForEmployee(employeeId)
@@ -171,10 +286,11 @@ export async function getSalaryHistory(employeeId, limit = 12) {
   }))
 }
 
-/** Download: return slip data. rawId = "p-123" or "s-456", employeeId required. */
+/** Download: return slip data. rawId = "p-123", "o-456", or "s-789", employeeId required. */
 export async function getSalarySlipForDownload(rawId, employeeId) {
   const isPayroll = String(rawId).startsWith('p-')
-  const numericId = String(rawId).replace(/^p-|^s-/, '')
+  const isOld = String(rawId).startsWith('o-')
+  const numericId = String(rawId).replace(/^p-|^o-|^s-/, '')
 
   if (isPayroll) {
     const slip = await salaryRepo.getPayrollSlipById(numericId, employeeId)
@@ -199,6 +315,37 @@ export async function getSalarySlipForDownload(rawId, employeeId) {
         salaryStatus: slip.status || '',
         remarks: slip.remarks || '',
         slip
+      }
+    }
+  }
+
+  if (isOld) {
+    const slip = await salaryRepo.getOldSlipById(numericId, employeeId)
+    if (!slip) return null
+    const emp = await salaryRepo.getEmployeeBasicInfo(employeeId)
+    const monthLabel = slip.period_label || monthLabelFromDate(slip.pay_month) || 'Old slip'
+    const name = emp ? [emp.first_name, emp.last_name].filter(Boolean).join(' ').trim() : '—'
+    const totNet = parseFloat(slip.tot_net_salary ?? slip.net_salary ?? 0)
+    const totGross = parseFloat(slip.tot_gross_salary ?? slip.gross_salary ?? 0)
+    const totAll = parseFloat(slip.tot_allowances ?? slip.total_allowances ?? 0)
+    const totDed = parseFloat(slip.tot_deductions ?? slip.total_deductions ?? 0)
+    return {
+      message: 'Salary slip data',
+      data: {
+        id: `o-${slip.id}`,
+        payrollId: slip.payroll_id ?? null,
+        month: monthLabel,
+        employeeName: name || '—',
+        employeeCode: emp?.employee_code || '—',
+        email: emp?.email || '—',
+        totNetSalary: totNet,
+        totGrossSalary: totGross,
+        totAllowances: totAll,
+        totDeductions: totDed,
+        salaryStatus: slip.salary_status || slip.status || '',
+        remarks: slip.remarks || '',
+        slip,
+        source: 'old'
       }
     }
   }
