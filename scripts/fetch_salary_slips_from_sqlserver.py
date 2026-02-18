@@ -116,10 +116,10 @@ def main():
         LEFT JOIN [HR_PAYROLL_PERIOD] p ON p.Payroll_ID = s.Payroll_ID
         LEFT JOIN [HR_PAYROLL_MONTH] m ON m.MNTH_ID = p.MNTH_ID
         LEFT JOIN [HR_FinYearMstr] f ON f.FYID = p.FYID
-        ORDER BY s.Payroll_ID, s.ID
+        ORDER BY s.Payroll_ID, s.HR_Emp_ID
         """
     else:
-        query = f"SELECT {top}* FROM [{args.table}] ORDER BY Payroll_ID, ID"
+        query = f"SELECT {top}* FROM [{args.table}] ORDER BY Payroll_ID, HR_Emp_ID"
 
     print(f"Running query on [{args.table}]...", file=sys.stderr)
     cursor.execute(query)

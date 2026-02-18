@@ -205,7 +205,23 @@ export async function getPortalEmployeeIdsByHrEmpIds(hrEmpIds) {
   return map
 }
 
-/** Normalize a row from SQL Server Pay Sheet or API to DB column names and values. */
+/** Derive pay_month (date, first day of month) from row. Supports Pay_Month, SDT, or Yr+MNTH_NO. */
+function derivePayMonth(row) {
+  const d = row.payMonth ?? row.pay_month ?? row.Pay_Month ?? row.SDT
+  if (d != null && d !== '') {
+    const date = new Date(d)
+    if (!Number.isNaN(date.getTime())) return date.toISOString().slice(0, 10)
+  }
+  const yr = row.Yr ?? row.yr
+  const mnth = row.MNTH_NO ?? row.mnth_no
+  if (yr != null && mnth != null) {
+    const m = String(mnth).padStart(2, '0')
+    return `${yr}-${m}-01`
+  }
+  return null
+}
+
+/** Normalize a row from SQL Server Pay Sheet / salary view or API to DB column names and values. */
 function normalizePaySheetRow(row, hrToPortalMap = null) {
   const num = (v) => (v != null && v !== '' && !Number.isNaN(Number(v))) ? parseFloat(v) : null
   const str = (v) => (v != null && String(v).trim() !== '') ? String(v).trim() : null
@@ -214,19 +230,25 @@ function normalizePaySheetRow(row, hrToPortalMap = null) {
   if ((employee_id == null || employee_id === '') && hrToPortalMap && hrEmpId != null) {
     employee_id = hrToPortalMap.get(String(hrEmpId)) ?? hrToPortalMap.get(hrEmpId)
   }
+  const pay_month = derivePayMonth(row) ?? row.payMonth ?? row.pay_month ?? row.Pay_Month
+  const gross_salary = num(row.grossSalary ?? row.GrossSalary ?? row.gross_salary) ?? 0
+  const tot_net = num(row.netSalary ?? row.net_salary ?? row.Tot_Net_Salary)
+  const tot_ded = num(row.totalDeductions ?? row.total_deductions ?? row.Tot_Deductions)
+  const net_salary = tot_net != null ? tot_net : gross_salary
+  const total_deductions = tot_ded != null ? tot_ded : 0
   return {
     employee_id,
-    pay_month: row.payMonth ?? row.pay_month ?? row.Pay_Month,
-    period_label: str(row.periodLabel ?? row.period_label),
-    basic_salary: num(row.basicSalary ?? row.basic_salary) ?? 0,
-    gross_salary: num(row.grossSalary ?? row.GrossSalary ?? row.gross_salary) ?? 0,
+    pay_month,
+    period_label: str(row.periodLabel ?? row.period_label ?? row.MNTH_NAME ?? row.MNTH_SHORT_NAME),
+    basic_salary: num(row.basicSalary ?? row.basic_salary ?? row.Basic_Salary_1) ?? 0,
+    gross_salary,
     total_allowances: num(row.totalAllowances ?? row.total_allowances ?? row.Tot_Allowances) ?? 0,
-    total_deductions: num(row.totalDeductions ?? row.total_deductions ?? row.Tot_Deductions) ?? 0,
-    net_salary: num(row.netSalary ?? row.net_salary ?? row.Tot_Net_Salary) ?? 0,
+    total_deductions,
+    net_salary,
     status: str(row.status ?? row.Salary_Status ?? row.salary_status) ?? 'Paid',
     remarks: str(row.remarks ?? row.Remarks),
     source_employee_code: str(row.sourceEmployeeCode ?? row.source_employee_code),
-    source_slip_id: row.ID != null ? parseInt(row.ID, 10) : (row.sourceSlipId ?? row.source_slip_id),
+    source_slip_id: row.ID != null ? parseInt(row.ID, 10) : (row.sourceSlipId ?? row.source_slip_id ?? null),
     payroll_id: row.Payroll_ID != null ? parseInt(row.Payroll_ID, 10) : (row.payrollId ?? row.payroll_id),
     hr_emp_id: hrEmpId,
     co_id: row.CO_ID != null ? parseInt(row.CO_ID, 10) : (row.coId ?? row.co_id),
@@ -265,12 +287,12 @@ function normalizePaySheetRow(row, hrToPortalMap = null) {
     conveyance_liters_allowance_28: num(row.Conveyance_Liters_Allowance_28 ?? row.conveyanceLitersAllowance28 ?? row.conveyance_liters_allowance_28),
     leaves_29: num(row.Leaves_29 ?? row.leaves29 ?? row.leaves_29),
     incremental_arrears_31: num(row.Incremental_Arrears_31 ?? row.incrementalArrears31 ?? row.incremental_arrears_31),
-    tot_gross_salary: num(row.Tot_Gross_Salary ?? row.totGrossSalary ?? row.tot_gross_salary),
-    tot_allowances: num(row.Tot_Allowances ?? row.totAllowances ?? row.tot_allowances),
-    tot_net_gross_allowances: num(row.Tot_Net_Gross_Allowances ?? row.totNetGrossAllowances ?? row.tot_net_gross_allowances),
-    tot_deductions: num(row.Tot_Deductions ?? row.totDeductions ?? row.tot_deductions),
-    tot_ac_to_wd: num(row.Tot_AC_To_WD ?? row.totAcToWd ?? row.tot_ac_to_wd),
-    tot_net_salary: num(row.Tot_Net_Salary ?? row.totNetSalary ?? row.tot_net_salary),
+    tot_gross_salary: num(row.Tot_Gross_Salary ?? row.totGrossSalary ?? row.tot_gross_salary) ?? gross_salary,
+    tot_allowances: num(row.Tot_Allowances ?? row.totAllowances ?? row.tot_allowances) ?? 0,
+    tot_net_gross_allowances: num(row.Tot_Net_Gross_Allowances ?? row.totNetGrossAllowances ?? row.tot_net_gross_allowances) ?? gross_salary,
+    tot_deductions: num(row.Tot_Deductions ?? row.totDeductions ?? row.tot_deductions) ?? total_deductions,
+    tot_ac_to_wd: num(row.Tot_AC_To_WD ?? row.totAcToWd ?? row.tot_ac_to_wd) ?? gross_salary,
+    tot_net_salary: num(row.Tot_Net_Salary ?? row.totNetSalary ?? row.tot_net_salary) ?? net_salary,
     salary_status: str(row.Salary_Status ?? row.salaryStatus ?? row.salary_status)
   }
 }
