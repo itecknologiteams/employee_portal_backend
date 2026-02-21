@@ -31,8 +31,13 @@ export const EMAIL_FROM = process.env.EMAIL_FROM || process.env.MAIL_FROM || pro
 
 /**
  * Send requisition reminder email. Logs on failure, does not throw.
+ * @param {object} opts
+ * @param {string} opts.to - recipient email(s), comma-separated
+ * @param {string} opts.subject
+ * @param {string} opts.body - plain-text fallback
+ * @param {string} [opts.html] - optional HTML body; if omitted, body is used with <br/> newlines
  */
-export async function sendRequisitionReminder({ to, subject, body }) {
+export async function sendRequisitionReminder({ to, subject, body, html }) {
   const trans = getTransporter()
   if (!trans) {
     console.warn('Email not configured (SMTP_*). Skipping send.')
@@ -52,7 +57,7 @@ export async function sendRequisitionReminder({ to, subject, body }) {
       to: recipient,
       subject: subj,
       text: body,
-      html: body.replace(/\n/g, '<br/>')
+      html: html || body.replace(/\n/g, '<br/>')
     })
     console.log('📧 [Email] SENT OK →', recipient)
   } catch (err) {
