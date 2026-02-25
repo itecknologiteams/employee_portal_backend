@@ -1,7 +1,7 @@
 import { executeQuery } from '../config/database.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
-import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, getPortalUrl } from '../config/requisition-email-template.js'
+import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, buildRequisitionBucketChangedPlainText, getPortalUrl } from '../config/requisition-email-template.js'
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000   // 3 days left → email every 6 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
@@ -305,7 +305,7 @@ export async function handleRequisitionBucketChanged(data) {
   let row
   try {
     const rows = await executeQuery(
-      `SELECT r.req_id, r.req_reference_no, r.req_required_by_date,
+      `SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_material,
               e.first_name, e.last_name, e.department_id, d.department_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
@@ -342,9 +342,8 @@ export async function handleRequisitionBucketChanged(data) {
     )
     items = itemRows || []
   } catch (_) {}
-  const portalUrl = getPortalUrl()
-  const subject = `Requisition ${refNo} – new case in your queue (${bucketLabel})`
-  const body = `A requisition ${refNo} has been moved to your queue: ${bucketLabel}.\nCreator: ${creatorName}\nRequired by: ${requiredBy}\n\nOpen in portal: ${portalUrl}`
+  const creatorDescription = (row.req_material || '').trim()
+  const body = buildRequisitionBucketChangedPlainText({ refNo, creatorName, requiredBy, departmentName, bucketLabel, creatorDescription, items })
   const html = buildRequisitionEmailHtml({
     title: `Requisition – ${bucketLabel}`,
     refNo,
@@ -352,6 +351,7 @@ export async function handleRequisitionBucketChanged(data) {
     requiredBy,
     departmentName,
     bucketLabel,
+    creatorDescription,
     items
   })
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'bucket_changed', ref: refNo, bucket: newBucket } })
@@ -365,8 +365,13 @@ export async function handleRequisitionReminder3DayTest(data) {
   let row
   try {
     const rows = await executeQuery(
-      `SELECT req_id, req_hod_approval, req_committee_approval, req_ceo_approval, req_procurement_ack, req_handed_to_finance, req_finance_approval, req_is_rejected
-       FROM requisition WHERE req_id = $1`,
+      `SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_material,
+              r.req_hod_approval, r.req_committee_approval, r.req_ceo_approval, r.req_procurement_ack, r.req_handed_to_finance, r.req_finance_approval, r.req_is_rejected,
+              e.first_name, e.last_name, e.department_id, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE r.req_id = $1`,
       [reqId]
     )
     row = rows[0]
@@ -385,14 +390,44 @@ export async function handleRequisitionReminder3DayTest(data) {
     return
   }
 
-  const portalUrl = getPortalUrl()
-  const refNo = data.referenceNo || '#' + reqId
-  const creatorName = data.creatorName || 'Employee'
-  const requiredBy = data.requiredByDate || 'Not set'
+  const refNo = row.req_reference_no || data.referenceNo || '#' + reqId
+  const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || data.creatorName || 'Employee'
+  const requiredBy = row.req_required_by_date
+    ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : (data.requiredByDate || 'Not set')
+  const departmentName = (row.department_name || '').trim()
+  const creatorDescription = (row.req_material || '').trim()
   const bucketLabel = BUCKET_LABELS[bucket] || bucket
+  let items = []
+  try {
+    items = await executeQuery(
+      'SELECT item_desc, item_qty, item_size, item_brand, item_est_cost FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+      [reqId]
+    ) || []
+  } catch (_) {}
+
   const subject = `Requisition ${refNo} – ${bucketLabel} (test reminder)`
-  const body = `Requisition ${refNo} (required by ${requiredBy}) is pending at: ${bucketLabel}.\nCreator: ${creatorName}\n\nOpen in portal: ${portalUrl}`
-  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'reminder_3day_test', ref: refNo, bucket } })
+  const body = buildRequisitionReminderPlainText({
+    refNo,
+    creatorName,
+    requiredBy,
+    departmentName,
+    bucketLabel,
+    creatorDescription,
+    daysMessage: 'pending (test)',
+    items
+  })
+  const html = buildRequisitionEmailHtml({
+    title: `Requisition Reminder – Test`,
+    refNo,
+    creatorName,
+    requiredBy,
+    departmentName,
+    bucketLabel,
+    creatorDescription,
+    items
+  })
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'reminder_3day_test', ref: refNo, bucket } })
 
   // Re-queue only if explicitly set (default 0 = no repeat; was 2 min for testing)
   const delayMinutes = parseInt(process.env.TEST_REMINDER_AFTER_MINUTES || '0', 10)
