@@ -267,6 +267,17 @@ export async function handleRequisitionCreated(data) {
     departmentName = dept[0]?.department_name || ''
   } catch (_) {}
 
+  let creatorDescription = (data.creatorDescription || '').trim()
+  if (!creatorDescription) {
+    try {
+      const reqRow = await executeQuery(
+        'SELECT req_material FROM requisition WHERE req_id = $1',
+        [data.requisitionId]
+      )
+      creatorDescription = (reqRow[0]?.req_material || '').trim()
+    } catch (_) {}
+  }
+
   let items = []
   try {
     const rows = await executeQuery(
@@ -277,7 +288,7 @@ export async function handleRequisitionCreated(data) {
   } catch (_) {}
 
   const subject = `New requisition ${refNo} – pending your approval`
-  const body = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy, departmentName, bucketLabel: 'Pending HOD', items })
+  const body = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy, departmentName, bucketLabel: 'Pending HOD', creatorDescription, items })
   const html = buildRequisitionEmailHtml({
     title: 'New requisition',
     refNo,
@@ -285,6 +296,7 @@ export async function handleRequisitionCreated(data) {
     requiredBy,
     departmentName,
     bucketLabel: 'Pending HOD',
+    creatorDescription,
     items
   })
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'requisition_created', ref: refNo } })

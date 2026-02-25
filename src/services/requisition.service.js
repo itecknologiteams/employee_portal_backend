@@ -199,6 +199,7 @@ debugger
     const departmentId = creator?.department_id ?? null
     const departmentName = creator?.department_name || ''
     const hodEmails = departmentId != null ? await reqRepo.getHodEmailsForDepartment(departmentId) : []
+    const creatorDescription = (material || '').trim() || ''
     if (hodEmails.length > 0 && isEmailConfigured()) {
       let items = []
       try {
@@ -211,11 +212,12 @@ debugger
         requiredBy: requiredByStr,
         departmentName,
         bucketLabel: 'Pending HOD',
+        creatorDescription,
         items
       })
       const subject = `New requisition ${refNo} – pending your approval`
-      const body = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy: requiredByStr, departmentName, bucketLabel: 'Pending HOD', items })
-      await sendRequisitionReminder({ to: hodEmails.join(','), subject, body, html })
+      const bodyText = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy: requiredByStr, departmentName, bucketLabel: 'Pending HOD', creatorDescription, items })
+      await sendRequisitionReminder({ to: hodEmails.join(','), subject, body: bodyText, html })
     }
     if (isBullMQEnabled()) {
       const q = getQueue()
@@ -225,6 +227,7 @@ debugger
         referenceNo: refNo,
         employeeId: parseInt(employeeId, 10),
         creatorName,
+        creatorDescription,
         creatorEmail: process.env.TEST_REMINDER_EMAIL || creator?.email || null,
         departmentId,
         departmentName: creator?.department_name ?? null,

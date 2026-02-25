@@ -6,32 +6,50 @@ export function getPortalUrl() {
 
 /**
  * Build clean plain-text body for requisition emails (avoids malformed "Summary: • -- Qty" when clients strip HTML).
- * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, bucketLabel, items }
+ * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, bucketLabel, creatorDescription, items }
  * @returns {string}
  */
 export function buildRequisitionEmailPlainText(opts) {
   const refNo = opts.refNo || '—'
   const creatorName = opts.creatorName || '—'
   const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = (opts.departmentName || '').trim()
+  const bucketLabel = (opts.bucketLabel || '').trim()
+  const creatorDescription = (opts.creatorDescription || '').trim()
   const items = Array.isArray(opts.items) ? opts.items : []
   const portalUrl = getPortalUrl()
 
   const lines = [
+    '────────────────────────────────────────',
+    '  EMPLOYEE PORTAL – Requisition Notification',
+    '────────────────────────────────────────',
+    '',
     `A new requisition ${refNo} has been submitted by ${creatorName}.`,
-    `Required by date: ${requiredBy}.`,
+    '',
+    `Required by date: ${requiredBy}`,
   ]
+  if (creatorDescription) lines.push('', `Description: ${creatorDescription}`, '')
+  if (departmentName) lines.push(`Department: ${departmentName}`)
+  if (bucketLabel) lines.push(`Status: ${bucketLabel}`)
+  if (departmentName || bucketLabel) lines.push('')
+
   if (items.length > 0) {
-    const itemParts = items.map((it, i) => {
+    lines.push(`Items (${items.length}):`)
+    items.forEach((it, i) => {
       const desc = (it.item_desc || '').trim() || 'No description'
       const qty = it.item_qty != null ? it.item_qty : 1
-      return `Item ${i + 1}: ${desc}, Qty: ${qty}`
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      lines.push(`  ${i + 1}. ${desc} — Qty: ${qty}${extra ? ` (${extra})` : ''}`)
     })
-    lines.push(`Summary: ${items.length} item(s). ${itemParts.join(' | ')}`)
   } else {
-    lines.push('Summary: No items listed.')
+    lines.push('Items: No items listed.')
   }
-  lines.push(`View in portal: ${portalUrl}`)
-  return lines.join('\n')
+
+  lines.push('', 'Please review and take action in the portal.', '', `View in portal: ${portalUrl}`, '')
+  return lines.join('\n').trim()
 }
 
 function escapeHtml(s) {
@@ -47,7 +65,7 @@ function escapeAttr(s) {
 
 /**
  * Build bold HTML email for requisition. Used by both API (on create) and worker (queue).
- * @param {Object} opts - { title, refNo, creatorName, requiredBy, departmentName, bucketLabel, items }
+ * @param {Object} opts - { title, refNo, creatorName, requiredBy, departmentName, bucketLabel, creatorDescription, items }
  * @param {Array} opts.items - [{ item_desc, item_size, item_brand, item_qty, item_est_cost }]
  */
 export function buildRequisitionEmailHtml(opts) {
@@ -58,6 +76,7 @@ export function buildRequisitionEmailHtml(opts) {
   const requiredBy = opts.requiredBy || 'Not set'
   const departmentName = opts.departmentName || ''
   const bucketLabel = opts.bucketLabel || ''
+  const creatorDescription = (opts.creatorDescription || '').trim()
   const items = Array.isArray(opts.items) ? opts.items : []
 
   const summaryRows = [
@@ -65,6 +84,7 @@ export function buildRequisitionEmailHtml(opts) {
     { label: 'Created by', value: creatorName },
     { label: 'Required by', value: requiredBy }
   ]
+  if (creatorDescription) summaryRows.push({ label: 'Description', value: creatorDescription })
   if (departmentName) summaryRows.push({ label: 'Department', value: departmentName })
   if (bucketLabel) summaryRows.push({ label: 'Status', value: bucketLabel })
 
@@ -116,6 +136,7 @@ export function buildRequisitionEmailHtml(opts) {
       <div style="padding:36px 32px 28px 32px;">
         <p style="margin:0 0 8px 0;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.25em;text-transform:uppercase;">Requisition</p>
         <h1 style="margin:0;font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-0.02em;line-height:1.15;font-family:'Syne',sans-serif;">${escapeHtml(title)}</h1>
+        <p style="margin:10px 0 0 0;font-size:14px;color:#a1a1aa;font-family:'Segoe UI',system-ui,sans-serif;">Please review and take action in the portal.</p>
       </div>
       <div style="margin:0 32px 28px 32px;padding:24px 28px;background:#27272a;border-left:4px solid #a4f295;">
         <p style="margin:0 0 18px 0;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.2em;text-transform:uppercase;font-family:'Syne',sans-serif;">Summary</p>
