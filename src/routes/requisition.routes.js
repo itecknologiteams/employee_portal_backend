@@ -10,6 +10,7 @@ router.get('/track-records/:employeeId', requisitionController.getTrackRecordsBy
 router.post('/create', requisitionController.createRequisition)
 router.get('/queue-stats', requisitionController.getQueueStats)
 router.post('/trigger-reminder-check', requisitionController.triggerReminderCheck)
+router.get('/trigger-reminder-check', requisitionController.triggerReminderCheck) // GET alias for testing (browser/curl)
 router.post('/cancel-delayed-jobs', requisitionController.cancelDelayedJobs)
 router.get('/test-email', requisitionController.testEmail)
 router.get('/debug/:employeeId', requisitionController.getDebug)
