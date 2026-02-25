@@ -169,10 +169,16 @@ export async function processRequisitionReminders() {
       [reqId]
     ).then((r) => r[0])
     const bucket = reqRow ? getRequisitionBucket(reqRow) : 'hod'
-    const toEmails = bucket ? await getEmailsForBucket(bucket, row.department_id) : []
+    let toEmails = bucket ? await getEmailsForBucket(bucket, row.department_id) : []
     if (!toEmails.length) {
-      console.warn(`Requisition ${reqId}: no recipient for bucket ${bucket}. Skip.`)
-      continue
+      const testEmail = (process.env.TEST_REMINDER_EMAIL || '').trim()
+      if (testEmail) {
+        toEmails = [testEmail]
+        console.log(`Requisition ${reqId}: sending reminder to TEST_REMINDER_EMAIL (no recipient for bucket ${bucket})`)
+      } else {
+        console.warn(`Requisition ${reqId}: no recipient for bucket ${bucket}. Skip. Set TEST_REMINDER_EMAIL in .env to test.`)
+        continue
+      }
     }
 
     const creatorDescription = (row.req_material || '').trim()
