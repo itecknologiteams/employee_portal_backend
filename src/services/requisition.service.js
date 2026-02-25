@@ -13,6 +13,31 @@ import {
 
 export { parseEmployeeId }
 
+const VALID_BUCKETS = ['hod', 'committee', 'ceo', 'procurement', 'finance']
+
+/** Queue bucket-changed job; on failure or when BullMQ disabled, send email synchronously so emails always go. */
+async function notifyBucketChanged(requisitionId, newBucket) {
+  if (!requisitionId || !VALID_BUCKETS.includes(newBucket)) return
+  let queued = false
+  if (isBullMQEnabled()) {
+    try {
+      const q = getQueue()
+      await q.add('requisition-bucket-changed', { requisitionId, newBucket })
+      queued = true
+    } catch (e) {
+      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+    }
+  }
+  if (!queued) {
+    try {
+      const { handleRequisitionBucketChanged } = await import('../../workers/requisition-reminder-worker.js')
+      await handleRequisitionBucketChanged({ requisitionId, newBucket })
+    } catch (e2) {
+      console.error('Fallback bucket-changed email failed:', e2?.message)
+    }
+  }
+}
+
 export async function getHistory(employeeId, query = {}) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -159,37 +184,13 @@ debugger
   // Auto-advance based on creator role
   if (creatorIsCeo) {
     await reqRepo.autoAdvanceCeoRequisition(reqId)
-    // Notify Procurement that requisition is ready
-    try {
-      if (isBullMQEnabled()) {
-        const q = getQueue()
-        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
-      }
-    } catch (e) {
-      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-    }
+    await notifyBucketChanged(reqId, 'procurement')
   } else if (creatorIsCommittee) {
     await reqRepo.autoAdvanceCommitteeRequisition(reqId)
-    // Notify CEO that requisition is ready
-    try {
-      if (isBullMQEnabled()) {
-        const q = getQueue()
-        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'ceo' })
-      }
-    } catch (e) {
-      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-    }
+    await notifyBucketChanged(reqId, 'ceo')
   } else if (creatorIsHod) {
     await reqRepo.autoAdvanceHodRequisition(reqId)
-    // Notify Committee that requisition is ready
-    try {
-      if (isBullMQEnabled()) {
-        const q = getQueue()
-        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'committee' })
-      }
-    } catch (e) {
-      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-    }
+    await notifyBucketChanged(reqId, 'committee')
   }
 
   try {
@@ -510,26 +511,12 @@ export async function approveHod(body) {
 
   if (totalAmount < LIMIT_50K) {
     await reqRepo.approveHodDirectToProcurement(requisitionId)
-    try {
-      if (isBullMQEnabled()) {
-        const q = getQueue()
-        await q.add('requisition-bucket-changed', { requisitionId, newBucket: 'procurement' })
-      }
-    } catch (e) {
-      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-    }
+    await notifyBucketChanged(requisitionId, 'procurement')
     return { message: 'HOD approval recorded; forwarded to Procurement (total under 50K)', status: 'Forwarded to Procurement' }
   }
 
   await reqRepo.approveHod(requisitionId)
-  try {
-    if (isBullMQEnabled()) {
-      const q = getQueue()
-      await q.add('requisition-bucket-changed', { requisitionId, newBucket: 'committee' })
-    }
-  } catch (e) {
-    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-  }
+  await notifyBucketChanged(requisitionId, 'committee')
   return { message: 'HOD approval recorded', status: totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)' }
 }
 
@@ -599,25 +586,11 @@ export async function approveCommittee(body) {
   totalAfterCommittee = Math.round(totalAfterCommittee)
   if (totalAfterCommittee <= LIMIT_100K) {
     await reqRepo.approveCeo(reqId)
-    try {
-      if (isBullMQEnabled()) {
-        const q = getQueue()
-        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
-      }
-    } catch (e) {
-      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-    }
+    await notifyBucketChanged(reqId, 'procurement')
     return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
   }
 
-  try {
-    if (isBullMQEnabled()) {
-      const q = getQueue()
-      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'ceo' })
-    }
-  } catch (e) {
-    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-  }
+  await notifyBucketChanged(reqId, 'ceo')
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
@@ -648,14 +621,7 @@ export async function approveCeo(body) {
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveCeo(reqId)
-  try {
-    if (isBullMQEnabled()) {
-      const q = getQueue()
-      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
-    }
-  } catch (e) {
-    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-  }
+  await notifyBucketChanged(reqId, 'procurement')
   return { message: 'CEO approval recorded; forwarded to Procurement', status: 'Forwarded to Procurement' }
 }
 
@@ -868,14 +834,7 @@ export async function handoverFinance(body) {
     return { error: 'Add all 3 quotation images before handing over to Finance', status: 400 }
   }
   await reqRepo.handoverToFinance(reqId)
-  try {
-    if (isBullMQEnabled()) {
-      const q = getQueue()
-      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'finance' })
-    }
-  } catch (e) {
-    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-  }
+  await notifyBucketChanged(reqId, 'finance')
   return { message: 'Handed over to Finance', status: 'Pending Finance Approval' }
 }
 
@@ -910,14 +869,7 @@ export async function approveFinance(body) {
   const rows = await reqRepo.getRequisitionForFinanceApproval(reqId)
   if (!rows.length) return { error: 'Requisition not found or not pending finance approval', status: 404 }
   await reqRepo.approveFinance(reqId, eid, idx)
-  try {
-    if (isBullMQEnabled()) {
-      const q = getQueue()
-      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
-    }
-  } catch (e) {
-    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
-  }
+  await notifyBucketChanged(reqId, 'procurement')
   return { message: 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: 'Finance Approved - Ready for Purchase' }
 }
 
