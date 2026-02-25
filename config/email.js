@@ -41,7 +41,6 @@ export const REQUISITION_PORTAL_URL = process.env.REQUISITION_PORTAL_URL || proc
  * @param {string} [opts.html] - optional HTML body; if omitted, body is used with <br/> newlines
  */
 export async function sendRequisitionReminder({ to, subject, body, html }) {
-export async function sendRequisitionReminder({ to, subject, body, html }) {
   const trans = getTransporter()
   if (!trans) {
     console.warn('Email not configured (SMTP_*). Skipping send.')

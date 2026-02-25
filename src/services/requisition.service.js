@@ -1,5 +1,6 @@
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
+import { buildRequisitionEmailHtml, getPortalUrl } from '../../config/requisition-email-template.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import {
   getRequisitionStatus,
@@ -193,6 +194,29 @@ debugger
 
   try {
     const creator = await reqRepo.getCreatorForQueue(employeeId)
+    const creatorName = creator ? `${creator.first_name || ''} ${creator.last_name || ''}`.trim() : 'Employee'
+    const requiredByStr = requiredByDate ? new Date(requiredByDate).toLocaleDateString() : 'Not set'
+    const departmentId = creator?.department_id ?? null
+    const departmentName = creator?.department_name || ''
+    const hodEmails = departmentId != null ? await reqRepo.getHodEmailsForDepartment(departmentId) : []
+    if (hodEmails.length > 0 && isEmailConfigured()) {
+      let items = []
+      try {
+        items = await reqRepo.getRequisitionItems(reqId) || []
+      } catch (_) {}
+      const html = buildRequisitionEmailHtml({
+        title: `New requisition ${refNo}`,
+        refNo,
+        creatorName,
+        requiredBy: requiredByStr,
+        departmentName,
+        bucketLabel: 'Pending HOD',
+        items
+      })
+      const subject = `New requisition ${refNo} – pending your approval`
+      const body = `A new requisition ${refNo} has been submitted by ${creatorName}. Required by: ${requiredByStr}. Open in portal: ${getPortalUrl()}`
+      await sendRequisitionReminder({ to: hodEmails.join(','), subject, body, html })
+    }
     if (isBullMQEnabled()) {
       const q = getQueue()
       const payload = {
@@ -200,19 +224,18 @@ debugger
         requisitionId: reqId,
         referenceNo: refNo,
         employeeId: parseInt(employeeId, 10),
-        creatorName: creator ? `${creator.first_name || ''} ${creator.last_name || ''}`.trim() : null,
+        creatorName,
         creatorEmail: process.env.TEST_REMINDER_EMAIL || creator?.email || null,
-        departmentId: creator?.department_id ?? null,
+        departmentId,
         departmentName: creator?.department_name ?? null,
         itemCount: validItems.length,
         requiredByDate: requiredByDate || null,
         createdAt: new Date().toISOString()
       }
       await q.add('requisition-created', payload)
-      // Test reminder (requisition-reminder-3day-test) disabled for production
     }
   } catch (publishErr) {
-    console.error('Requisition created but BullMQ add failed:', publishErr.message)
+    console.error('Requisition created but notify/add job failed:', publishErr.message)
   }
 
   return { message: 'Requisition submitted successfully', requisitionId: reqId, referenceNo: refNo }
