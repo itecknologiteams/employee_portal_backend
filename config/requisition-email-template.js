@@ -185,7 +185,7 @@ export function buildRequisitionEmailHtml(opts) {
   if (departmentName) summaryRows.push({ label: 'Department', value: departmentName })
   if (bucketLabel) summaryRows.push({ label: 'Status', value: bucketLabel })
 
-  const summaryHtml = summaryRows.map((r) => `<tr><td style="padding:10px 16px 10px 0;font-size:15px;color:#a1a1aa;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:10px 0;font-size:15px;font-weight:700;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`).join('')
+  const summaryHtml = summaryRows.map((r) => `<tr><td style="padding:10px 16px 10px 0;font-size:15px;color:#71717a;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:10px 0;font-size:15px;font-weight:700;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`).join('')
 
   let itemsHtml = ''
   if (items.length > 0) {
@@ -200,15 +200,15 @@ export function buildRequisitionEmailHtml(opts) {
     })
     itemsHtml = `
     <div style="margin-top:32px;">
-      <p style="margin:0 0 14px 0;font-size:11px;font-weight:800;color:#a1a1aa;letter-spacing:0.2em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Items</p>
-      <table style="width:100%;border-collapse:collapse;border:2px solid #18181b;">
-        <thead><tr style="background:#18181b;">
-          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">#</th>
-          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Description</th>
-          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Size</th>
-          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Brand</th>
-          <th style="padding:14px 16px;text-align:right;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Qty</th>
-          <th style="padding:14px 16px;text-align:right;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Est. Cost (PKR)</th>
+      <p style="margin:0 0 14px 0;font-size:11px;font-weight:800;color:#71717a;letter-spacing:0.2em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Items</p>
+      <table style="width:100%;border-collapse:collapse;border:2px solid #22c55e;">
+        <thead><tr style="background:#22c55e;">
+          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#ffffff;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">#</th>
+          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#ffffff;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Description</th>
+          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#ffffff;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Size</th>
+          <th style="padding:14px 16px;text-align:left;font-size:11px;font-weight:800;color:#ffffff;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Brand</th>
+          <th style="padding:14px 16px;text-align:right;font-size:11px;font-weight:800;color:#ffffff;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Qty</th>
+          <th style="padding:14px 16px;text-align:right;font-size:11px;font-weight:800;color:#ffffff;letter-spacing:0.12em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Est. Cost (PKR)</th>
         </tr></thead>
         <tbody>${rows.join('')}</tbody>
       </table>
@@ -226,25 +226,25 @@ export function buildRequisitionEmailHtml(opts) {
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&display=swap" rel="stylesheet">
 </head>
-<body style="margin:0;background:#09090b;font-family:'Syne','Segoe UI',system-ui,sans-serif;padding:28px;">
+<body style="margin:0;background:#ffffff;font-family:'Syne','Segoe UI',system-ui,sans-serif;padding:28px;">
   <div style="max-width:580px;margin:0 auto;">
     <div style="height:6px;background:linear-gradient(90deg,#a4f295 0%,#22c55e 50%,#16a34a 100%);"></div>
-    <div style="background:#18181b;padding:0 0 28px 0;">
+    <div style="background:#ffffff;padding:0 0 28px 0;border:1px solid #e4e4e7;">
       <div style="padding:36px 32px 28px 32px;">
-        <p style="margin:0 0 8px 0;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.25em;text-transform:uppercase;">Requisition</p>
-        <h1 style="margin:0;font-size:32px;font-weight:800;color:#ffffff;letter-spacing:-0.02em;line-height:1.15;font-family:'Syne',sans-serif;">${escapeHtml(title)}</h1>
-        <p style="margin:10px 0 0 0;font-size:14px;color:#a1a1aa;font-family:'Segoe UI',system-ui,sans-serif;">Please review and take action in the portal.</p>
+        <p style="margin:0 0 8px 0;font-size:11px;font-weight:800;color:#16a34a;letter-spacing:0.25em;text-transform:uppercase;">Requisition</p>
+        <h1 style="margin:0;font-size:32px;font-weight:800;color:#18181b;letter-spacing:-0.02em;line-height:1.15;font-family:'Syne',sans-serif;">${escapeHtml(title)}</h1>
+        <p style="margin:10px 0 0 0;font-size:14px;color:#52525b;font-family:'Segoe UI',system-ui,sans-serif;">Please review and take action in the portal.</p>
       </div>
-      <div style="margin:0 32px 28px 32px;padding:24px 28px;background:#27272a;border-left:4px solid #a4f295;">
-        <p style="margin:0 0 18px 0;font-size:11px;font-weight:800;color:#a4f295;letter-spacing:0.2em;text-transform:uppercase;font-family:'Syne',sans-serif;">Summary</p>
+      <div style="margin:0 32px 28px 32px;padding:24px 28px;background:#f4f4f5;border-left:4px solid #22c55e;">
+        <p style="margin:0 0 18px 0;font-size:11px;font-weight:800;color:#16a34a;letter-spacing:0.2em;text-transform:uppercase;font-family:'Syne',sans-serif;">Summary</p>
         <table style="width:100%;border-collapse:collapse;">${summaryHtml}</table>
       </div>
       <div style="margin:0 32px 0 32px;padding:0 0 28px 0;">
         ${itemsHtml}
       </div>
     </div>
-    <div style="background:#27272a;padding:32px;text-align:center;border:2px solid #3f3f46;">
-      <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:18px 40px;background:linear-gradient(135deg,#a4f295 0%,#22c55e 100%);color:#09090b;text-decoration:none;font-size:16px;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;font-family:'Syne',sans-serif;">Open in Portal</a>
+    <div style="background:#f4f4f5;padding:32px;text-align:center;border:1px solid #e4e4e7;border-top:none;">
+      <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:18px 40px;background:linear-gradient(135deg,#a4f295 0%,#22c55e 100%);color:#18181b;text-decoration:none;font-size:16px;font-weight:800;letter-spacing:0.05em;text-transform:uppercase;font-family:'Syne',sans-serif;">Open in Portal</a>
       <p style="margin:20px 0 0 0;font-size:13px;color:#71717a;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(portalUrl)}</p>
     </div>
     <div style="height:6px;background:linear-gradient(90deg,#16a34a 0%,#22c55e 50%,#a4f295 100%);"></div>
