@@ -4,15 +4,17 @@ import { quotationUpload } from '../utils/file.utils.js'
 
 const router = express.Router()
 
+// Literal paths first (before any :param routes) so they are never matched as :reqId
+router.get('/queue-stats', requisitionController.getQueueStats)
+router.post('/trigger-reminder-check', requisitionController.triggerReminderCheck)
+router.get('/trigger-reminder-check', requisitionController.triggerReminderCheck)
+router.post('/cancel-delayed-jobs', requisitionController.cancelDelayedJobs)
+router.get('/test-email', requisitionController.testEmail)
+
 router.get('/history/:employeeId', requisitionController.getHistory)
 router.get('/track-records', requisitionController.getTrackRecords)
 router.get('/track-records/:employeeId', requisitionController.getTrackRecordsByEmployee)
 router.post('/create', requisitionController.createRequisition)
-router.get('/queue-stats', requisitionController.getQueueStats)
-router.post('/trigger-reminder-check', requisitionController.triggerReminderCheck)
-router.get('/trigger-reminder-check', requisitionController.triggerReminderCheck) // GET alias for testing (browser/curl)
-router.post('/cancel-delayed-jobs', requisitionController.cancelDelayedJobs)
-router.get('/test-email', requisitionController.testEmail)
 router.get('/debug/:employeeId', requisitionController.getDebug)
 router.get('/report/all/:employeeId', requisitionController.getReportAll)
 router.get('/pending/hod/:employeeId', requisitionController.getPendingHod)
