@@ -910,6 +910,14 @@ export async function approveFinance(body) {
   const rows = await reqRepo.getRequisitionForFinanceApproval(reqId)
   if (!rows.length) return { error: 'Requisition not found or not pending finance approval', status: 404 }
   await reqRepo.approveFinance(reqId, eid, idx)
+  try {
+    if (isBullMQEnabled()) {
+      const q = getQueue()
+      await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
+    }
+  } catch (e) {
+    console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+  }
   return { message: 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: 'Finance Approved - Ready for Purchase' }
 }
 
