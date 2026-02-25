@@ -63,6 +63,17 @@ export async function getQueueStats(req, res) {
   }
 }
 
+export async function triggerReminderCheck(req, res) {
+  try {
+    const result = await requisitionService.triggerReminderCheck()
+    if (!result.ok) return res.status(400).json(result)
+    res.json(result)
+  } catch (err) {
+    console.error('Trigger reminder check error:', err.message)
+    res.status(500).json({ ok: false, error: err.message })
+  }
+}
+
 export async function cancelDelayedJobs(req, res) {
   try {
     const result = await requisitionService.cancelDelayedJobs()

@@ -272,6 +272,15 @@ export async function getQueueStats() {
   }
 }
 
+export async function triggerReminderCheck() {
+  if (!isBullMQEnabled()) {
+    return { ok: false, message: 'BullMQ not enabled (set BULLMQ_REMINDER_ENABLED=1 or REDIS_HOST)' }
+  }
+  const q = getQueue()
+  await q.add('check-reminders', {}, { jobId: `trigger-reminder-${Date.now()}` })
+  return { ok: true, message: 'Reminder check job added. Worker will run processRequisitionReminders and send emails for requisitions due in 3/2/1 days.' }
+}
+
 export async function cancelDelayedJobs() {
   if (!isBullMQEnabled()) {
     return { ok: false, message: 'BullMQ not enabled' }
