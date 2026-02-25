@@ -185,7 +185,9 @@ export function buildRequisitionEmailHtml(opts) {
   if (departmentName) summaryRows.push({ label: 'Department', value: departmentName })
   if (bucketLabel) summaryRows.push({ label: 'Status', value: bucketLabel })
 
-  const summaryHtml = summaryRows.map((r) => `<tr><td style="padding:10px 16px 10px 0;font-size:14px;color:#64748b;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:10px 0;font-size:15px;font-weight:600;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`).join('')
+  const summaryHtml = summaryRows.map((r) =>
+    `<tr><td style="padding:8px 12px 8px 0;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:8px 0;font-size:14px;font-weight:600;color:#111827;font-family:Arial,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`
+  ).join('')
 
   let itemsHtml = ''
   if (items.length > 0) {
@@ -195,30 +197,21 @@ export function buildRequisitionEmailHtml(opts) {
       const brand = it.item_brand || '—'
       const qty = it.item_qty != null ? it.item_qty : '—'
       const cost = it.item_est_cost != null ? it.item_est_cost : '—'
-      const bg = i % 2 === 0 ? '#f8fafc' : '#ffffff'
-      return `<tr style="background:${bg};"><td style="padding:12px 16px;font-size:14px;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;border-bottom:1px solid #e4e4e7;">${i + 1}</td><td style="padding:12px 16px;font-size:14px;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;border-bottom:1px solid #e4e4e7;">${escapeHtml(desc)}</td><td style="padding:12px 16px;font-size:14px;color:#52525b;font-family:'Segoe UI',system-ui,sans-serif;border-bottom:1px solid #e4e4e7;">${escapeHtml(String(size))}</td><td style="padding:12px 16px;font-size:14px;color:#52525b;font-family:'Segoe UI',system-ui,sans-serif;border-bottom:1px solid #e4e4e7;">${escapeHtml(String(brand))}</td><td style="padding:12px 16px;font-size:14px;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;border-bottom:1px solid #e4e4e7;text-align:right;font-weight:600;">${escapeHtml(String(qty))}</td><td style="padding:12px 16px;font-size:14px;color:#18181b;font-family:'Segoe UI',system-ui,sans-serif;border-bottom:1px solid #e4e4e7;text-align:right;font-weight:600;">${escapeHtml(String(cost))}</td></tr>`
+      const bg = i % 2 === 0 ? '#f9fafb' : '#ffffff'
+      return `<tr style="background:${bg};"><td style="padding:10px 12px;font-size:13px;color:#374151;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${i + 1}</td><td style="padding:10px 12px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(desc)}</td><td style="padding:10px 12px;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(String(size))}</td><td style="padding:10px 12px;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(String(brand))}</td><td style="padding:10px 12px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(String(qty))}</td><td style="padding:10px 12px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600;">${escapeHtml(String(cost))}</td></tr>`
     })
     itemsHtml = `
-    <div style="margin-top:24px;">
-      <div style="border:2px solid #3b82f6;border-radius:8px;overflow:hidden;background:#ffffff;">
-        <div style="padding:16px 20px;background:#3b82f6;">
-          <p style="margin:0;font-size:13px;font-weight:700;color:#ffffff;letter-spacing:0.05em;text-transform:uppercase;font-family:'Segoe UI',system-ui,sans-serif;">Items (${items.length})</p>
-        </div>
-        <table style="width:100%;border-collapse:collapse;" cellpadding="0" cellspacing="0">
-          <thead><tr style="background:#f1f5f9;">
-            <th style="padding:12px 16px;text-align:left;font-size:12px;font-weight:700;color:#334155;font-family:'Segoe UI',system-ui,sans-serif;">#</th>
-            <th style="padding:12px 16px;text-align:left;font-size:12px;font-weight:700;color:#334155;font-family:'Segoe UI',system-ui,sans-serif;">Description</th>
-            <th style="padding:12px 16px;text-align:left;font-size:12px;font-weight:700;color:#334155;font-family:'Segoe UI',system-ui,sans-serif;">Size</th>
-            <th style="padding:12px 16px;text-align:left;font-size:12px;font-weight:700;color:#334155;font-family:'Segoe UI',system-ui,sans-serif;">Brand</th>
-            <th style="padding:12px 16px;text-align:right;font-size:12px;font-weight:700;color:#334155;font-family:'Segoe UI',system-ui,sans-serif;">Qty</th>
-            <th style="padding:12px 16px;text-align:right;font-size:12px;font-weight:700;color:#334155;font-family:'Segoe UI',system-ui,sans-serif;">Est. Cost (PKR)</th>
-          </tr></thead>
-          <tbody>${rows.join('')}</tbody>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;border:1px solid #d1d5db;border-collapse:collapse;background:#ffffff;">
+      <tr><td style="padding:12px 16px;background:#3b82f6;font-size:13px;font-weight:700;color:#ffffff;font-family:Arial,sans-serif;">Requisition Items (${items.length})</td></tr>
+      <tr><td style="padding:0;">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+          <tr style="background:#f3f4f6;"><td style="padding:10px 12px;font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;">#</td><td style="padding:10px 12px;font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;">Description</td><td style="padding:10px 12px;font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;">Size</td><td style="padding:10px 12px;font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;">Brand</td><td style="padding:10px 12px;font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;text-align:right;">Qty</td><td style="padding:10px 12px;font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;text-align:right;">Est. Cost (PKR)</td></tr>
+          ${rows.join('')}
         </table>
-      </div>
-    </div>`
+      </td></tr>
+    </table>`
   } else {
-    itemsHtml = `<div style="margin-top:24px;border:1px solid #e4e4e7;border-radius:8px;padding:24px;background:#fafafa;"><p style="margin:0;font-size:14px;color:#71717a;font-family:'Segoe UI',system-ui,sans-serif;">No items listed – view in portal for details.</p></div>`
+    itemsHtml = `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;border:1px solid #e5e7eb;background:#f9fafb;"><tr><td style="padding:20px;font-size:14px;color:#6b7280;font-family:Arial,sans-serif;">No items listed. View in portal for details.</td></tr></table>`
   }
 
   return `<!DOCTYPE html>
@@ -226,36 +219,66 @@ export function buildRequisitionEmailHtml(opts) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&display=swap" rel="stylesheet">
+  <title>Requisition ${escapeAttr(refNo)} – Employee Portal</title>
 </head>
-<body style="margin:0;background:#ffffff;font-family:'Segoe UI',system-ui,sans-serif;padding:24px 16px;text-align:center;">
-  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:600px;margin:0 auto;">
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Arial,sans-serif;font-size:14px;color:#374151;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f3f4f6;padding:24px 16px;">
     <tr>
-      <td align="center" style="padding:0;">
-        <div style="max-width:580px;margin:0 auto;text-align:left;">
-          <div style="height:6px;background:linear-gradient(90deg,#93c5fd 0%,#3b82f6 50%,#2563eb 100%);"></div>
-          <div style="background:#ffffff;padding:0 0 28px 0;border:1px solid #e4e4e7;">
-            <div style="padding:32px 28px 24px 28px;">
-              <p style="margin:0 0 8px 0;font-size:11px;font-weight:700;color:#2563eb;letter-spacing:0.2em;text-transform:uppercase;">Requisition</p>
-              <h1 style="margin:0;font-size:26px;font-weight:800;color:#18181b;line-height:1.25;font-family:'Syne',sans-serif;">${escapeHtml(title)}</h1>
-              <p style="margin:10px 0 0 0;font-size:14px;color:#52525b;font-family:'Segoe UI',system-ui,sans-serif;">Please review and take action in the portal.</p>
-            </div>
-            <div style="margin:0 28px 24px 28px;padding:20px 24px;background:#f4f4f5;border-left:4px solid #3b82f6;">
-              <p style="margin:0 0 16px 0;font-size:11px;font-weight:700;color:#2563eb;letter-spacing:0.15em;text-transform:uppercase;">Summary</p>
-              <table style="width:100%;border-collapse:collapse;">${summaryHtml}</table>
-            </div>
-            <div style="margin:0 28px 0 28px;padding:0 0 28px 0;">
-              ${itemsHtml}
-            </div>
-          </div>
-          <div style="background:#f4f4f5;padding:28px;text-align:center;border:1px solid #e4e4e7;border-top:none;">
-            <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:14px 32px;background:#3b82f6;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;font-family:'Segoe UI',system-ui,sans-serif;">Open in Portal</a>
-            <p style="margin:16px 0 0 0;font-size:12px;color:#71717a;font-family:'Segoe UI',system-ui,sans-serif;">${escapeHtml(portalUrl)}</p>
-          </div>
-          <div style="height:6px;background:linear-gradient(90deg,#2563eb 0%,#3b82f6 50%,#93c5fd 100%);"></div>
-        </div>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
+          <tr>
+            <td style="background:#ffffff;border:1px solid #e5e7eb;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="padding:20px 24px;background:#3b82f6;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td style="font-size:16px;font-weight:700;color:#ffffff;">Employee Portal</td>
+                      </tr>
+                      <tr>
+                        <td style="padding-top:4px;font-size:13px;color:#bfdbfe;">Requisition Notification</td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:24px;">
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                      <tr>
+                        <td>
+                          <span style="display:inline-block;padding:6px 12px;background:#dbeafe;color:#1d4ed8;font-size:13px;font-weight:700;">Ref: ${escapeHtml(refNo)}</span>
+                        </td>
+                      </tr>
+                      <tr>
+                        <td style="padding-top:16px;font-size:18px;font-weight:700;color:#111827;">${escapeHtml(title)}</td>
+                      </tr>
+                      <tr>
+                        <td style="padding-top:8px;font-size:14px;color:#6b7280;">Please review this requisition and take action in the portal.</td>
+                      </tr>
+                    </table>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin-top:20px;border:1px solid #e5e7eb;background:#f9fafb;">
+                      <tr>
+                        <td style="padding:14px 16px;font-size:12px;font-weight:700;color:#3b82f6;text-transform:uppercase;letter-spacing:0.5px;">Details</td>
+                      </tr>
+                      <tr>
+                        <td style="padding:0 16px 16px 16px;">
+                          <table role="presentation" width="100%" cellpadding="0" cellspacing="0">${summaryHtml}</table>
+                        </td>
+                      </tr>
+                    </table>
+                    ${itemsHtml}
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:20px 24px;background:#f9fafb;border-top:1px solid #e5e7eb;text-align:center;">
+                    <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:12px 28px;background:#3b82f6;color:#ffffff;text-decoration:none;font-size:14px;font-weight:700;">View in Portal</a>
+                    <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding-top:12px;font-size:12px;color:#9ca3af;">${escapeHtml(portalUrl)}</td></tr></table>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
       </td>
     </tr>
   </table>
