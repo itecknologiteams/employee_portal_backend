@@ -34,8 +34,13 @@ export const REQUISITION_PORTAL_URL = process.env.REQUISITION_PORTAL_URL || proc
 
 /**
  * Send requisition reminder email. Logs on failure, does not throw.
- * Pass `html` for rich HTML; otherwise `body` is used as text and simple <br/> HTML.
+ * @param {object} opts
+ * @param {string} opts.to - recipient email(s), comma-separated
+ * @param {string} opts.subject
+ * @param {string} opts.body - plain-text fallback
+ * @param {string} [opts.html] - optional HTML body; if omitted, body is used with <br/> newlines
  */
+export async function sendRequisitionReminder({ to, subject, body, html }) {
 export async function sendRequisitionReminder({ to, subject, body, html }) {
   const trans = getTransporter()
   if (!trans) {
@@ -49,9 +54,10 @@ export async function sendRequisitionReminder({ to, subject, body, html }) {
     return
   }
   const subj = subject || 'Requisition Reminder'
-  const htmlContent = html != null && html !== '' ? html : (body ? String(body).replace(/\n/g, '<br/>') : '')
-  const textContent = body || (html ? html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '')
-  console.log('📧 [Email] Sending to:', recipient, '| Subject:', subj)
+  const hasRichHtml = html != null && String(html).trim().length > 0
+  const htmlContent = hasRichHtml ? html : (body ? String(body).replace(/\n/g, '<br/>') : '')
+  const textContent = body || (hasRichHtml ? 'View requisition in your browser (HTML email).' : '')
+  console.log('📧 [Email] Sending to:', recipient, '| Subject:', subj, hasRichHtml ? '| HTML: yes' : '')
   try {
     await trans.sendMail({
       from,
