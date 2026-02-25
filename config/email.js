@@ -29,10 +29,14 @@ export function isEmailConfigured() {
 
 export const EMAIL_FROM = process.env.EMAIL_FROM || process.env.MAIL_FROM || process.env.SMTP_USER
 
+/** Portal URL for requisition emails (link to open RFM portal). */
+export const REQUISITION_PORTAL_URL = process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/'
+
 /**
  * Send requisition reminder email. Logs on failure, does not throw.
+ * Pass `html` for rich HTML; otherwise `body` is used as text and simple <br/> HTML.
  */
-export async function sendRequisitionReminder({ to, subject, body }) {
+export async function sendRequisitionReminder({ to, subject, body, html }) {
   const trans = getTransporter()
   if (!trans) {
     console.warn('Email not configured (SMTP_*). Skipping send.')
@@ -45,14 +49,16 @@ export async function sendRequisitionReminder({ to, subject, body }) {
     return
   }
   const subj = subject || 'Requisition Reminder'
+  const htmlContent = html != null && html !== '' ? html : (body ? String(body).replace(/\n/g, '<br/>') : '')
+  const textContent = body || (html ? html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim() : '')
   console.log('📧 [Email] Sending to:', recipient, '| Subject:', subj)
   try {
     await trans.sendMail({
       from,
       to: recipient,
       subject: subj,
-      text: body,
-      html: body.replace(/\n/g, '<br/>')
+      text: textContent,
+      html: htmlContent || textContent.replace(/\n/g, '<br/>')
     })
     console.log('📧 [Email] SENT OK →', recipient)
   } catch (err) {

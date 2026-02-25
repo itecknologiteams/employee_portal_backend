@@ -191,6 +191,40 @@ export async function getHodByDepartment(departmentId) {
   }
 }
 
+/** Returns HOD email(s) for a department (for requisition notifications). */
+export async function getHodEmailsForDepartment(departmentId) {
+  if (departmentId == null) return []
+  try {
+    const rows = await executeQuery(
+      `SELECT e.email FROM employees e
+       LEFT JOIN employee_hod_departments h ON h.employee_id = e.employee_id AND h.department_id = $1
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
+       WHERE e.department_id = $1 AND e.is_active = true AND e.email IS NOT NULL AND e.email != ''
+         AND (h.employee_id IS NOT NULL OR et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
+       LIMIT 5`,
+      [departmentId]
+    )
+    const emails = (rows || []).map(r => r.email).filter(Boolean)
+    if (emails.length) return emails
+  } catch (err) {
+    if (err.code === '42P01') return []
+  }
+  try {
+    const rows = await executeQuery(
+      `SELECT e.email FROM employees e
+       INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+       WHERE e.department_id = $1 AND e.is_active = true AND e.email IS NOT NULL AND e.email != ''
+       LIMIT 5`,
+      [departmentId]
+    )
+    return (rows || []).map(r => r.email).filter(Boolean)
+  } catch (err) {
+    if (err.code === '42P01') return []
+  }
+  return []
+}
+
 /** True if this employee is HOD of this department (employee_hod_departments first, then by type or designation). */
 export async function isHodOfDepartment(employeeId, departmentId) {
   if (employeeId == null || departmentId == null) return false
@@ -399,7 +433,10 @@ export async function rejectRequisition(requisitionId) {
 
 export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost) {
   return executeQuery(
-    `UPDATE requisition_items SET item_size = $1, item_brand = $2, item_qty = $3, item_est_cost = $4 WHERE item_id = $5 AND req_id = $6`,
+    `UPDATE requisition_items SET
+       item_size = $1, item_brand = $2, item_qty = $3, item_est_cost = $4,
+       hod_item_size = $1, hod_item_brand = $2, hod_item_qty = $3, hod_item_est_cost = $4
+     WHERE item_id = $5 AND req_id = $6`,
     [size || null, brand || null, (qty != null && !Number.isNaN(qty)) ? qty : null, estCost || null, itemId, reqId]
   )
 }
@@ -407,6 +444,18 @@ export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost)
 export async function approveHod(requisitionId) {
   return executeQuery(
     'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
+    [requisitionId]
+  )
+}
+
+/** HOD approve with direct route to Procurement (skip Committee & CEO). Used when total < 50K. */
+export async function approveHodDirectToProcurement(requisitionId) {
+  return executeQuery(
+    `UPDATE requisition SET
+       req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP,
+       req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP,
+       req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP
+     WHERE req_id = $1`,
     [requisitionId]
   )
 }

@@ -390,7 +390,9 @@ export async function getApprovedByHod(employeeId) {
 }
 
 export async function approveHod(body) {
-  const { requisitionId, approvedByEmployeeId, approved, boqItems } = body
+  const boqItemsRaw = body.boqItems ?? body.boq_items
+  const boqItems = Array.isArray(boqItemsRaw) ? boqItemsRaw : []
+  const { requisitionId, approvedByEmployeeId, approved } = body
   if (!requisitionId || approvedByEmployeeId == null) {
     return { error: 'requisitionId and approvedByEmployeeId required', status: 400 }
   }
@@ -404,18 +406,86 @@ export async function approveHod(body) {
     await reqRepo.rejectRequisition(requisitionId)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
-  if (Array.isArray(boqItems) && boqItems.length > 0) {
+  if (boqItems.length > 0) {
     for (const row of boqItems) {
-      const itemId = row.itemId != null ? parseInt(row.itemId, 10) : null
+      const itemId = (row.itemId ?? row.item_id) != null ? parseInt(row.itemId ?? row.item_id, 10) : null
       if (itemId == null || Number.isNaN(itemId)) continue
       const size = row.size != null ? String(row.size).trim() : null
-      const qty = row.quantity != null ? parseInt(row.quantity, 10) : null
+      const qty = (row.quantity != null && row.quantity !== '') ? parseInt(row.quantity, 10) : null
       const brand = row.brand != null ? String(row.brand).trim() : null
-
-      const estCost = row.estCost != null ? String(row.estCost).trim() : null
-      await reqRepo.updateItemHodBoq(itemId, requisitionId, size, brand,qty, estCost)
+      const estCostVal = row.estCost ?? row.est_cost ?? ''
+      const estCost = (estCostVal != null && String(estCostVal).trim() !== '') ? String(estCostVal).trim() : null
+      await reqRepo.updateItemHodBoq(itemId, requisitionId, size, brand, qty, estCost)
     }
   }
+
+  const items = await reqRepo.getRequisitionItems(requisitionId)
+  if (!items.length) return { error: 'Requisition has no items', status: 400 }
+
+  const LIMIT_50K = 50000
+  const LIMIT_100K = 100000
+  let totalAmount = 0
+
+  if (boqItems.length > 0) {
+    // Route purely from request BOQ: total = sum(quantity * price per piece) from payload only.
+    const boqByItemId = new Map()
+    for (const row of boqItems) {
+      const itemId = (row.itemId ?? row.item_id) != null ? parseInt(row.itemId ?? row.item_id, 10) : null
+      if (itemId == null || Number.isNaN(itemId)) continue
+      const qtyRaw = row.quantity
+      const qty = (qtyRaw != null && qtyRaw !== '') ? parseInt(qtyRaw, 10) : 0
+      const costVal = row.estCost ?? row.est_cost ?? ''
+      const costStr = costVal != null ? String(costVal).trim() : ''
+      const pricePerPiece = costStr !== '' ? parseFloat(String(costStr).replace(/,/g, '')) : NaN
+      if (Number.isNaN(pricePerPiece) || pricePerPiece < 0) {
+        return { error: 'Every item must have a price per piece (PKR). Please fill price per piece for all items in the BOQ.', status: 400 }
+      }
+      if (Number.isNaN(qty) || qty < 0) {
+        return { error: 'Every item must have a valid quantity.', status: 400 }
+      }
+      boqByItemId.set(itemId, { qty, pricePerPiece })
+      totalAmount += qty * pricePerPiece
+    }
+    const covered = items.every(it => {
+      const id = it.item_id ?? it.itemId
+      return id != null && boqByItemId.has(Number(id))
+    })
+    if (!covered || boqByItemId.size === 0) {
+      return { error: 'BOQ (quantity and price per piece) is required for every item. Please fill all items and submit again.', status: 400 }
+    }
+    totalAmount = Math.round(Number(totalAmount))
+  } else {
+    const boqByItemId = new Map()
+    for (const it of items) {
+      const itemId = it.item_id ?? it.itemId
+      const qty = (it.item_qty != null && !Number.isNaN(Number(it.item_qty))) ? Number(it.item_qty) : (it.hod_item_qty != null ? Number(it.hod_item_qty) : 0)
+      const costRaw = it.item_est_cost ?? it.hod_item_est_cost ?? ''
+      const pricePerPiece = (costRaw != null && String(costRaw).trim() !== '')
+        ? parseFloat(String(costRaw).replace(/,/g, '').trim()) : NaN
+      if (Number.isNaN(pricePerPiece) || pricePerPiece < 0) {
+        return { error: 'Every item must have a price per piece (PKR). Please fill price per piece for all items in the BOQ.', status: 400 }
+      }
+      if (qty < 0 || Number.isNaN(qty)) {
+        return { error: 'Every item must have a valid quantity.', status: 400 }
+      }
+      totalAmount += qty * pricePerPiece
+    }
+    totalAmount = Math.round(Number(totalAmount))
+  }
+
+  if (totalAmount < LIMIT_50K) {
+    await reqRepo.approveHodDirectToProcurement(requisitionId)
+    try {
+      if (isBullMQEnabled()) {
+        const q = getQueue()
+        await q.add('requisition-bucket-changed', { requisitionId, newBucket: 'procurement' })
+      }
+    } catch (e) {
+      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+    }
+    return { message: 'HOD approval recorded; forwarded to Procurement (total under 50K)', status: 'Forwarded to Procurement' }
+  }
+
   await reqRepo.approveHod(requisitionId)
   try {
     if (isBullMQEnabled()) {
@@ -425,7 +495,7 @@ export async function approveHod(body) {
   } catch (e) {
     console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
   }
-  return { message: 'HOD approval recorded', status: 'Pending Committee' }
+  return { message: 'HOD approval recorded', status: totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)' }
 }
 
 export async function getPendingCommittee(employeeId) {
@@ -468,14 +538,43 @@ export async function approveCommittee(body) {
       }, {})
     : {}
   for (const it of items) {
-    if (byItemId[it.item_id] === undefined) {
+    const itemId = it.item_id ?? it.itemId
+    if (itemId == null || byItemId[itemId] === undefined) {
       return { error: 'Approved quantity is required for every item. Please enter quantity for each line item.', status: 400 }
     }
   }
   for (const it of items) {
-    await reqRepo.updateItemCommitteeApprovedQty(it.item_id, byItemId[it.item_id])
+    const itemId = it.item_id ?? it.itemId
+    await reqRepo.updateItemCommitteeApprovedQty(itemId, byItemId[itemId])
   }
   await reqRepo.approveCommittee(reqId)
+
+  // CEO approval is required only when total (after committee-approved qty) is greater than 100K; if total <= 100K skip CEO and forward to Procurement.
+  const LIMIT_100K = 100000
+  const itemsAfter = await reqRepo.getRequisitionItems(reqId)
+  let totalAfterCommittee = 0
+  for (const it of itemsAfter) {
+    const qtyRaw = it.committee_approved_qty ?? it.committeeApprovedQty
+    const qty = (qtyRaw != null && !Number.isNaN(Number(qtyRaw))) ? Number(qtyRaw) : 0
+    const costRaw = it.item_est_cost ?? it.hod_item_est_cost ?? it.itemEstCost ?? ''
+    const pricePerPiece = (costRaw != null && String(costRaw).trim() !== '')
+      ? parseFloat(String(costRaw).replace(/,/g, '').trim()) : NaN
+    if (!Number.isNaN(pricePerPiece) && pricePerPiece >= 0) totalAfterCommittee += qty * pricePerPiece
+  }
+  totalAfterCommittee = Math.round(totalAfterCommittee)
+  if (totalAfterCommittee <= LIMIT_100K) {
+    await reqRepo.approveCeo(reqId)
+    try {
+      if (isBullMQEnabled()) {
+        const q = getQueue()
+        await q.add('requisition-bucket-changed', { requisitionId: reqId, newBucket: 'procurement' })
+      }
+    } catch (e) {
+      console.error('BullMQ requisition-bucket-changed add failed:', e?.message)
+    }
+    return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
+  }
+
   try {
     if (isBullMQEnabled()) {
       const q = getQueue()

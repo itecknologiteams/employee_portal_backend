@@ -3,6 +3,74 @@ import * as repo from '../repositories/payroll.repository.js'
 
 const VALID_STATUSES = ['draft', 'processing', 'processed', 'closed']
 
+// ---------- Employee search (for Gross Salaries etc.) ----------
+export async function searchEmployees(req, res) {
+  try {
+    const search = req.query.search != null ? String(req.query.search).trim() : ''
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50))
+    const result = await payrollService.searchEmployees(search, limit)
+    res.json(result)
+  } catch (err) {
+    if (err.code === '42P01') return res.json({ data: [] })
+    console.error('Payroll employee search error:', err)
+    res.status(500).json({ error: 'Failed to search employees' })
+  }
+}
+
+// ---------- Gross salaries ----------
+export async function addGrossSalary(req, res) {
+  try {
+    const { employeeId, grossSalary } = req.body
+    if (employeeId == null || grossSalary == null) {
+      return res.status(400).json({ error: 'employeeId and grossSalary are required' })
+    }
+    const result = await payrollService.addGrossSalary(employeeId, grossSalary)
+    res.status(201).json(result)
+  } catch (err) {
+    if (err.message && (err.message.includes('Invalid') || err.message.includes('must be'))) {
+      return res.status(400).json({ error: err.message })
+    }
+    if (err.code === '23503') return res.status(400).json({ error: 'Employee not found' })
+    console.error('Add gross salary error:', err)
+    res.status(500).json({ error: err.message || 'Failed to add gross salary' })
+  }
+}
+
+export async function listGrossSalaries(req, res) {
+  try {
+    const search = req.query.search != null ? String(req.query.search).trim() : ''
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1)
+    const limit = Math.min(500, Math.max(1, parseInt(req.query.limit, 10) || 100))
+    const result = await payrollService.listGrossSalaries(search, page, limit)
+    res.json(result)
+  } catch (err) {
+    if (err.code === '42P01') return res.json({ data: [], total: 0, page: 1, limit: 100, totalPages: 0 })
+    console.error('List gross salaries error:', err)
+    res.status(500).json({ error: 'Failed to fetch gross salaries' })
+  }
+}
+
+export async function uploadGrossSalaries(req, res) {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No file uploaded. Use form field "file".' })
+    }
+    const result = await payrollService.uploadGrossSalariesFromExcel(req.file.buffer)
+    res.json({
+      message: `Upload complete. ${result.added} gross salary(ies) saved.`,
+      added: result.added,
+      totalRows: result.totalRows,
+      errors: result.errors
+    })
+  } catch (err) {
+    if (err.message && err.message.includes('Excel')) {
+      return res.status(400).json({ error: err.message })
+    }
+    console.error('Upload gross salaries error:', err)
+    res.status(500).json({ error: err.message || 'Failed to upload gross salaries' })
+  }
+}
+
 // ---------- Periods ----------
 export async function listPeriods(req, res) {
   try {

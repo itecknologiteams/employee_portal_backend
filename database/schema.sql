@@ -390,6 +390,14 @@ CREATE TABLE IF NOT EXISTS employee_salary_structure (
 );
 CREATE INDEX IF NOT EXISTS idx_employee_salary_structure_employee ON employee_salary_structure(employee_id);
 
+-- Gross salary per employee (used for Gross Salaries list and to derive structure by join-date rules)
+CREATE TABLE IF NOT EXISTS employee_gross_salary (
+    employee_id INTEGER NOT NULL PRIMARY KEY REFERENCES employees(employee_id) ON DELETE CASCADE,
+    gross_salary DECIMAL(18,2) NOT NULL CHECK (gross_salary >= 0),
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_employee_gross_salary_updated ON employee_gross_salary(updated_at);
+
 -- -----------------------------------------------------------------------------
 -- 10. Triggers and functions
 -- -----------------------------------------------------------------------------

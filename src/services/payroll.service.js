@@ -1,4 +1,119 @@
 import * as repo from '../repositories/payroll.repository.js'
+import * as XLSX from 'xlsx'
+
+// ---------- Gross salary (add by input) ----------
+export async function addGrossSalary(employeeId, grossSalary) {
+  const eid = parseInt(employeeId, 10)
+  if (!Number.isInteger(eid)) throw new Error('Invalid employee ID')
+  const gross = parseFloat(grossSalary)
+  if (!Number.isFinite(gross) || gross <= 0) throw new Error('Gross salary must be a positive number')
+
+  const joinDate = await repo.getEmployeeJoinDate(eid)
+  const structure = repo.computeStructureFromGross(gross, joinDate)
+  if (!structure) throw new Error('Could not compute salary structure')
+
+  await repo.upsertGrossSalary(eid, gross)
+  await repo.upsertSalaryStructure({
+    employeeId: eid,
+    ...structure
+  })
+  return {
+    employeeId: eid,
+    grossSalary: gross,
+    joinDate: joinDate || null,
+    message: 'Gross salary saved; structure updated from join-date rules.'
+  }
+}
+
+/** Process one gross salary row (used by upload). Returns { success, error? }. */
+async function processGrossSalaryRow(employeeId, grossSalary) {
+  const eid = parseInt(employeeId, 10)
+  if (!Number.isInteger(eid)) return { success: false, error: 'Invalid employee ID' }
+  const gross = parseFloat(grossSalary)
+  if (!Number.isFinite(gross) || gross <= 0) return { success: false, error: 'Gross salary must be a positive number' }
+  const joinDate = await repo.getEmployeeJoinDate(eid)
+  const structure = repo.computeStructureFromGross(gross, joinDate)
+  if (!structure) return { success: false, error: 'Could not compute structure' }
+  await repo.upsertGrossSalary(eid, gross)
+  await repo.upsertSalaryStructure({ employeeId: eid, ...structure })
+  return { success: true }
+}
+
+export async function uploadGrossSalariesFromExcel(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer', cellDates: false })
+  const sheetName = workbook.SheetNames[0]
+  if (!sheetName) throw new Error('Excel file has no sheets')
+  const sheet = workbook.Sheets[sheetName]
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  if (!rows.length) throw new Error('Excel file is empty')
+  const headerRow = rows[0].map((h) => String(h || '').trim().toLowerCase())
+  const colEmployee = headerRow.findIndex((h) =>
+    /employee\s*(id|code)/i.test(h) || h === 'employee_code' || h === 'employee_id' || h === 'employee id' || h === 'employee code'
+  )
+  const colGross = headerRow.findIndex((h) =>
+    /gross\s*salary/i.test(h) || h === 'gross_salary' || h === 'gross salary'
+  )
+  if (colEmployee < 0 || colGross < 0) {
+    throw new Error('Excel must have columns "employee_code" / "Employee ID" and "gross_salary" / "Gross Salary" in the first row')
+  }
+  const added = []
+  const errors = []
+  for (let i = 1; i < rows.length; i++) {
+    const row = rows[i]
+    const rawId = row[colEmployee]
+    const rawGross = row[colGross]
+    if (rawId == null && rawGross == null) continue
+    const codeOrId = rawId != null ? String(rawId).trim() : ''
+    const grossVal = rawGross != null ? parseFloat(String(rawGross).replace(/,/g, '')) : NaN
+    if (!codeOrId) {
+      errors.push({ row: i + 1, message: 'Missing employee ID/code' })
+      continue
+    }
+    if (!Number.isFinite(grossVal) || grossVal <= 0) {
+      errors.push({ row: i + 1, message: 'Invalid or missing gross salary' })
+      continue
+    }
+    const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
+    if (!employeeId) {
+      errors.push({ row: i + 1, message: `Employee not found: ${codeOrId}` })
+      continue
+    }
+    try {
+      await processGrossSalaryRow(employeeId, grossVal)
+      added.push({ row: i + 1, employeeId, grossSalary: grossVal })
+    } catch (err) {
+      errors.push({ row: i + 1, message: err.message || 'Failed to save' })
+    }
+  }
+  return { added: added.length, totalRows: rows.length - 1, errors }
+}
+
+export async function listGrossSalaries(search, page = 1, limit = 100) {
+  const safeLimit = Math.min(500, Math.max(1, parseInt(limit, 10) || 100))
+  const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * safeLimit
+  const searchParam = search && String(search).trim() ? `%${String(search).trim()}%` : ''
+  const data = await repo.listGrossSalaries(searchParam, safeLimit, offset)
+  const total = await repo.countGrossSalaries(searchParam)
+  return {
+    data: data.map((r) => ({
+      employeeId: r.employee_id,
+      employeeName: [r.first_name, r.last_name].filter(Boolean).join(' ') || null,
+      employeeCode: r.employee_code,
+      grossSalary: parseFloat(r.gross_salary) ?? 0,
+      updatedAt: r.updated_at
+    })),
+    total,
+    page: Math.max(1, parseInt(page, 10) || 1),
+    limit: safeLimit,
+    totalPages: Math.ceil(total / safeLimit) || 1
+  }
+}
+
+// ---------- Employee search (for Gross Salaries dropdown) ----------
+export async function searchEmployees(search, limit = 50) {
+  const rows = await repo.searchEmployees(search, limit)
+  return { data: rows }
+}
 
 function overlapDays(leaveStart, leaveEnd, periodStart, periodEnd) {
   const s = new Date(Math.max(new Date(leaveStart), new Date(periodStart)))

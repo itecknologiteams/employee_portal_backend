@@ -18,7 +18,7 @@ async function initPool() {
       server: process.env.DB_HOST || '192.168.20.166',
       database: process.env.DB_DATABASE || 'iteck_erp',
       user: process.env.DB_USER || 'tech',
-      password: process.env.DB_PASSWORD || 'tech',
+      password: "EmP$D3v#2026!qR4" || 'tech',
       options: {
         encrypt: false,
         trustServerCertificate: true,
@@ -32,6 +32,7 @@ async function initPool() {
     return pool
   }
   const { Pool } = await import('pg')
+  const useSsl = process.env.DB_SSL === 'true' || process.env.DB_SSL === '1'
   pool = new Pool({
     host: process.env.DB_HOST || '192.168.20.21',
     database: process.env.DB_DATABASE || 'employee_portal',
@@ -41,6 +42,7 @@ async function initPool() {
     max: 20,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: parseInt(process.env.DB_CONNECT_TIMEOUT || '10000', 10),
+    ...(useSsl && { ssl: { rejectUnauthorized: process.env.DB_SSL_VERIFY !== 'false' } }),
   })
   pool.on('connect', () => console.log('✅ Connected to PostgreSQL database'))
   pool.on('error', (err) => console.error('❌ Database pool error:', err.message))

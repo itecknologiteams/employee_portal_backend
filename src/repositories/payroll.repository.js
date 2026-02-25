@@ -145,6 +145,168 @@ export async function upsertOverride(periodId, employeeId, workingDays, otherAll
   })
 }
 
+// ---------- Gross salary (add by input: derive structure from gross + Date of Joining) ----------
+// Cutoff: employees with Date of Joining before 1 Sept 2022 use 80% basic / 20% medical; on or after use 58.5% / 6.5% / 29% HRA / 6% utility.
+const SEPT_2022_CUTOFF = '2022-09-01' // Compare as date string to avoid timezone issues
+
+/** Get employee's Date of Joining (join_date from employees). Used to decide which gross-split rule applies. */
+export async function getEmployeeJoinDate(employeeId) {
+  const rows = await executeQuery(
+    'SELECT join_date FROM employees WHERE employee_id = $1',
+    [employeeId]
+  )
+  return rows[0]?.join_date ?? null
+}
+
+/** True if Date of Joining is before 1 September 2022 (use 80/20 rule). Uses UTC date so DB value 2022-09-01 is consistent. */
+function isBeforeSeptember2022(joinDate) {
+  if (!joinDate) return true // missing DOJ: treat as pre-Sept 2022
+  const d = new Date(joinDate)
+  const dateStr = d.toISOString().slice(0, 10) // YYYY-MM-DD in UTC
+  return dateStr < SEPT_2022_CUTOFF
+}
+
+/** Resolve employee_id from employee code (string) or id (number). Returns null if not found. */
+export async function getEmployeeIdByCodeOrId(codeOrId) {
+  if (codeOrId == null || String(codeOrId).trim() === '') return null
+  const str = String(codeOrId).trim()
+  const asInt = parseInt(str, 10)
+  if (Number.isInteger(asInt)) {
+    const byId = await executeQuery(
+      'SELECT employee_id FROM employees WHERE is_active = true AND employee_id = $1 LIMIT 1',
+      [asInt]
+    )
+    if (byId.length) return byId[0].employee_id
+  }
+  const byCode = await executeQuery(
+    'SELECT employee_id FROM employees WHERE is_active = true AND (employee_code = $1 OR employee_code::text = $1) LIMIT 1',
+    [str]
+  )
+  return byCode.length ? byCode[0].employee_id : null
+}
+
+/** Upsert into employee_gross_salary (so list and Excel can use it). */
+export async function upsertGrossSalary(employeeId, grossSalary) {
+  const gross = parseFloat(grossSalary)
+  if (!Number.isFinite(gross) || gross < 0) return
+  await executeQuery(
+    `INSERT INTO employee_gross_salary (employee_id, gross_salary, updated_at)
+     VALUES ($1, $2, CURRENT_TIMESTAMP)
+     ON CONFLICT (employee_id) DO UPDATE SET
+       gross_salary = EXCLUDED.gross_salary,
+       updated_at = CURRENT_TIMESTAMP`,
+    [employeeId, gross]
+  ).catch((err) => {
+    if (err.code === '42P01') {
+      throw new Error('employee_gross_salary table not found. Run database/migration-gross-salary.sql')
+    }
+    throw err
+  })
+}
+
+export async function listGrossSalaries(searchParam, limit, offset) {
+  const searchCondition = searchParam
+    ? `AND (e.first_name ILIKE $1 OR e.last_name ILIKE $1 OR e.employee_code::text ILIKE $1 OR CONCAT(e.first_name, ' ', e.last_name) ILIKE $1)`
+    : ''
+  const params = searchParam ? [searchParam, limit, offset] : [limit, offset]
+  const limitIdx = searchParam ? 2 : 1
+  const offsetIdx = searchParam ? 3 : 2
+  return executeQuery(
+    `SELECT g.employee_id, g.gross_salary, g.updated_at,
+            e.first_name, e.last_name, e.employee_code
+     FROM employee_gross_salary g
+     JOIN employees e ON e.employee_id = g.employee_id
+     WHERE 1=1 ${searchCondition}
+     ORDER BY g.updated_at DESC, e.first_name, e.last_name
+     LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+    params
+  ).catch((err) => {
+    if (err.code === '42P01') return [] // table not created yet
+    throw err
+  })
+}
+
+export async function countGrossSalaries(searchParam) {
+  const searchCondition = searchParam
+    ? `AND (e.first_name ILIKE $1 OR e.last_name ILIKE $1 OR e.employee_code::text ILIKE $1 OR CONCAT(e.first_name, ' ', e.last_name) ILIKE $1)`
+    : ''
+  const params = searchParam ? [searchParam] : []
+  const result = await executeQuery(
+    `SELECT COUNT(*)::int AS total
+     FROM employee_gross_salary g
+     JOIN employees e ON e.employee_id = g.employee_id
+     WHERE 1=1 ${searchCondition}`,
+    params
+  ).catch((err) => {
+    if (err.code === '42P01') return [{ total: 0 }]
+    throw err
+  })
+  return parseInt(result[0]?.total ?? 0, 10)
+}
+
+/** Compute basic/medical/hra/utilities from gross using Date of Joining rules; other allowances 0. */
+export function computeStructureFromGross(grossSalary, joinDate) {
+  const gross = parseFloat(grossSalary) || 0
+  if (gross <= 0) return null
+  const beforeSep2022 = isBeforeSeptember2022(joinDate)
+  if (beforeSep2022) {
+    return {
+      basicSalary: Math.round(gross * 0.8 * 100) / 100,
+      medicalAllowance: Math.round(gross * 0.2 * 100) / 100,
+      conveyanceAllowance: 0,
+      conveyanceLitersAllowance: 0,
+      communicationAllowance: 0,
+      houseRentAllowance: 0,
+      utilitiesAllowance: 0,
+      mealAllowance: 0,
+      otherAllowance: 0,
+      arrears: 0,
+      incrementalArrears: 0,
+      bikeMaintenanceAllowance: 0,
+      incentives: 0,
+      deviceReimbursement: 0,
+      eobiFixed: 130
+    }
+  }
+  return {
+    basicSalary: Math.round(gross * 0.585 * 100) / 100,
+    medicalAllowance: Math.round(gross * 0.065 * 100) / 100,
+    conveyanceAllowance: 0,
+    conveyanceLitersAllowance: 0,
+    communicationAllowance: 0,
+    houseRentAllowance: Math.round(gross * 0.29 * 100) / 100,
+    utilitiesAllowance: Math.round(gross * 0.06 * 100) / 100,
+    mealAllowance: 0,
+    otherAllowance: 0,
+    arrears: 0,
+    incrementalArrears: 0,
+    bikeMaintenanceAllowance: 0,
+    incentives: 0,
+    deviceReimbursement: 0,
+    eobiFixed: 130
+  }
+}
+
+// ---------- Employee search (for Gross Salaries etc.) ----------
+export async function searchEmployees(searchTerm, limit = 50) {
+  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 50))
+  const pattern = searchTerm && String(searchTerm).trim() ? `%${String(searchTerm).trim()}%` : '%'
+  const hasSearch = pattern !== '%'
+  const where = hasSearch
+    ? 'WHERE (e.first_name ILIKE $1 OR e.last_name ILIKE $1 OR e.email ILIKE $1 OR e.employee_code ILIKE $1) AND e.is_active = true'
+    : 'WHERE e.is_active = true'
+  const params = hasSearch ? [pattern, safeLimit] : [safeLimit]
+  const limitParam = hasSearch ? '$2' : '$1'
+  return executeQuery(
+    `SELECT e.employee_id AS id, e.employee_code AS code, e.first_name, e.last_name, e.email
+     FROM employees e
+     ${where}
+     ORDER BY e.first_name, e.last_name
+     LIMIT ${limitParam}`,
+    params
+  )
+}
+
 // ---------- Run payroll ----------
 export async function getEmployeesForPayroll() {
   return executeQuery(

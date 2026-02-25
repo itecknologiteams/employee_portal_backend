@@ -1,7 +1,16 @@
 import express from 'express'
 import * as payrollController from '../controllers/payroll.controller.js'
+import { payrollExcelUpload } from '../utils/file.utils.js'
 
 const router = express.Router()
+
+// ---------- Employee search (must be before /periods/:id) ----------
+router.get('/employees', payrollController.searchEmployees)
+
+// ---------- Gross salaries (upload route first so /upload is matched before :id-style) ----------
+router.get('/gross-salaries', payrollController.listGrossSalaries)
+router.post('/gross-salaries/upload', payrollExcelUpload.single('file'), payrollController.uploadGrossSalaries)
+router.post('/gross-salaries', payrollController.addGrossSalary)
 
 // ---------- Payroll periods ----------
 router.get('/periods', payrollController.listPeriods)

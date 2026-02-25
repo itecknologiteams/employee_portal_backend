@@ -15,3 +15,16 @@ export const quotationUpload = multer({
     cb(null, !!allowed)
   }
 })
+
+/** Excel upload for payroll (gross salaries, etc.) - .xlsx, .xls */
+export const payrollExcelUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const mimetypeOk = file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.mimetype === 'application/vnd.ms-excel' ||
+      file.mimetype === 'application/octet-stream'
+    const nameOk = /\.(xlsx|xls)$/i.test(file.originalname || '')
+    cb(null, !!(mimetypeOk && nameOk))
+  }
+})
