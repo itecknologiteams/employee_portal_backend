@@ -322,7 +322,11 @@ export async function handleRequisitionBucketChanged(data) {
     console.warn('[BullMQ] requisition-bucket-changed: requisition not found', requisitionId)
     return
   }
-  const toEmails = await getEmailsForBucket(newBucket, row.department_id)
+  let toEmails = await getEmailsForBucket(newBucket, row.department_id)
+  if (!toEmails.length && process.env.TEST_REMINDER_EMAIL) {
+    toEmails = [process.env.TEST_REMINDER_EMAIL.trim()]
+    console.log('[BullMQ] requisition-bucket-changed: no recipient for bucket', newBucket, '– using TEST_REMINDER_EMAIL')
+  }
   if (!toEmails.length) {
     console.log('[BullMQ] requisition-bucket-changed:', row.req_reference_no || requisitionId, '– no recipient for bucket', newBucket)
     return
@@ -354,6 +358,7 @@ export async function handleRequisitionBucketChanged(data) {
     creatorDescription,
     items
   })
+  const subject = `Requisition ${refNo} – ${bucketLabel} (moved to your queue)`
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'bucket_changed', ref: refNo, bucket: newBucket } })
 }
 
