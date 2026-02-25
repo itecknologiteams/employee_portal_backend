@@ -54,8 +54,8 @@ export async function sendRequisitionReminder({ to, subject, body, html }) {
   }
   const subj = subject || 'Requisition Reminder'
   const hasRichHtml = html != null && String(html).trim().length > 0
-  const htmlContent = hasRichHtml ? html : (body ? String(body).replace(/\n/g, '<br/>') : '')
-  const textContent = body || (hasRichHtml ? 'View requisition in your browser (HTML email).' : '')
+  const htmlContent = hasRichHtml ? String(html).trim() : (body ? String(body).replace(/\n/g, '<br/>') : '')
+  const textContent = (body || (hasRichHtml ? 'View requisition in your browser (HTML email).' : '')).trim()
   console.log('📧 [Email] Sending to:', recipient, '| Subject:', subj, hasRichHtml ? '| HTML: yes' : '')
   try {
     await trans.sendMail({

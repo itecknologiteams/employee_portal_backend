@@ -1,7 +1,7 @@
 import { executeQuery } from '../config/database.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
-import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, getPortalUrl } from '../config/requisition-email-template.js'
+import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, getPortalUrl } from '../config/requisition-email-template.js'
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000   // 3 days left → email every 6 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
@@ -93,10 +93,12 @@ export async function processRequisitionReminders() {
   today.setHours(0, 0, 0, 0)
 
   const query = `
-    SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_emp_id,
-           e.first_name, e.last_name, e.department_id
+    SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_emp_id, r.req_material,
+           e.first_name, e.last_name, e.department_id,
+           d.department_name
     FROM requisition r
     JOIN employees e ON r.req_emp_id = e.employee_id
+    LEFT JOIN departments d ON e.department_id = d.department_id
     WHERE r.req_required_by_date IS NOT NULL
       AND r.req_required_by_date >= $1
       AND COALESCE(r.req_is_rejected, 0) = 0
@@ -128,45 +130,35 @@ export async function processRequisitionReminders() {
     const now = Date.now()
     let shouldSend = false
     let subject = ''
-    let body = ''
+    let urgencyLabel = ''
+    let daysMessage = ''
 
     const reqDateFormatted = row.req_required_by_date
       ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
       : '—'
 
-    let urgencyColor = '#d97706'
-    let urgencyLabel = ''
-    let daysMessage = ''
-
-    const portalUrl = getPortalUrl()
     if (daysLeft === 3) {
       if (lastSent === null || (now - lastSent) >= SIX_HOURS_MS) {
         shouldSend = true
-        urgencyColor = '#2563eb'
         urgencyLabel = '3 Days Remaining'
         daysMessage = '3 days remaining'
         subject = `Requisition ${refNo} – 3 Days Until Required Date`
-        body = `Requisition ${refNo} (required by ${reqDateFormatted}) has 3 days remaining.\nCreator: ${creatorName}\n\nOpen in portal: ${portalUrl}`
       }
     } else if (daysLeft === 2) {
       if (lastSent === null || (now - lastSent) >= THREE_HOURS_MS) {
         shouldSend = true
-        urgencyColor = '#d97706'
         urgencyLabel = '2 Days Remaining'
         daysMessage = '2 days remaining'
         subject = `Requisition ${refNo} – 2 Days Until Required Date`
-        body = `Requisition ${refNo} (required by ${reqDateFormatted}) has 2 days remaining.\nCreator: ${creatorName}\n\nOpen in portal: ${portalUrl}`
       }
     } else if (daysLeft <= 1) {
       if (lastSent === null || (now - lastSent) >= ONE_HOUR_MS) {
         shouldSend = true
-        urgencyColor = '#dc2626'
         urgencyLabel = daysLeft === 0 ? 'Due Today' : '1 Day Remaining'
         daysMessage = daysLeft === 0 ? 'due today' : '1 day remaining'
         subject = daysLeft === 0
           ? `Requisition ${refNo} – Due Today`
           : `Requisition ${refNo} – 1 Day Until Required Date`
-        body = `Requisition ${refNo} (required by ${reqDateFormatted}) ${daysLeft === 0 ? 'is due today.' : 'has 1 day remaining.'}\nCreator: ${creatorName}\n\nOpen in portal: ${portalUrl}`
       }
     }
 
@@ -183,58 +175,38 @@ export async function processRequisitionReminders() {
       continue
     }
 
-    const reminderHtml = `<!DOCTYPE html>
-<html lang="en">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#f0f2f5;font-family:Arial,Helvetica,sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f0f2f5;padding:30px 0">
-    <tr><td align="center">
-      <table width="600" cellpadding="0" cellspacing="0" style="max-width:600px;width:100%;background:#ffffff;border-radius:10px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.1)">
-        <tr>
-          <td style="background:linear-gradient(135deg,${urgencyColor},${urgencyColor}cc);padding:28px 30px;text-align:center">
-            <h1 style="margin:0;color:#ffffff;font-size:22px;font-weight:700">Requisition Reminder</h1>
-            <p style="margin:6px 0 0;color:rgba(255,255,255,0.85);font-size:14px">Ref: <strong>${refNo}</strong> &nbsp;·&nbsp; <strong>${urgencyLabel}</strong></p>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px 30px 0">
-            <p style="margin:0 0 16px;font-size:15px;color:#444">
-              Requisition <strong>${refNo}</strong> is still pending and the required-by date is approaching — <strong style="color:${urgencyColor}">${daysMessage}</strong>.
-            </p>
-            <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8f9ff;border:1px solid #dde3f0;border-radius:6px">
-              <tr>
-                <td style="padding:10px 16px;border-bottom:1px solid #dde3f0;width:40%"><span style="color:#6b7280;font-size:13px">Requisition No.</span></td>
-                <td style="padding:10px 16px;border-bottom:1px solid #dde3f0"><strong style="color:${urgencyColor}">${refNo}</strong></td>
-              </tr>
-              <tr>
-                <td style="padding:10px 16px;border-bottom:1px solid #dde3f0"><span style="color:#6b7280;font-size:13px">Submitted By</span></td>
-                <td style="padding:10px 16px;border-bottom:1px solid #dde3f0"><span style="color:#111">${creatorName}</span></td>
-              </tr>
-              <tr>
-                <td style="padding:10px 16px"><span style="color:#6b7280;font-size:13px">Required By</span></td>
-                <td style="padding:10px 16px"><span style="color:#111;font-weight:600">${reqDateFormatted}</span></td>
-              </tr>
-            </table>
-            <p style="margin:16px 0 0;font-size:14px;color:#6b7280">Please take action so the requisition can be completed by the required date.</p>
-          </td>
-        </tr>
-        <tr>
-          <td style="padding:24px 30px;text-align:center">
-            <a href="${portalUrl}" style="display:inline-block;background:${urgencyColor};color:#ffffff;text-decoration:none;padding:12px 30px;border-radius:6px;font-size:15px;font-weight:600">View in Portal</a>
-          </td>
-        </tr>
-        <tr>
-          <td style="background:#f8f9ff;padding:16px 30px;text-align:center;border-top:1px solid #e5e7eb">
-            <p style="margin:0;font-size:12px;color:#9ca3af">This is an automated notification from the Employee Portal. Please do not reply to this email.</p>
-          </td>
-        </tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>`
+    const creatorDescription = (row.req_material || '').trim()
+    const departmentName = (row.department_name || '').trim()
+    let items = []
+    try {
+      const itemRows = await executeQuery(
+        'SELECT item_desc, item_qty, item_size, item_brand, item_est_cost FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+        [reqId]
+      )
+      items = itemRows || []
+    } catch (_) {}
 
-    await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html: reminderHtml, meta: { event: 'reminder_daily', ref: refNo } })
+    const body = buildRequisitionReminderPlainText({
+      refNo,
+      creatorName,
+      requiredBy: reqDateFormatted,
+      departmentName,
+      bucketLabel: urgencyLabel,
+      creatorDescription,
+      daysMessage,
+      items
+    })
+    const html = buildRequisitionEmailHtml({
+      title: `Requisition Reminder – ${urgencyLabel}`,
+      refNo,
+      creatorName,
+      requiredBy: reqDateFormatted,
+      departmentName,
+      bucketLabel: urgencyLabel,
+      creatorDescription,
+      items
+    })
+    await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html })
     try {
       await redis.set(key, String(now))
       const ttlDays = 3

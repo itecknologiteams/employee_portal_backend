@@ -52,6 +52,55 @@ export function buildRequisitionEmailPlainText(opts) {
   return lines.join('\n').trim()
 }
 
+/**
+ * Same structure as plain-text notification but for reminder emails (3d/2d/1d/due today).
+ * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, bucketLabel (urgencyLabel), creatorDescription, daysMessage, items }
+ * @returns {string}
+ */
+export function buildRequisitionReminderPlainText(opts) {
+  const refNo = opts.refNo || '—'
+  const creatorName = opts.creatorName || '—'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = (opts.departmentName || '').trim()
+  const bucketLabel = (opts.bucketLabel || '').trim()
+  const creatorDescription = (opts.creatorDescription || '').trim()
+  const daysMessage = (opts.daysMessage || '').trim()
+  const items = Array.isArray(opts.items) ? opts.items : []
+  const portalUrl = getPortalUrl()
+
+  const lines = [
+    '────────────────────────────────────────',
+    '  EMPLOYEE PORTAL – Requisition Reminder',
+    '────────────────────────────────────────',
+    '',
+    `Reminder: Requisition ${refNo} is ${daysMessage}. Creator: ${creatorName}.`,
+    '',
+    `Required by date: ${requiredBy}`,
+  ]
+  if (creatorDescription) lines.push('', `Description: ${creatorDescription}`, '')
+  if (departmentName) lines.push(`Department: ${departmentName}`)
+  if (bucketLabel) lines.push(`Status: ${bucketLabel}`)
+  if (departmentName || bucketLabel) lines.push('')
+
+  if (items.length > 0) {
+    lines.push(`Items (${items.length}):`)
+    items.forEach((it, i) => {
+      const desc = (it.item_desc || '').trim() || 'No description'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      lines.push(`  ${i + 1}. ${desc} — Qty: ${qty}${extra ? ` (${extra})` : ''}`)
+    })
+  } else {
+    lines.push('Items: No items listed.')
+  }
+
+  lines.push('', 'Please review and take action in the portal.', '', `View in portal: ${portalUrl}`, '')
+  return lines.join('\n').trim()
+}
+
 function escapeHtml(s) {
   if (s == null) return ''
   const str = String(s)
