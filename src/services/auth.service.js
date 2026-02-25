@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs'
 import * as authRepo from '../repositories/auth.repository.js'
+import { checkLoginWithCrm, isCrmLoginEnabled } from '../../config/crm-database.js'
 
 const ALL_PERMISSION_KEYS = [
   'dashboard', 'profile', 'salary_slip', 'leave', 'feedback',
@@ -31,7 +32,6 @@ async function getPermissionsForRole(roleName) {
 }
 
 async function getEffectivePermissions(empId, roleName) {
-  debugger
   if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
   try {
     const overrideRows = await authRepo.getUserPermissionOverrides(empId)
@@ -48,6 +48,54 @@ async function getEffectivePermissions(empId, roleName) {
 }
 
 export async function login(loginId, password) {
+  const useCrm = isCrmLoginEnabled()
+
+  if (useCrm) {
+    const crmValid = await checkLoginWithCrm(loginId, password)
+    if (crmValid === false) {
+      return { error: 'Invalid username/email or password', status: 401 }
+    }
+    if (crmValid === true) {
+      // CRM says valid – load user from portal (no password check); user must exist in portal
+      const userRows = await authRepo.findUserByUsername(loginId).catch(() => [])
+      if (userRows.length > 0) {
+        const row = userRows[0]
+        if (!row.is_active) {
+          return { error: 'Account is deactivated. Please contact HR.', status: 403 }
+        }
+        const permissions = await getEffectivePermissions(row.emp_id, row.user_type)
+        return {
+          employeeId: row.emp_id,
+          name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
+          email: row.email,
+          department: row.department_name || '',
+          position: '',
+          userType: row.user_type,
+          permissions
+        }
+      }
+      const result = await authRepo.findEmployeeByEmail(loginId).catch(() => [])
+      if (result.length > 0) {
+        const employee = result[0]
+        if (!employee.is_active) {
+          return { error: 'Account is deactivated. Please contact HR.', status: 403 }
+        }
+        const permissions = await getEffectivePermissions(employee.employee_id, 'User')
+        return {
+          employeeId: employee.employee_id,
+          name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+          email: employee.email,
+          department: employee.department_name || employee.department_id,
+          position: employee.position,
+          userType: 'User',
+          permissions
+        }
+      }
+      return { error: 'User not found in portal. Please contact HR.', status: 403 }
+    }
+    // crmValid === null (CRM disabled or error) – fall through to portal-only login
+  }
+
   try {
     const userRows = await authRepo.findUserByUsername(loginId)
     if (userRows.length > 0) {
