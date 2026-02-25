@@ -1,6 +1,6 @@
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
-import { buildRequisitionEmailHtml, getPortalUrl } from '../../config/requisition-email-template.js'
+import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText } from '../../config/requisition-email-template.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import {
   getRequisitionStatus,
@@ -205,7 +205,7 @@ debugger
         items = await reqRepo.getRequisitionItems(reqId) || []
       } catch (_) {}
       const html = buildRequisitionEmailHtml({
-        title: `New requisition ${refNo}`,
+        title: 'New requisition',
         refNo,
         creatorName,
         requiredBy: requiredByStr,
@@ -214,7 +214,7 @@ debugger
         items
       })
       const subject = `New requisition ${refNo} – pending your approval`
-      const body = `A new requisition ${refNo} has been submitted by ${creatorName}. Required by: ${requiredByStr}. Open in portal: ${getPortalUrl()}`
+      const body = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy: requiredByStr, departmentName, bucketLabel: 'Pending HOD', items })
       await sendRequisitionReminder({ to: hodEmails.join(','), subject, body, html })
     }
     if (isBullMQEnabled()) {

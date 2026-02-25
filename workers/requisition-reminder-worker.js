@@ -1,7 +1,7 @@
 import { executeQuery } from '../config/database.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
-import { buildRequisitionEmailHtml, getPortalUrl } from '../config/requisition-email-template.js'
+import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, getPortalUrl } from '../config/requisition-email-template.js'
 
 const SIX_HOURS_MS = 6 * 60 * 60 * 1000   // 3 days left → email every 6 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
@@ -276,9 +276,8 @@ export async function handleRequisitionCreated(data) {
     items = rows || []
   } catch (_) {}
 
-  const portalUrl = getPortalUrl()
   const subject = `New requisition ${refNo} – pending your approval`
-  const body = `A new requisition ${refNo} has been submitted by ${creatorName}. Required by: ${requiredBy}. Open in portal: ${portalUrl}`
+  const body = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy, departmentName, bucketLabel: 'Pending HOD', items })
   const html = buildRequisitionEmailHtml({
     title: 'New requisition',
     refNo,

@@ -4,6 +4,36 @@ export function getPortalUrl() {
   return (REQUISITION_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
 }
 
+/**
+ * Build clean plain-text body for requisition emails (avoids malformed "Summary: • -- Qty" when clients strip HTML).
+ * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, bucketLabel, items }
+ * @returns {string}
+ */
+export function buildRequisitionEmailPlainText(opts) {
+  const refNo = opts.refNo || '—'
+  const creatorName = opts.creatorName || '—'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const items = Array.isArray(opts.items) ? opts.items : []
+  const portalUrl = getPortalUrl()
+
+  const lines = [
+    `A new requisition ${refNo} has been submitted by ${creatorName}.`,
+    `Required by date: ${requiredBy}.`,
+  ]
+  if (items.length > 0) {
+    const itemParts = items.map((it, i) => {
+      const desc = (it.item_desc || '').trim() || 'No description'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      return `Item ${i + 1}: ${desc}, Qty: ${qty}`
+    })
+    lines.push(`Summary: ${items.length} item(s). ${itemParts.join(' | ')}`)
+  } else {
+    lines.push('Summary: No items listed.')
+  }
+  lines.push(`View in portal: ${portalUrl}`)
+  return lines.join('\n')
+}
+
 function escapeHtml(s) {
   if (s == null) return ''
   const str = String(s)
