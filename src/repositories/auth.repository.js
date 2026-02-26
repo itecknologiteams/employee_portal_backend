@@ -24,6 +24,27 @@ export async function findEmployeeByEmail(loginId) {
   )
 }
 
+/** Find portal employee by employee_code (e.g. CRM HR_Emp_ID) for CRM login match. */
+export async function findEmployeeByEmployeeCode(employeeCode) {
+  return executeQuery(
+    `SELECT e.employee_id, e.first_name, e.last_name, e.email, e.department_id,
+        d.department_name, e.position, e.is_active
+     FROM employees e
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE e.employee_code = $1`,
+    [String(employeeCode).trim()]
+  )
+}
+
+/** Get user_type for an employee (from users table) if they have a portal login. */
+export async function getUserTypeByEmployeeId(employeeId) {
+  const rows = await executeQuery(
+    'SELECT user_type FROM users WHERE emp_id = $1',
+    [employeeId]
+  )
+  return rows[0]?.user_type ?? null
+}
+
 export async function getEmployeeForPasswordChange(employeeId) {
   return executeQuery(
     'SELECT employee_id, password_hash, password FROM employees WHERE employee_id = $1',

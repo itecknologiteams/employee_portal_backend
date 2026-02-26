@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs'
 import * as authRepo from '../repositories/auth.repository.js'
+import { checkCrmLogin } from '../../config/crmDatabase.js'
 
 const ALL_PERMISSION_KEYS = [
   'dashboard', 'profile', 'salary_slip', 'leave', 'feedback',
@@ -47,6 +48,39 @@ async function getEffectivePermissions(empId, roleName) {
 }
 
 export async function login(loginId, password) {
+  const useCrmOnly = !!process.env.CRM_HOST
+
+  if (useCrmOnly) {
+    try {
+      const crm = await checkCrmLogin(loginId, password)
+      if (!crm.valid || !crm.crmEmployeeId) {
+        return { error: 'Invalid username or password', status: 401 }
+      }
+      const portalEmployees = await authRepo.findEmployeeByEmployeeCode(crm.crmEmployeeId)
+      if (portalEmployees.length === 0) {
+        return { error: 'No portal account linked to this CRM user. Contact HR to set employee_code.', status: 401 }
+      }
+      const employee = portalEmployees[0]
+      if (!employee.is_active) {
+        return { error: 'Account is deactivated. Please contact HR.', status: 403 }
+      }
+      const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
+      const permissions = await getEffectivePermissions(employee.employee_id, userType)
+      return {
+        employeeId: employee.employee_id,
+        name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+        email: employee.email || '',
+        department: employee.department_name || employee.department_id || '',
+        position: employee.position || '',
+        userType,
+        permissions
+      }
+    } catch (err) {
+      console.error('CRM login error:', err.message)
+      return { error: 'Login service temporarily unavailable. Try again later.', status: 503 }
+    }
+  }
+
   try {
     const userRows = await authRepo.findUserByUsername(loginId)
     if (userRows.length > 0) {
