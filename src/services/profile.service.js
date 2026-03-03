@@ -1,6 +1,7 @@
 import * as profileRepo from '../repositories/profile.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
+import { getOfficialEmailFromCrm } from '../../config/crmDatabase.js'
 
 export async function getProfile(employeeId) {
   const result = await profileRepo.getProfile(employeeId)
@@ -20,13 +21,16 @@ export async function getProfile(employeeId) {
   const locationFromStation = (employee.station_name && employee.city_name)
     ? `${employee.station_name}, ${employee.city_name}`
     : (employee.station_name || employee.city_name || null)
+  const employeeCode = employee.employee_code ?? String(employee.employee_id ?? '')
+  const officialEmail = await getOfficialEmailFromCrm(employeeCode)
   return {
     name: [employee.first_name, employee.last_name].filter(Boolean).join(' ') || 'Unknown',
     email: employee.email ?? null,
+    officialEmail: officialEmail ?? null,
     phone: employee.phone ?? null,
     department: employee.department_name ?? null,
     position: employee.position ?? null,
-    employeeId: employee.employee_code ?? String(employee.employee_id),
+    employeeId: employeeCode || String(employee.employee_id),
     joinDate: employee.join_date ?? null,
     location: locationFromStation || employee.address || 'Not specified',
     stationId: employee.station_id ?? null,
@@ -50,8 +54,7 @@ export async function getProfile(employeeId) {
     cnicExpiryDate: employee.cnic_expiry_date ?? null,
     emergencyContactNumber: employee.emergency_contact_number ?? null,
     employeeExtension: employee.employee_extension ?? null,
-    personalCellNumber: employee.personal_cell_number ?? null,
-    region: employee.region ?? null
+    personalCellNumber: employee.personal_cell_number ?? null
   }
 }
 

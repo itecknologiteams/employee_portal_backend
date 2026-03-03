@@ -1,4 +1,5 @@
 import { executeQuery, executeTransaction } from '../../config/database.js'
+import { getEmailsFromCrmUsers } from '../../config/crmDatabase.js'
 
 export async function getRequisitionsByEmployeeId(employeeId) {
   return executeQuery(
@@ -77,11 +78,11 @@ export async function getItemCountsByReqIds(reqIds) {
   )
 }
 
-export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole) {
+export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, category) {
   await executeQuery(
-    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role)
-     VALUES ($1, $2, $3, $4, $5, $6)`,
-    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null]
+    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null]
   )
   const r = await executeQuery(
     'SELECT req_id, req_reference_no FROM requisition WHERE req_emp_id = $1 ORDER BY req_created_at DESC LIMIT 1',
@@ -106,6 +107,31 @@ export async function insertRequisitionItem(reqId, item) {
   )
 }
 
+/** Batch insert requisition items (one round-trip). */
+export async function insertRequisitionItemsBatch(reqId, items) {
+  if (!items || items.length === 0) return
+  const values = []
+  const params = []
+  let i = 0
+  for (const item of items) {
+    const desc = item.itemDesc || item.item_desc || null
+    const size = item.itemSize || item.item_size || null
+    const brand = item.itemBrand || item.item_brand || null
+    const qty = item.itemQty ?? item.item_qty ?? 1
+    const cost = item.itemEstCost || item.item_est_cost || null
+    const remarks = item.itemRemarks || item.item_remarks || null
+    const base = i * 7
+    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`)
+    params.push(reqId, desc, size, brand, qty, cost, remarks)
+    i++
+  }
+  await executeQuery(
+    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+     VALUES ${values.join(', ')}`,
+    params
+  )
+}
+
 export async function getCreatorDepartment(employeeId) {
   const r = await executeQuery(
     'SELECT department_id FROM employees WHERE employee_id = $1',
@@ -125,6 +151,14 @@ export async function autoAdvanceCommitteeRequisition(reqId) {
 export async function autoAdvanceHodRequisition(reqId) {
   return executeQuery(
     `UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_creator_role = 'HOD' WHERE req_id = $1`,
+    [reqId]
+  )
+}
+
+/** Set HOD approval only (for category flow: hod_for_info – no creator role change). */
+export async function setHodApprovalForInfoOnly(reqId) {
+  return executeQuery(
+    'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
     [reqId]
   )
 }
@@ -191,38 +225,40 @@ export async function getHodByDepartment(departmentId) {
   }
 }
 
-/** Returns HOD email(s) for a department (for requisition notifications). */
+/** Returns HOD email(s) for a department from CRM SQL Server USERS.EMAIL (by employee_code). */
 export async function getHodEmailsForDepartment(departmentId) {
   if (departmentId == null) return []
+  let codes = []
   try {
     const rows = await executeQuery(
-      `SELECT e.email FROM employees e
+      `SELECT e.employee_code FROM employees e
        LEFT JOIN employee_hod_departments h ON h.employee_id = e.employee_id AND h.department_id = $1
        LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
-       WHERE e.department_id = $1 AND e.is_active = true AND e.email IS NOT NULL AND e.email != ''
+       WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''
          AND (h.employee_id IS NOT NULL OR et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
        LIMIT 5`,
       [departmentId]
     )
-    const emails = (rows || []).map(r => r.email).filter(Boolean)
-    if (emails.length) return emails
+    codes = (rows || []).map(r => r.employee_code).filter(Boolean)
   } catch (err) {
     if (err.code === '42P01') return []
   }
-  try {
-    const rows = await executeQuery(
-      `SELECT e.email FROM employees e
-       INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
-       WHERE e.department_id = $1 AND e.is_active = true AND e.email IS NOT NULL AND e.email != ''
-       LIMIT 5`,
-      [departmentId]
-    )
-    return (rows || []).map(r => r.email).filter(Boolean)
-  } catch (err) {
-    if (err.code === '42P01') return []
+  if (codes.length === 0) {
+    try {
+      const rows = await executeQuery(
+        `SELECT e.employee_code FROM employees e
+         INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+         WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL LIMIT 5`,
+        [departmentId]
+      )
+      codes = (rows || []).map(r => r.employee_code).filter(Boolean)
+    } catch (err) {
+      if (err.code === '42P01') return []
+    }
   }
-  return []
+  if (codes.length === 0) return []
+  return getEmailsFromCrmUsers(codes)
 }
 
 /** True if this employee is HOD of this department (employee_hod_departments first, then by type or designation). */
@@ -420,15 +456,42 @@ export async function isHrMember(employeeId) {
   }
 }
 
+/** True if employee is Admin (employee_type or designation). For execution_admin categories. */
+export async function isAdminMember(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT 1 FROM employees e
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND (et.emp_type_name ILIKE '%Admin%')
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND (desg.desg_name ILIKE '%Admin%')
+       WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+      [employeeId]
+    )
+    return rows.length > 0
+  } catch (err) {
+    if (err.code === '42P01') return false
+    throw err
+  }
+}
+
 export async function getRequisitionAndDepartment(requisitionId) {
   return executeQuery(
-    'SELECT r.req_id, e.department_id FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id WHERE r.req_id = $1',
+    'SELECT r.req_id, r.req_category, e.department_id FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id WHERE r.req_id = $1',
     [requisitionId]
   )
 }
 
 export async function rejectRequisition(requisitionId) {
-  return executeQuery('UPDATE requisition SET req_is_rejected = 1 WHERE req_id = $1', [requisitionId])
+  try {
+    return await executeQuery(
+      'UPDATE requisition SET req_is_rejected = 1, req_current_stage_key = NULL WHERE req_id = $1',
+      [requisitionId]
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      return executeQuery('UPDATE requisition SET req_is_rejected = 1 WHERE req_id = $1', [requisitionId])
+    }
+    throw err
+  }
 }
 
 export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost) {
@@ -448,16 +511,56 @@ export async function approveHod(requisitionId) {
   )
 }
 
+export async function approveHr(requisitionId) {
+  try {
+    return await executeQuery(
+      'UPDATE requisition SET req_hr_approval = 1, req_hr_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
+      [requisitionId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return [] // column not yet added
+    throw err
+  }
+}
+
+/** Admin approves (e.g. Stationary/Vehicle Maintenance after HOD For Info). Sets stage to null (done). */
+export async function approveAdmin(requisitionId) {
+  try {
+    return await executeQuery(
+      'UPDATE requisition SET req_admin_approval = 1, req_admin_approval_date = CURRENT_TIMESTAMP, req_current_stage_key = NULL WHERE req_id = $1',
+      [requisitionId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
+}
+
 /** HOD approve with direct route to Procurement (skip Committee & CEO). Used when total < 50K. */
 export async function approveHodDirectToProcurement(requisitionId) {
-  return executeQuery(
-    `UPDATE requisition SET
-       req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP,
-       req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP,
-       req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP
-     WHERE req_id = $1`,
-    [requisitionId]
-  )
+  try {
+    return executeQuery(
+      `UPDATE requisition SET
+         req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP,
+         req_hr_approval = 1, req_hr_approval_date = CURRENT_TIMESTAMP,
+         req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP,
+         req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP
+       WHERE req_id = $1`,
+      [requisitionId]
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      return executeQuery(
+        `UPDATE requisition SET
+           req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP,
+           req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP,
+           req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP
+         WHERE req_id = $1`,
+        [requisitionId]
+      )
+    }
+    throw err
+  }
 }
 
 export async function updateItemCommitteeApprovedQty(itemId, qty) {
@@ -508,6 +611,24 @@ export async function setExpectedHandover(reqId, dateVal) {
 
 export async function updateRequiredByDate(reqId, dateVal) {
   return executeQuery('UPDATE requisition SET req_required_by_date = $2 WHERE req_id = $1', [reqId, dateVal])
+}
+
+/** Requisitions finance-approved, not yet completed, category has execution_admin=1 (for Admin to mark complete). */
+export async function getPendingAdminExecutionRequisitions() {
+  try {
+    return executeQuery(
+      `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       JOIN requisition_category c ON TRIM(COALESCE(c.name, '')) = TRIM(COALESCE(r.req_category, '')) AND c.execution_admin = 1
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 1 AND COALESCE(r.req_purchase_completed, 0) = 0
+       ORDER BY r.req_created_at ASC`
+    )
+  } catch (err) {
+    if (err.code === '42P01') return []
+    throw err
+  }
 }
 
 /** Requisition eligible for Procurement to mark complete (finance approved, not rejected). */
@@ -561,6 +682,65 @@ export async function updateHodAcknowledged(reqId, acknowledgedByEmployeeId) {
   )
 }
 
+/** Requisitions created by employeeId where execution is done but creator has not acknowledged (close ticket). */
+export async function getPendingCreatorAcknowledgeList(employeeId) {
+  try {
+    return executeQuery(
+      `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE r.req_emp_id = $1
+         AND COALESCE(r.req_is_rejected, 0) = 0
+         AND COALESCE(r.req_creator_acknowledged, 0) = 0
+         AND (
+           COALESCE(r.req_admin_approval, 0) = 1
+           OR COALESCE(r.req_purchase_completed, 0) = 1
+           OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%')
+         )
+       ORDER BY r.req_created_at DESC`,
+      [employeeId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
+}
+
+/** Single req eligible for creator acknowledge: created by employeeId, execution done, not yet acknowledged. */
+export async function getRequisitionForCreatorAcknowledge(reqId, employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT r.req_id, r.req_emp_id FROM requisition r
+       WHERE r.req_id = $1 AND r.req_emp_id = $2
+         AND COALESCE(r.req_is_rejected, 0) = 0
+         AND COALESCE(r.req_creator_acknowledged, 0) = 0
+         AND (
+           COALESCE(r.req_admin_approval, 0) = 1
+           OR COALESCE(r.req_purchase_completed, 0) = 1
+           OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%')
+         )`,
+      [reqId, employeeId]
+    )
+    return rows
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
+}
+
+export async function updateCreatorAcknowledged(reqId) {
+  try {
+    return executeQuery(
+      'UPDATE requisition SET req_creator_acknowledged = 1, req_creator_acknowledged_date = CURRENT_TIMESTAMP WHERE req_id = $1',
+      [reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
+}
+
 export async function handoverToFinance(requisitionId) {
   return executeQuery(
     'UPDATE requisition SET req_handed_to_finance = 1, req_handed_to_finance_date = CURRENT_TIMESTAMP WHERE req_id = $1',
@@ -585,14 +765,224 @@ export async function getRequisitionById(reqId) {
   )
 }
 
+/** Get creator (requester) email and name for a requisition – for acknowledgment notifications. */
+export async function getCreatorEmailByReqId(reqId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT e.email, e.first_name, e.last_name, r.req_reference_no
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       WHERE r.req_id = $1 AND e.email IS NOT NULL AND TRIM(e.email) != ''`,
+      [reqId]
+    )
+    return rows[0] || null
+  } catch (err) {
+    if (err.code === '42703') return null
+    throw err
+  }
+}
+
+/** Requisition categories table (flow flags). */
+export async function getAllRequisitionCategories() {
+  return executeQuery(
+    `SELECT id, name, hod_for_info, hod_approval, hr_finance, committee_review,
+      department_admin, department_finance, department_procurement,
+      quotations, final_committee, ceo_approve,
+      execution_admin, execution_finance, execution_procurement
+     FROM requisition_category ORDER BY name`
+  )
+}
+
+export async function getRequisitionCategoryByName(name) {
+  if (!name || typeof name !== 'string') return null
+  const rows = await executeQuery(
+    `SELECT id, name, hod_for_info, hod_approval, hr_finance, committee_review,
+      department_admin, department_finance, department_procurement,
+      quotations, final_committee, ceo_approve,
+      execution_admin, execution_finance, execution_procurement
+     FROM requisition_category WHERE TRIM(name) = $1`,
+    [String(name).trim()]
+  )
+  return rows[0] || null
+}
+
+// ---------- DB-driven flow (with short TTL cache to avoid repeated identical queries) ----------
+const FLOW_STAGES_CACHE_TTL_MS = 60 * 1000 // 1 minute
+let _flowStagesCache = null
+let _flowStagesCacheTime = 0
+
+/** All flow stages ordered by sequence_order. Cached for FLOW_STAGES_CACHE_TTL_MS. */
+export async function getFlowStages() {
+  const now = Date.now()
+  if (_flowStagesCache != null && now - _flowStagesCacheTime < FLOW_STAGES_CACHE_TTL_MS) {
+    return _flowStagesCache
+  }
+  try {
+    const rows = await executeQuery(
+      `SELECT id, stage_key, stage_label, sequence_order, employee_type_name, designation_name, filter_by_department, requisition_done_column
+       FROM requisition_flow_stage ORDER BY sequence_order ASC`
+    )
+    _flowStagesCache = rows || []
+    _flowStagesCacheTime = now
+    return _flowStagesCache
+  } catch (err) {
+    if (err.code === '42P01') return [] // table missing
+    throw err
+  }
+}
+
+const CATEGORY_BEHAVIOR_CACHE_TTL_MS = 60 * 1000
+const _categoryBehaviorCache = new Map() // key = lower category name, value = { map, time }
+
+/** Per-stage behavior for a category: { stage_key: 'approval'|'for_info'|'skip' }. Uses case-insensitive category match. Cached briefly. */
+export async function getCategoryStageBehaviorMap(categoryName) {
+  if (!categoryName || typeof categoryName !== 'string') return null
+  const trimmed = String(categoryName).trim()
+  if (!trimmed) return null
+  const key = trimmed.toLowerCase()
+  const now = Date.now()
+  const hit = _categoryBehaviorCache.get(key)
+  if (hit && now - hit.time < CATEGORY_BEHAVIOR_CACHE_TTL_MS) return hit.map
+  try {
+    const rows = await executeQuery(
+      `SELECT fs.stage_key, cs.behavior
+       FROM requisition_category_stage cs
+       JOIN requisition_flow_stage fs ON fs.id = cs.flow_stage_id
+       JOIN requisition_category c ON c.id = cs.category_id
+       WHERE LOWER(TRIM(c.name)) = LOWER($1)`,
+      [trimmed]
+    )
+    if (!rows.length) return null
+    const map = rows.reduce((acc, r) => { acc[r.stage_key] = r.behavior; return acc }, {})
+    _categoryBehaviorCache.set(key, { map, time: now })
+    return map
+  } catch (err) {
+    if (err.code === '42P01') return null
+    throw err
+  }
+}
+
+/** Next stage_key after current (first later stage with behavior != 'skip'). Null if no next. */
+export async function getNextStageKey(categoryName, currentStageKey) {
+  const stages = await getFlowStages()
+  const behaviorMap = await getCategoryStageBehaviorMap(categoryName || '')
+  if (!stages.length || !behaviorMap) return null
+  const currentIdx = stages.findIndex(s => s.stage_key === currentStageKey)
+  if (currentIdx < 0) return null
+  for (let i = currentIdx + 1; i < stages.length; i++) {
+    const b = behaviorMap[stages[i].stage_key]
+    if (b && b !== 'skip') return stages[i].stage_key
+  }
+  return null
+}
+
+/** First stage_key for a category (first with behavior != 'skip'). */
+export async function getFirstStageKey(categoryName) {
+  const stages = await getFlowStages()
+  const behaviorMap = await getCategoryStageBehaviorMap(categoryName || '')
+  if (!stages.length || !behaviorMap) return (stages[0] && stages[0].stage_key) || 'hod'
+  for (const s of stages) {
+    if (behaviorMap[s.stage_key] && behaviorMap[s.stage_key] !== 'skip') return s.stage_key
+  }
+  return stages[0]?.stage_key || 'hod'
+}
+
+/** Requisitions at a given current stage. For hod: optional departmentId, departmentName, excludeEmployeeId. */
+export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) {
+  const { departmentId, departmentName, excludeEmployeeId } = opts
+  try {
+    let q = `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND r.req_current_stage_key = $1`
+    const params = [stageKey]
+    if (stageKey === 'hod' && (departmentId != null || (departmentName != null && String(departmentName).trim() !== ''))) {
+      q += ` AND (e.department_id = $2 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $3 AND $3 != ''))`
+      params.push(departmentId ?? null, (departmentName || '').trim().toLowerCase())
+      if (excludeEmployeeId != null) {
+        q += ` AND r.req_emp_id != $4`
+        params.push(excludeEmployeeId)
+      }
+    }
+    q += ` ORDER BY r.req_created_at ASC`
+    return executeQuery(q, params)
+  } catch (err) {
+    if (err.code === '42703') return [] // req_current_stage_key column missing
+    if (err.code === '42P01') return []
+    throw err
+  }
+}
+
+/** Set current stage on requisition. */
+export async function setRequisitionCurrentStage(reqId, stageKey) {
+  return executeQuery(
+    'UPDATE requisition SET req_current_stage_key = $2 WHERE req_id = $1',
+    [reqId, stageKey]
+  )
+}
+
+/** True if employee has the employee_type or designation for this flow stage. */
+export async function isEmployeeTypeForStage(employeeId, stageKey) {
+  try {
+    const stages = await executeQuery(
+      'SELECT employee_type_name, designation_name FROM requisition_flow_stage WHERE stage_key = $1',
+      [stageKey]
+    )
+    if (!stages.length) return false
+    const { employee_type_name, designation_name } = stages[0]
+    const typeName = (employee_type_name || '').trim()
+    const desgName = (designation_name || '').trim()
+    const rows = await executeQuery(
+      `SELECT 1 FROM employees e
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = $2
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = $3
+       WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+      [employeeId, typeName || null, desgName || null]
+    )
+    if (rows.length > 0) return true
+    if (typeName) {
+      const byType = await executeQuery(
+        `SELECT 1 FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = $2 WHERE e.employee_id = $1`,
+        [employeeId, typeName]
+      )
+      if (byType.length > 0) return true
+    }
+    if (desgName) {
+      const byDesg = await executeQuery(
+        `SELECT 1 FROM employees e INNER JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = $2 WHERE e.employee_id = $1`,
+        [employeeId, desgName]
+      )
+      if (byDesg.length > 0) return true
+    }
+    // HR stage: also treat as HR if designation/type contains HR or Human Resource (same as isHrMember)
+    if (stageKey === 'hr') {
+      const hrRows = await executeQuery(
+        `SELECT 1 FROM employees e
+         LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND (et.emp_type_name ILIKE '%HR%' OR et.emp_type_name ILIKE '%human%resource%')
+         LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND (desg.desg_name ILIKE '%HR%' OR desg.desg_name ILIKE '%human%resource%')
+         WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+        [employeeId]
+      )
+      if (hrRows.length > 0) return true
+    }
+    return false
+  } catch (err) {
+    if (err.code === '42P01') return false
+    throw err
+  }
+}
+
 export async function getRequisitionRowForTat(reqId) {
   return executeQuery(
     `SELECT req_id, req_reference_no, req_created_at, req_hod_approval, req_hod_approval_date,
+      req_hr_approval, req_hr_approval_date, req_admin_approval, req_admin_approval_date,
       req_committee_approval, req_committee_approval_date, req_ceo_approval, req_ceo_approval_date,
       req_procurement_ack, req_handed_to_finance, req_handed_to_finance_date,
       req_finance_approval, req_finance_approval_date, req_quotation_1_url, req_quotation_2_url, req_quotation_3_url,
-      req_is_rejected,
-      req_purchase_completed, req_purchase_completed_date, req_hod_acknowledged, req_hod_acknowledged_date
+      req_is_rejected, req_current_stage_key,
+      req_purchase_completed, req_purchase_completed_date, req_hod_acknowledged, req_hod_acknowledged_date,
+      req_creator_acknowledged, req_creator_acknowledged_date
      FROM requisition WHERE req_id = $1`,
     [reqId]
   )
@@ -671,21 +1061,29 @@ export async function getApprovedByHodRequisitions(deptId, deptName) {
 }
 
 export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
-  return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
-     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
-     LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) 
+  const whereClause = `(COALESCE(r.req_is_rejected, 0)::int = 0)
      AND (
-       -- Normal pending Committee approval
        ((COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_committee_approval, 0)::int = 0) AND r.req_emp_id != $1)
        OR
-       -- Completed requisitions created by Committee awaiting acknowledgment
        (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'Committee')
-     )
-     ORDER BY r.req_created_at ASC`,
-    [excludeEmployeeId]
-  )
+     )`
+  const sqlWithStage = `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE ${whereClause}
+     AND (r.req_current_stage_key IS NULL OR r.req_current_stage_key = 'committee')
+     ORDER BY r.req_created_at ASC`
+  const sqlWithoutStage = `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE ${whereClause}
+     ORDER BY r.req_created_at ASC`
+  try {
+    return await executeQuery(sqlWithStage, [excludeEmployeeId])
+  } catch (err) {
+    if (err.code === '42703') return executeQuery(sqlWithoutStage, [excludeEmployeeId])
+    throw err
+  }
 }
 
 export async function getPendingCeoRequisitions() {
@@ -763,9 +1161,11 @@ export async function getRequisitionForExpectedHandover(reqId) {
   )
 }
 
+/** Req eligible for Finance approval: either handed by Procurement (with quotations) or at finance stage (e.g. Loan direct from HR/CEO). */
 export async function getRequisitionForFinanceApproval(reqId) {
   return executeQuery(
-    'SELECT req_id FROM requisition WHERE req_id = $1 AND req_handed_to_finance = 1 AND COALESCE(req_finance_approval, 0) = 0',
+    `SELECT req_id, req_category FROM requisition WHERE req_id = $1 AND COALESCE(req_finance_approval, 0) = 0
+     AND (req_handed_to_finance = 1 OR req_current_stage_key = 'finance')`,
     [reqId]
   )
 }
@@ -870,11 +1270,13 @@ export async function getTatReportCount(whereClause, params) {
 export async function getTatReportData(whereClause, params, limit, offset) {
   return executeQuery(
     `SELECT r.req_id, r.req_reference_no, r.req_created_at,
-       r.req_hod_approval, r.req_hod_approval_date, r.req_committee_approval, r.req_committee_approval_date,
+       r.req_hod_approval, r.req_hod_approval_date, r.req_hr_approval, r.req_hr_approval_date, r.req_current_stage_key,
+       r.req_committee_approval, r.req_committee_approval_date,
        r.req_ceo_approval, r.req_ceo_approval_date, r.req_procurement_ack, r.req_handed_to_finance,
        r.req_handed_to_finance_date, r.req_finance_approval, r.req_finance_approval_date,
        r.req_quotation_1_url, r.req_quotation_2_url, r.req_quotation_3_url, r.req_is_rejected,
        r.req_purchase_completed, r.req_purchase_completed_date, r.req_hod_acknowledged, r.req_hod_acknowledged_date,
+       r.req_creator_acknowledged, r.req_creator_acknowledged_date,
        e.first_name, e.last_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      ${whereClause}

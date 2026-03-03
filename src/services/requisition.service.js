@@ -1,5 +1,6 @@
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
+import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
 import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText } from '../../config/requisition-email-template.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import {
@@ -13,7 +14,98 @@ import {
 
 export { parseEmployeeId }
 
-const VALID_BUCKETS = ['hod', 'committee', 'ceo', 'procurement', 'finance']
+/** Requisition categories (from CSV flow). Fallback when requisition_category table is missing. */
+export const REQUISITION_CATEGORIES = [
+  'Stationary',
+  'Vehicle Maintenance',
+  'Vehicle Repair',
+  'Other Repair & Maintenance',
+  'Loan & Advance Salary',
+  'Event',
+  'Specialized Projects',
+  'IT Equipments',
+  'General Procurements Grocerry & Others',
+  'General Procurements Electric Appliances',
+  'Devices / Accessories'
+]
+
+/** Get flow stages from DB (for DB-driven flow). Returns [] if tables missing. */
+export async function getFlowStages() {
+  return reqRepo.getFlowStages()
+}
+
+/** Get categories from DB (with flow flags) or fallback to static list. */
+export async function getCategories() {
+  try {
+    const rows = await reqRepo.getAllRequisitionCategories()
+    if (Array.isArray(rows) && rows.length > 0) {
+      return {
+        categories: rows.map(r => r.name),
+        flow: rows.map(r => ({
+          name: r.name,
+          hod_for_info: r.hod_for_info === 1,
+          hod_approval: r.hod_approval === 1,
+          hr_finance: r.hr_finance === 1,
+          committee_review: r.committee_review === 1,
+          quotations: r.quotations === 1,
+          final_committee: r.final_committee === 1,
+          ceo_approve: r.ceo_approve === 1,
+          execution_admin: r.execution_admin === 1,
+          execution_finance: r.execution_finance === 1,
+          execution_procurement: r.execution_procurement === 1
+        }))
+      }
+    }
+  } catch (_) {
+    /* table may not exist */
+  }
+  return { categories: [...REQUISITION_CATEGORIES], flow: null }
+}
+
+const VALID_BUCKETS = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin']
+
+/** Categories where HOD can approve without BOQ (no size/brand/price per piece required). */
+const REQUISITION_CATEGORIES_NO_BOQ = [
+  'Vehicle Maintenance',
+  'Vehicle Repair',
+  'Other Repair & Maintenance',
+  'Loan & Advance Salary',
+  'Event',
+  'Specialized Projects'
+]
+
+function isCategoryNoBoq(category) {
+  if (category == null || category === '') return false
+  const c = String(category).trim().toLowerCase()
+  if (!c) return false
+  return REQUISITION_CATEGORIES_NO_BOQ.some((cat) => cat.trim().toLowerCase() === c)
+}
+
+/** Categories that require HR approval after HOD (hr_finance=1). Must go to HR bucket before Committee. */
+const REQUISITION_CATEGORIES_HR_AFTER_HOD = ['Loan & Advance Salary']
+
+function isCategoryHrAfterHod(category) {
+  if (category == null || category === '') return false
+  const c = String(category).trim().toLowerCase()
+  if (!c) return false
+  return REQUISITION_CATEGORIES_HR_AFTER_HOD.some((cat) => cat.trim().toLowerCase() === c)
+}
+
+/** Set req_current_stage_key when DB-driven flow is enabled. stageKey: string = set as-is; null + categoryName = first stage for category. */
+async function setCurrentStageIfFlowEnabled(reqId, stageKey, categoryNameForFirst) {
+  try {
+    const stages = await reqRepo.getFlowStages()
+    if (!stages || stages.length === 0) return
+    let key = stageKey
+    if (key == null && categoryNameForFirst) {
+      key = await reqRepo.getFirstStageKey(categoryNameForFirst)
+    }
+    if (key == null) key = stages[0]?.stage_key || 'hod'
+    await reqRepo.setRequisitionCurrentStage(reqId, key)
+  } catch (_) {
+    /* flow tables may not exist */
+  }
+}
 
 /** Queue bucket-changed job; on failure or when BullMQ disabled, send email synchronously so emails always go. */
 async function notifyBucketChanged(requisitionId, newBucket) {
@@ -58,6 +150,7 @@ export async function getHistory(employeeId, query = {}) {
     material: req.req_material,
     requiredByDate: req.req_required_by_date || null,
     business: req.req_business,
+    category: req.req_category || null,
     status: getRequisitionStatus(req),
     hodApproval: req.req_hod_approval === 1,
     hodApprovalDate: req.req_hod_approval_date,
@@ -99,6 +192,7 @@ export async function getTrackRecords(query) {
       creatorName: [req.first_name, req.last_name].filter(Boolean).join(' ').trim() || null,
       creatorEmail: req.email || null,
       departmentName: req.department_name || null,
+      category: req.req_category || null,
       createdAt: req.req_created_at,
       requiredByDate: req.req_required_by_date || null,
       status,
@@ -128,6 +222,7 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
       requisitionId: req.req_id,
       referenceNo: req.req_reference_no,
       employeeId: req.req_emp_id,
+      category: req.req_category || null,
       createdAt: req.req_created_at,
       requiredByDate: req.req_required_by_date || null,
       status,
@@ -140,7 +235,7 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
 }
 
 export async function createRequisition(body) {
-  const { employeeId, location, material, requiredByDate, business, items } = body
+  const { employeeId, location, material, requiredByDate, business, items, category } = body
   if (!employeeId || !items || !Array.isArray(items) || items.length === 0) {
     return { error: 'employeeId and at least one item are required', status: 400 }
   }
@@ -154,6 +249,18 @@ export async function createRequisition(body) {
   })
   if (validItems.length === 0) {
     return { error: 'Each item must have at least size, brand, or quantity', status: 400 }
+  }
+  if (!category || typeof category !== 'string' || !category.trim()) {
+    return { error: 'Category is required', status: 400 }
+  }
+  const categoryTrimmed = category.trim()
+  let allowedCategories = REQUISITION_CATEGORIES
+  try {
+    const { categories } = await getCategories()
+    if (Array.isArray(categories) && categories.length > 0) allowedCategories = categories
+  } catch (_) {}
+  if (!allowedCategories.includes(categoryTrimmed)) {
+    return { error: `Category must be one of: ${allowedCategories.join(', ')}`, status: 400 }
   }
 
   const deptId = await reqRepo.getCreatorDepartment(employeeId)
@@ -172,25 +279,45 @@ export async function createRequisition(body) {
     creatorRole = 'HOD'
   }
 
-debugger
-  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole)
+  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, categoryTrimmed)
   const reqId = created.req_id
   const refNo = created.req_reference_no
 
-  for (const it of validItems) {
-    await reqRepo.insertRequisitionItem(reqId, it)
+  if (validItems.length > 0) {
+    await reqRepo.insertRequisitionItemsBatch(reqId, validItems)
+  }
+
+  // Category-based flow: if category has HOD "For Info" only (no approval), auto-advance past HOD to next real stage (1.csv)
+  let categoryFlowBucket = null
+  try {
+    const cat = await reqRepo.getRequisitionCategoryByName(categoryTrimmed)
+    if (cat && cat.hod_for_info === 1 && cat.hod_approval === 0 && !creatorIsHod && !creatorIsCommittee && !creatorIsCeo) {
+      await reqRepo.setHodApprovalForInfoOnly(reqId)
+      // Use DB-driven next stage after HOD (e.g. Stationary → procurement, Vehicle Repair → committee)
+      categoryFlowBucket = await reqRepo.getNextStageKey(categoryTrimmed, 'hod') || 'committee'
+    }
+  } catch (_) {
+    /* requisition_category table may not exist yet */
   }
 
   // Auto-advance based on creator role
   if (creatorIsCeo) {
     await reqRepo.autoAdvanceCeoRequisition(reqId)
+    await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
   } else if (creatorIsCommittee) {
     await reqRepo.autoAdvanceCommitteeRequisition(reqId)
+    await setCurrentStageIfFlowEnabled(reqId, 'ceo')
     await notifyBucketChanged(reqId, 'ceo')
   } else if (creatorIsHod) {
     await reqRepo.autoAdvanceHodRequisition(reqId)
+    await setCurrentStageIfFlowEnabled(reqId, 'committee')
     await notifyBucketChanged(reqId, 'committee')
+  } else if (categoryFlowBucket) {
+    await setCurrentStageIfFlowEnabled(reqId, categoryFlowBucket)
+    await notifyBucketChanged(reqId, categoryFlowBucket)
+  } else {
+    await setCurrentStageIfFlowEnabled(reqId, null, categoryTrimmed)
   }
 
   try {
@@ -398,7 +525,22 @@ export async function getPendingHod(employeeId) {
 
   let rows
   try {
-    rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+    const flowStages = await reqRepo.getFlowStages()
+    if (flowStages && flowStages.length > 0) {
+      const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName, excludeEmployeeId: eid })
+      let ackList = []
+      try {
+        ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
+      } catch (_) {}
+      const byStageIds = new Set((byStage || []).map(r => r.req_id))
+      const merged = [...(byStage || [])]
+      for (const r of ackList || []) {
+        if (!byStageIds.has(r.req_id)) merged.push(r)
+      }
+      rows = merged
+    } else {
+      rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+    }
   } catch (err) {
     if (err.code === '42703') rows = await reqRepo.getPendingHodRequisitionsFallback(deptId, deptName, eid)
     else throw err
@@ -442,6 +584,33 @@ export async function approveHod(body) {
     await reqRepo.rejectRequisition(requisitionId)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
+
+  // Category from DB or from request body (fallback for old reqs or when column missing)
+  const categoryName = reqRow[0]?.req_category ?? body.req_category ?? null
+  const noBoqCategory = isCategoryNoBoq(categoryName)
+
+  // For no-BOQ categories (Loan, Event, Vehicle Maintenance, etc.): approve without BOQ, advance by flow only
+  if (noBoqCategory) {
+    await reqRepo.approveHod(requisitionId)
+    const stages = await reqRepo.getFlowStages()
+    const hasHrStage = stages.some((s) => (s.stage_key || '').toLowerCase() === 'hr')
+    let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hod') : null
+    // Loan & Advance Salary (and any category with HR after HOD): must go to HR first if HR stage exists
+    if (isCategoryHrAfterHod(categoryName) && hasHrStage) {
+      nextKey = 'hr'
+    }
+    // If still unknown, use next stage after HOD in flow order
+    if (!nextKey) {
+      const hodIdx = stages.findIndex((s) => s.stage_key === 'hod')
+      nextKey = (hodIdx >= 0 && hodIdx < stages.length - 1) ? stages[hodIdx + 1].stage_key : 'committee'
+    }
+    await setCurrentStageIfFlowEnabled(requisitionId, nextKey)
+    const bucket = nextKey === 'hr' ? 'hr' : (nextKey === 'committee' ? 'committee' : nextKey)
+    await notifyBucketChanged(requisitionId, bucket)
+    const statusLabel = nextKey === 'hr' ? 'Pending HR' : (nextKey === 'committee' ? 'Pending Committee' : `Pending ${nextKey}`)
+    return { message: 'HOD approval recorded', status: statusLabel }
+  }
+
   if (boqItems.length > 0) {
     for (const row of boqItems) {
       const itemId = (row.itemId ?? row.item_id) != null ? parseInt(row.itemId ?? row.item_id, 10) : null
@@ -511,24 +680,97 @@ export async function approveHod(body) {
 
   if (totalAmount < LIMIT_50K) {
     await reqRepo.approveHodDirectToProcurement(requisitionId)
+    await setCurrentStageIfFlowEnabled(requisitionId, 'procurement')
     await notifyBucketChanged(requisitionId, 'procurement')
     return { message: 'HOD approval recorded; forwarded to Procurement (total under 50K)', status: 'Forwarded to Procurement' }
   }
 
   await reqRepo.approveHod(requisitionId)
-  await notifyBucketChanged(requisitionId, 'committee')
-  return { message: 'HOD approval recorded', status: totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)' }
+  const nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hod') : null
+  await setCurrentStageIfFlowEnabled(requisitionId, nextKey || 'committee')
+  const bucket = nextKey === 'hr' ? 'hr' : 'committee'
+  await notifyBucketChanged(requisitionId, bucket)
+  return { message: 'HOD approval recorded', status: nextKey === 'hr' ? 'Pending HR' : (totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)') }
+}
+
+export async function getPendingHR(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
+  if (!ok) return []
+  const rows = useFlow
+    ? await reqRepo.getPendingRequisitionsByCurrentStage('hr')
+    : []
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending HR', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function getPendingAdmin(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'admin') : await reqRepo.isAdminMember(eid)
+  if (!ok) return []
+  const rows = useFlow
+    ? await reqRepo.getPendingRequisitionsByCurrentStage('admin')
+    : []
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending Admin', items: items.filter(i => i.req_id === req.req_id) }))
 }
 
 export async function getPendingCommittee(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const ok = await reqRepo.isCommitteeMember(eid)
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'committee') : await reqRepo.isCommitteeMember(eid)
   if (!ok) return []
-  const rows = await reqRepo.getPendingCommitteeRequisitions(eid)
+  let rows = useFlow
+    ? await reqRepo.getPendingRequisitionsByCurrentStage('committee')
+    : await reqRepo.getPendingCommitteeRequisitions(eid)
+  // Exclude any reqs that are in HR bucket (e.g. Loan & Advance Salary) – must not show in Committee list
+  rows = (rows || []).filter((r) => r.req_current_stage_key !== 'hr')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   return rows.map(req => ({ ...req, status: 'Pending Committee', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function approveHR(body) {
+  const { requisitionId, approvedByEmployeeId, approved } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+  }
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
+  if (!ok) {
+    return { error: 'Only HR can approve this stage. Check your Employee Type or Designation.', status: 403 }
+  }
+  if (approved === false) {
+    await reqRepo.rejectRequisition(reqId)
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  await reqRepo.approveHr(reqId)
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  const categoryName = reqRow[0]?.req_category
+  let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hr') : 'committee'
+  // Loan & Advance Salary: Amount <50K -> Finance only; >=50K -> CEO then Finance
+  if (isCategoryHrAfterHod(categoryName)) {
+    const items = await reqRepo.getRequisitionItems(reqId)
+    let total = 0
+    for (const it of items || []) {
+      const qty = Number(it.hod_item_qty ?? it.item_qty) || 0
+      const cost = parseFloat(String(it.hod_item_est_cost ?? it.item_est_cost ?? '0').replace(/,/g, '')) || 0
+      total += qty * cost
+    }
+    nextKey = total < 50000 ? 'finance' : 'ceo'
+  }
+  await setCurrentStageIfFlowEnabled(reqId, nextKey || 'committee')
+  await notifyBucketChanged(reqId, nextKey || 'committee')
+  return { message: 'HR approval recorded', status: nextKey === 'ceo' ? 'Pending CEO' : (nextKey === 'finance' ? 'Pending Finance' : (nextKey === 'committee' ? 'Pending Committee' : `Pending ${nextKey}`)) }
 }
 
 export async function approveCommittee(body) {
@@ -586,10 +828,15 @@ export async function approveCommittee(body) {
   totalAfterCommittee = Math.round(totalAfterCommittee)
   if (totalAfterCommittee <= LIMIT_100K) {
     await reqRepo.approveCeo(reqId)
+    await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
     return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
   }
 
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  const categoryName = reqRow[0]?.req_category
+  const nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'committee') : 'ceo'
+  await setCurrentStageIfFlowEnabled(reqId, nextKey || 'ceo')
   await notifyBucketChanged(reqId, 'ceo')
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
@@ -597,9 +844,12 @@ export async function approveCommittee(body) {
 export async function getPendingCeo(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const ok = await reqRepo.isCeoMember(eid)
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'ceo') : await reqRepo.isCeoMember(eid)
   if (!ok) return []
-  const rows = await reqRepo.getPendingCeoRequisitions()
+  const rows = useFlow
+    ? await reqRepo.getPendingRequisitionsByCurrentStage('ceo')
+    : await reqRepo.getPendingCeoRequisitions()
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   return rows.map(req => ({ ...req, status: 'Pending CEO', items: items.filter(i => i.req_id === req.req_id) }))
@@ -621,18 +871,47 @@ export async function approveCeo(body) {
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveCeo(reqId)
-  await notifyBucketChanged(reqId, 'procurement')
-  return { message: 'CEO approval recorded; forwarded to Procurement', status: 'Forwarded to Procurement' }
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  const categoryName = reqRow[0]?.req_category
+  // Loan & Advance Salary: after CEO go to Finance (not Procurement)
+  const nextKey = isCategoryHrAfterHod(categoryName) ? 'finance' : 'procurement'
+  await setCurrentStageIfFlowEnabled(reqId, nextKey)
+  await notifyBucketChanged(reqId, nextKey)
+  return { message: 'CEO approval recorded', status: nextKey === 'finance' ? 'Pending Finance' : 'Forwarded to Procurement' }
+}
+
+export async function approveAdmin(body) {
+  const { requisitionId, approvedByEmployeeId, approved } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+  }
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'admin') : await reqRepo.isAdminMember(eid)
+  if (!ok) {
+    return { error: 'Only Admin can approve this stage.', status: 403 }
+  }
+  if (approved === false) {
+    await reqRepo.rejectRequisition(reqId)
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+  await reqRepo.approveAdmin(reqId)
+  notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Admin:', e?.message))
+  return { message: 'Admin approval recorded', status: 'Completed' }
 }
 
 export async function getPendingProcurement(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const ok = await reqRepo.isProcurementMember(eid)
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'procurement') : await reqRepo.isProcurementMember(eid)
   if (!ok) return []
   let rows
   try {
-    rows = await reqRepo.getPendingProcurementRequisitions()
+    rows = useFlow
+      ? await reqRepo.getPendingRequisitionsByCurrentStage('procurement')
+      : await reqRepo.getPendingProcurementRequisitions()
   } catch (err) {
     if (err.code === '42703') {
       rows = await reqRepo.getPendingProcurementRequisitionsFallback()
@@ -737,19 +1016,53 @@ export async function updateRequiredByDate(reqId, body) {
   return { message: 'Required by date updated', requiredByDate: dateVal }
 }
 
-/** Procurement: mark requisition as complete (purchase done; goes to HOD for acknowledgment). */
+/** List requisitions finance-approved, category has execution_admin=1, not yet completed (for Admin to mark complete). */
+export async function getPendingAdminExecution(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isAdminMember(eid)
+  if (!ok) return []
+  try {
+    const rows = await reqRepo.getPendingAdminExecutionRequisitions()
+    const reqIds = rows.map(r => r.req_id)
+    const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+    return rows.map(req => ({
+      ...req,
+      status: getRequisitionStatus(req),
+      items: items.filter(i => i.req_id === req.req_id)
+    }))
+  } catch (_) {
+    return []
+  }
+}
+
+/** Procurement or Admin (for execution_admin categories): mark requisition as complete. */
 export async function completePurchase(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
   const { completedByEmployeeId } = body
   const eid = parseEmployeeId(completedByEmployeeId != null ? String(completedByEmployeeId) : null)
   if (eid == null) return { error: 'Valid completedByEmployeeId required', status: 400 }
-  const ok = await reqRepo.isProcurementMember(eid)
-  if (!ok) return { error: 'Only Procurement can mark as complete', status: 403 }
+  const isProcurement = await reqRepo.isProcurementMember(eid)
+  const isAdmin = await reqRepo.isAdminMember(eid)
   const rows = await reqRepo.getRequisitionForCompletePurchase(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found or not finance approved', status: 404 }
-  await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
-  return { message: 'Requisition marked complete. HOD can acknowledge receipt.', status: 'Completed - Pending HOD Acknowledgment' }
+  if (isProcurement) {
+    await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
+    notifyCreatorAckRequired(reqIdNum).catch((e) => console.error('notifyCreatorAckRequired after completePurchase:', e?.message))
+    return { message: 'Requisition marked complete. HOD can acknowledge receipt.', status: 'Completed - Pending HOD Acknowledgment' }
+  }
+  if (isAdmin) {
+    const reqRow = await reqRepo.getRequisitionAndDepartment(reqIdNum)
+    const categoryName = reqRow[0]?.req_category
+    const cat = categoryName ? await reqRepo.getRequisitionCategoryByName(categoryName) : null
+    if (cat && cat.execution_admin === 1) {
+      await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
+      notifyCreatorAckRequired(reqIdNum).catch((e) => console.error('notifyCreatorAckRequired after completePurchase (Admin):', e?.message))
+      return { message: 'Requisition marked complete (Admin execution). HOD can acknowledge receipt.', status: 'Completed - Pending HOD Acknowledgment' }
+    }
+  }
+  return { error: 'Only Procurement or Admin (for execution-admin categories) can mark as complete.', status: 403 }
 }
 
 /** List requisitions completed by Procurement, pending HOD acknowledgment (same department as HOD). */
@@ -818,6 +1131,34 @@ export async function acknowledgeReceipt(body) {
   return { message: 'Receipt acknowledged', status: 'Completed' }
 }
 
+/** Requisitions created by this employee where execution is done but creator has not acknowledged (close ticket). */
+export async function getPendingCreatorAcknowledge(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const rows = await reqRepo.getPendingCreatorAcknowledgeList(eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({
+    ...req,
+    status: 'Pending your acknowledgment',
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
+}
+
+/** Creator (requester) acknowledges – closes the requisition ticket. */
+export async function acknowledgeByCreator(body) {
+  const { requisitionId, acknowledgedByEmployeeId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = parseEmployeeId(acknowledgedByEmployeeId != null ? String(acknowledgedByEmployeeId) : null)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId required', status: 400 }
+  }
+  const rows = await reqRepo.getRequisitionForCreatorAcknowledge(reqId, eid)
+  if (!rows.length) return { error: 'Requisition not found or you are not the creator or it is not ready for your acknowledgment', status: 404 }
+  await reqRepo.updateCreatorAcknowledged(reqId)
+  return { message: 'Requisition acknowledged and closed', status: 'Closed' }
+}
+
 export async function handoverFinance(body) {
   const { requisitionId, handedByEmployeeId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
@@ -834,6 +1175,7 @@ export async function handoverFinance(body) {
     return { error: 'Add all 3 quotation images before handing over to Finance', status: 400 }
   }
   await reqRepo.handoverToFinance(reqId)
+  await setCurrentStageIfFlowEnabled(reqId, 'finance')
   await notifyBucketChanged(reqId, 'finance')
   return { message: 'Handed over to Finance', status: 'Pending Finance Approval' }
 }
@@ -841,9 +1183,12 @@ export async function handoverFinance(body) {
 export async function getPendingFinance(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const ok = await reqRepo.isFinanceHod(eid)
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'finance') : await reqRepo.isFinanceHod(eid)
   if (!ok) return []
-  const rows = await reqRepo.getPendingFinanceRequisitions()
+  const rows = useFlow
+    ? await reqRepo.getPendingRequisitionsByCurrentStage('finance')
+    : await reqRepo.getPendingFinanceRequisitions()
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   return rows.map(req => ({
@@ -857,20 +1202,32 @@ export async function approveFinance(body) {
   const { requisitionId, approvedByEmployeeId, approvedQuotationIndex } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
   const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
-  const idx = approvedQuotationIndex != null ? parseInt(approvedQuotationIndex, 10) : null
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
     return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
-  }
-  if (idx !== 1 && idx !== 2 && idx !== 3) {
-    return { error: 'approvedQuotationIndex must be 1, 2, or 3', status: 400 }
   }
   const ok = await reqRepo.isFinanceHod(eid)
   if (!ok) return { error: 'Only Finance HOD can approve', status: 403 }
   const rows = await reqRepo.getRequisitionForFinanceApproval(reqId)
   if (!rows.length) return { error: 'Requisition not found or not pending finance approval', status: 404 }
+  // Loan & Advance Salary (direct from HR/CEO): no quotations, use default index 1
+  const isLoan = isCategoryHrAfterHod(rows[0]?.req_category)
+  const idx = (approvedQuotationIndex != null && [1, 2, 3].includes(parseInt(approvedQuotationIndex, 10)))
+    ? parseInt(approvedQuotationIndex, 10)
+    : (isLoan ? 1 : null)
+  if (idx !== 1 && idx !== 2 && idx !== 3) {
+    return { error: 'approvedQuotationIndex must be 1, 2, or 3 (for requisitions with quotations)', status: 400 }
+  }
   await reqRepo.approveFinance(reqId, eid, idx)
-  await notifyBucketChanged(reqId, 'procurement')
-  return { message: 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: 'Finance Approved - Ready for Purchase' }
+  try {
+    const stages = await reqRepo.getFlowStages()
+    if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
+  } catch (_) {}
+  if (isLoan) {
+    notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Finance (Loan):', e?.message))
+  } else {
+    await notifyBucketChanged(reqId, 'procurement')
+  }
+  return { message: isLoan ? 'Finance approved (Loan).' : 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: isLoan ? 'Completed' : 'Finance Approved - Ready for Purchase' }
 }
 
 export async function getTatReport(query) {

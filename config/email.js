@@ -27,7 +27,12 @@ export function isEmailConfigured() {
   return !!(process.env.SMTP_HOST && process.env.SMTP_USER && (process.env.SMTP_PASSWORD || process.env.SMTP_PASS))
 }
 
+/** Alias for isEmailConfigured (used by requisition-emailer). */
+export const isSmtpConfigured = isEmailConfigured
+
 export const EMAIL_FROM = process.env.EMAIL_FROM || process.env.MAIL_FROM || process.env.SMTP_USER
+
+export const APP_NAME = process.env.APP_NAME || 'Employee Portal'
 
 /** Portal URL for requisition emails (link to open RFM portal). */
 export const REQUISITION_PORTAL_URL = process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/'
@@ -70,3 +75,4 @@ export async function sendRequisitionReminder({ to, subject, body, html }) {
     console.error('📧 [Email] FAILED →', recipient, '| Error:', err.message)
   }
 }
+

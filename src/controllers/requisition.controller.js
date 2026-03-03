@@ -21,6 +21,26 @@ export async function getHistory(req, res) {
   }
 }
 
+export async function getCategories(req, res) {
+  try {
+    const result = await requisitionService.getCategories()
+    res.json(result)
+  } catch (error) {
+    console.error('Requisition categories error:', error)
+    res.status(500).json({ error: 'Failed to fetch categories' })
+  }
+}
+
+export async function getFlow(req, res) {
+  try {
+    const stages = await requisitionService.getFlowStages()
+    res.json({ stages: stages || [] })
+  } catch (error) {
+    console.error('Requisition flow error:', error)
+    res.status(500).json({ error: 'Failed to fetch flow' })
+  }
+}
+
 export async function getTrackRecords(req, res) {
   try {
     const result = await requisitionService.getTrackRecords(req.query)
@@ -120,8 +140,6 @@ export async function getReportAll(req, res) {
 
 export async function getPendingHod(req, res) {
   try {
-    debugger
-    
     const result = await requisitionService.getPendingHod(req.params.employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
@@ -149,6 +167,50 @@ export async function approveHod(req, res) {
     res.json({ message: result.message, status: result.status })
   } catch (error) {
     console.error('HOD approve error:', error)
+    res.status(500).json({ error: 'Failed to update approval' })
+  }
+}
+
+export async function getPendingHR(req, res) {
+  try {
+    const result = await requisitionService.getPendingHR(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending HR error:', error)
+    res.status(500).json({ error: 'Failed to fetch pending requisitions' })
+  }
+}
+
+export async function approveHR(req, res) {
+  try {
+    const result = await requisitionService.approveHR(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('HR approve error:', error)
+    res.status(500).json({ error: 'Failed to update approval' })
+  }
+}
+
+export async function getPendingAdmin(req, res) {
+  try {
+    const result = await requisitionService.getPendingAdmin(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending Admin error:', error)
+    res.status(500).json({ error: 'Failed to fetch pending requisitions' })
+  }
+}
+
+export async function approveAdmin(req, res) {
+  try {
+    const result = await requisitionService.approveAdmin(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('Admin approve error:', error)
     res.status(500).json({ error: 'Failed to update approval' })
   }
 }
@@ -275,6 +337,17 @@ export async function completePurchase(req, res) {
   }
 }
 
+export async function getPendingAdminExecution(req, res) {
+  try {
+    const result = await requisitionService.getPendingAdminExecution(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending Admin Execution error:', error)
+    res.status(500).json({ error: 'Failed to fetch' })
+  }
+}
+
 export async function getPendingHodAcknowledge(req, res) {
   try {
     const result = await requisitionService.getPendingHodAcknowledge(req.params.employeeId)
@@ -296,6 +369,28 @@ export async function acknowledgeReceipt(req, res) {
     if (error.code === '42703') return res.status(500).json({ error: 'Database migration required: run requisition-complete-hod-ack.sql' })
     console.error('Acknowledge receipt error:', error)
     res.status(500).json({ error: 'Failed to acknowledge receipt' })
+  }
+}
+
+export async function getPendingCreatorAcknowledge(req, res) {
+  try {
+    const result = await requisitionService.getPendingCreatorAcknowledge(req.params.employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending creator acknowledge error:', error)
+    res.status(500).json({ error: 'Failed to fetch requisitions' })
+  }
+}
+
+export async function acknowledgeByCreator(req, res) {
+  try {
+    const result = await requisitionService.acknowledgeByCreator(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('Acknowledge by creator error:', error)
+    res.status(500).json({ error: 'Failed to acknowledge' })
   }
 }
 

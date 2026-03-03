@@ -1,0 +1,13 @@
+﻿Hierarchy for Procurements and Requisition,,,,,,,,,,
+Starts,Category,Employee,HOD,HR / Finance,Procurement Committee Discussion,Department,Quotations,Final Procurement Committee,CEO,Execution
+Requisition,Stationary,Initiate,For Info,0,0,Admin,0,0,0,Admin
+Requisition,Vehicle Maintenance,Initiate,For Info,0,0,Admin,0,0,0,Admin
+Requisition,Vehicle Repair,Initiate,For Info,0,1,Admin,1,1,1,Admin
+Requisition,Other Repair & Maintenance,Initiate,For Info,0,1,Admin,1,1,1,Admin
+Requisition,Loan & Advance Salary,Initiate,1,1,0,Finance,0,0,1,Finance
+Requisition,Event,Initiate,1,—,0,Procurement,1,0,1,Procurement
+Requisition,Specialized Projects,Initiate,0,0,1,-,0,1,1,Procurement
+Requisition,IT Equipments,Initiate,0,0,1,Procurement,1,1,1,Procurement
+Requisition,General Procurements Grocerry & Others,Initiate,0,0,1,Procurement,1,1,1,Procurement
+Requisition,General Procurements Electric Appliances,Initiate,0,0,1,Procurement,1,1,1,Procurement
+Requisition,Devices / Accessories,Initiate,0,0,1,Procurement,0,1,1,Procurement

@@ -1,12 +1,16 @@
 import { Queue, Worker } from 'bullmq'
 import IORedis from 'ioredis'
 import { executeQuery } from '../config/database.js'
+import { getEmailsFromCrmUsers } from '../config/crmDatabase.js'
 import { getEmailTransport, isSmtpConfigured, EMAIL_FROM, APP_NAME } from '../config/email.js'
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379'
 const connection = new IORedis(REDIS_URL, { maxRetriesPerRequest: null })
 
 const QUEUE_NAME = 'requisition-reminders'
+
+/** Delay before sending "please acknowledge" reminder (5 minutes). */
+const CREATOR_ACK_REMINDER_DELAY_MS = 5 * 60 * 1000
 
 export const requisitionReminderQueue = new Queue(QUEUE_NAME, {
   connection,
@@ -36,32 +40,31 @@ function levelLabel(daysLeft) {
 }
 
 async function getRecipientsForStageAndLevel(stage, level, creatorDepartmentId) {
-  const emails = new Set()
-  const isPg = process.env.DB_DRIVER !== 'sqlserver'
+  const codes = new Set()
 
   const byType = async (typeNames) => {
     const names = Array.isArray(typeNames) ? typeNames : [typeNames]
     const placeholders = names.map((_, i) => `$${i + 1}`).join(',')
     const rows = await executeQuery(
-      `SELECT e.email FROM employees e
+      `SELECT e.employee_code FROM employees e
        INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id
-       WHERE et.emp_type_name IN (${placeholders}) AND e.is_active = true AND e.email IS NOT NULL AND e.email != ''`,
+       WHERE et.emp_type_name IN (${placeholders}) AND e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''`,
       names
     )
-    rows.forEach((r) => emails.add(r.email))
+    ;(rows || []).forEach((r) => codes.add(r.employee_code))
   }
 
   const hodForDepartment = async (deptId) => {
     if (!deptId) return
     const rows = await executeQuery(
-      `SELECT e.email FROM employees e
+      `SELECT e.employee_code FROM employees e
        LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
        LEFT JOIN designation d ON e.designation_id = d.desg_id
        WHERE e.department_id = $1 AND (et.emp_type_name = 'HOD' OR d.desg_name = 'HOD')
-         AND e.is_active = true AND e.email IS NOT NULL AND e.email != ''`,
+         AND e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''`,
       [creatorDepartmentId]
     )
-    rows.forEach((r) => emails.add(r.email))
+    ;(rows || []).forEach((r) => codes.add(r.employee_code))
   }
 
   const addCommittee = () => byType('Committee')
@@ -100,7 +103,9 @@ async function getRecipientsForStageAndLevel(stage, level, creatorDepartmentId) 
       await addCeo()
   }
 
-  return [...emails]
+  const codeList = [...codes]
+  if (codeList.length === 0) return []
+  return getEmailsFromCrmUsers(codeList)
 }
 
 async function processCheckDeadlines() {
@@ -197,6 +202,106 @@ async function processSendReminder(job) {
   })
 }
 
+/** Send immediate email to creator: requisition ready, please acknowledge within 5 minutes. */
+async function sendCreatorAckRequiredEmail(reqId) {
+  const rows = await executeQuery(
+    `SELECT e.email, e.first_name, e.last_name, r.req_reference_no
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     WHERE r.req_id = $1 AND e.email IS NOT NULL AND TRIM(COALESCE(e.email, '')) != ''`,
+    [reqId]
+  )
+  if (!rows.length || !rows[0].email) return
+  const creator = rows[0]
+  const refNo = creator.req_reference_no || `#${reqId}`
+  const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
+  const ackUrl = `${portalUrl}requisition/acknowledgment`
+  const subject = `Requisition ${refNo} – Please acknowledge within 5 minutes – ${APP_NAME}`
+  const html = `
+    <p>Dear ${creator.first_name || 'Employee'},</p>
+    <p>Your requisition <strong>${refNo}</strong> has been completed by the execution team.</p>
+    <p><strong>Please acknowledge within 5 minutes</strong> to close the ticket.</p>
+    <p><a href="${ackUrl}">Open Acknowledgment page</a></p>
+    <p><em>This is an automated message from ${APP_NAME}.</em></p>
+  `
+  if (!isSmtpConfigured()) {
+    console.warn('[Requisition Emailer] SMTP not configured – creator ack notification not sent.')
+    return
+  }
+  const transport = getEmailTransport()
+  await transport.sendMail({
+    from: EMAIL_FROM,
+    to: creator.email,
+    subject,
+    html,
+    text: html.replace(/<[^>]+>/g, ''),
+  })
+  console.log('[Requisition Emailer] Creator ack required email sent to', creator.email, 'for req', reqId)
+}
+
+/** Process delayed job: if creator has not acknowledged, send reminder. */
+async function processCreatorAckReminder(job) {
+  const { reqId } = job.data
+  const rows = await executeQuery(
+    `SELECT r.req_id, r.req_reference_no, r.req_creator_acknowledged,
+            e.email, e.first_name, e.last_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     WHERE r.req_id = $1`,
+    [reqId]
+  )
+  if (!rows.length) return
+  const row = rows[0]
+  if (row.req_creator_acknowledged === 1) return
+  const email = row.email
+  if (!email || String(email).trim() === '') return
+  const refNo = row.req_reference_no || `#${reqId}`
+  const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
+  const ackUrl = `${portalUrl}requisition/acknowledgment`
+  const subject = `Reminder: Please acknowledge requisition ${refNo} – ${APP_NAME}`
+  const html = `
+    <p>Dear ${row.first_name || 'Employee'},</p>
+    <p>This is a reminder: your requisition <strong>${refNo}</strong> is still waiting for your acknowledgment.</p>
+    <p>Please acknowledge as soon as possible to close the ticket.</p>
+    <p><a href="${ackUrl}">Open Acknowledgment page</a></p>
+    <p><em>This is an automated reminder from ${APP_NAME}.</em></p>
+  `
+  if (!isSmtpConfigured()) {
+    console.warn('[Requisition Emailer] SMTP not configured – creator ack reminder not sent.')
+    return
+  }
+  const transport = getEmailTransport()
+  await transport.sendMail({
+    from: EMAIL_FROM,
+    to: email,
+    subject,
+    html,
+    text: html.replace(/<[^>]+>/g, ''),
+  })
+  console.log('[Requisition Emailer] Creator ack reminder sent to', email, 'for req', reqId)
+}
+
+/**
+ * Notify creator that they must acknowledge the requisition within 5 minutes.
+ * Sends immediate email and schedules a reminder job after 5 minutes.
+ * Call when a requisition becomes "pending creator acknowledgment" (Admin approved, Purchase completed, or Loan Finance approved).
+ */
+export async function notifyCreatorAckRequired(reqId) {
+  if (!reqId) return
+  try {
+    await sendCreatorAckRequiredEmail(reqId)
+  } catch (e) {
+    console.error('[Requisition Emailer] sendCreatorAckRequiredEmail failed:', e?.message)
+  }
+  try {
+    await requisitionReminderQueue.add(
+      'creator-ack-reminder',
+      { reqId },
+      { delay: CREATOR_ACK_REMINDER_DELAY_MS, jobId: `creator-ack-reminder-${reqId}-${Date.now()}` }
+    )
+  } catch (e) {
+    console.error('[Requisition Emailer] schedule creator-ack-reminder failed:', e?.message)
+  }
+}
+
 let activeWorker = null
 
 export function startRequisitionEmailerWorker() {
@@ -207,6 +312,8 @@ export function startRequisitionEmailerWorker() {
         await processCheckDeadlines()
       } else if (job.name === 'send-reminder') {
         await processSendReminder(job)
+      } else if (job.name === 'creator-ack-reminder') {
+        await processCreatorAckReminder(job)
       }
     },
     { connection, concurrency: 3 }

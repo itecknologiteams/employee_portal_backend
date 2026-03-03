@@ -1,5 +1,14 @@
+function isExecutionDone(row) {
+  return row.req_admin_approval === 1 ||
+    row.req_purchase_completed === 1 ||
+    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)))
+}
+
 export function getRequisitionStatus(row) {
   if (row.req_is_rejected === 1) return 'Rejected'
+  if (row.req_creator_acknowledged === 1) return 'Closed'
+  if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Pending your acknowledgment'
+  if (row.req_admin_approval === 1) return 'Completed'
   if (row.req_hod_acknowledged === 1) return 'Completed'
   if (row.req_purchase_completed === 1) {
     // Customize status based on who created the requisition
@@ -21,6 +30,8 @@ export function getRequisitionStatus(row) {
   }
   if (row.req_ceo_approval === 1) return 'Forwarded to Procurement'
   if (row.req_committee_approval === 1) return 'Pending CEO'
+  if (row.req_current_stage_key === 'hr') return 'Pending HR'
+  if (row.req_current_stage_key === 'admin') return 'Pending Admin'
   if (row.req_hod_approval === 1) return 'Pending Committee'
   return 'Pending HOD'
 }
@@ -35,7 +46,11 @@ export function getPendingAt(status) {
   if (status === 'Forwarded to Procurement') return 'Procurement'
   if (status === 'Pending CEO') return 'CEO'
   if (status === 'Pending Committee') return 'Committee'
+  if (status === 'Pending HR') return 'HR'
+  if (status === 'Pending Admin') return 'Admin'
   if (status === 'Pending HOD') return 'HOD'
+  if (status === 'Pending your acknowledgment') return 'Creator'
+  if (status === 'Closed') return 'Closed'
   return null
 }
 
@@ -56,12 +71,14 @@ export function getTATFromRequisition(row) {
   }
   const buckets = [
     { name: 'HOD', start: row.req_created_at, end: row.req_hod_approval_date || null },
-    { name: 'Committee', start: row.req_hod_approval_date || null, end: row.req_committee_approval_date || null },
+    ...(row.req_hr_approval_date != null ? [{ name: 'HR', start: row.req_hod_approval_date || null, end: row.req_hr_approval_date || null }] : []),
+    { name: 'Committee', start: (row.req_hr_approval_date || row.req_hod_approval_date) || null, end: row.req_committee_approval_date || null },
     { name: 'CEO', start: row.req_committee_approval_date || null, end: row.req_ceo_approval_date || null },
     { name: 'Procurement', start: row.req_ceo_approval_date || null, end: row.req_handed_to_finance_date || null },
     { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null },
     { name: 'Procurement (complete)', start: row.req_finance_approval_date || null, end: row.req_purchase_completed_date || null },
-    { name: 'HOD Acknowledge', start: row.req_purchase_completed_date || null, end: row.req_hod_acknowledged_date || null }
+    { name: 'HOD Acknowledge', start: row.req_purchase_completed_date || null, end: row.req_hod_acknowledged_date || null },
+    { name: 'Creator Acknowledge', start: (row.req_purchase_completed_date || row.req_admin_approval_date || row.req_finance_approval_date) || null, end: row.req_creator_acknowledged_date || null }
   ]
   const withDuration = buckets.map((b) => {
     const hours = hoursBetween(b.start, b.end)

@@ -94,6 +94,72 @@ export async function checkCrmLogin(username, password) {
   }
 }
 
+/**
+ * Get official email for a single employee from CRM SQL Server USERS table.
+ * Uses .env: CRM_HOST, CRM_USER, CRM_PASS, CRM_DB; CRM_USERS_TABLE, CRM_USERS_EMAIL, CRM_USERS_MATCH_COLUMN.
+ * @param {string} employeeCode - Employee code (matches EMPLOYEE_ID in USERS)
+ * @returns {Promise<string|null>} Email or null if not found / CRM unavailable
+ */
+export async function getOfficialEmailFromCrm(employeeCode) {
+  if (!employeeCode || String(employeeCode).trim() === '') return null
+  const code = String(employeeCode).trim()
+  let pool
+  try {
+    pool = await getCrmPool()
+  } catch (err) {
+    return null
+  }
+  const table = stripEnvQuotes(process.env.CRM_USERS_TABLE) || 'USERS'
+  const emailCol = stripEnvQuotes(process.env.CRM_USERS_EMAIL) || 'EMAIL'
+  const matchCol = stripEnvQuotes(process.env.CRM_USERS_MATCH_COLUMN) || 'EMPLOYEE_ID'
+  try {
+    const Mssql = await getMssql()
+    const request = pool.request()
+    request.input('matchCode', Mssql.VarChar(100), code)
+    const query = `SELECT ${emailCol} FROM ${table} WHERE ${matchCol} = @matchCode AND ${emailCol} IS NOT NULL AND LTRIM(RTRIM(${emailCol})) != ''`
+    const result = await request.query(query)
+    const rows = result.recordset || []
+    const email = rows[0]?.[emailCol] ?? rows[0]?.EMAIL
+    return email ? String(email).trim() : null
+  } catch (err) {
+    return null
+  }
+}
+
+/**
+ * Get email addresses from CRM SQL Server USERS table for given employee codes/IDs.
+ * Used for requisition notifications (HOD, Committee, CEO, Procurement, Finance).
+ * .env: CRM_USERS_TABLE=USERS, CRM_USERS_EMAIL=EMAIL, CRM_USERS_MATCH_COLUMN=EMPLOYEE_ID (column in USERS that matches employee_code)
+ */
+export async function getEmailsFromCrmUsers(employeeCodes) {
+  if (!employeeCodes || !Array.isArray(employeeCodes) || employeeCodes.length === 0) return []
+  const codes = [...new Set(employeeCodes.map((c) => String(c).trim()).filter(Boolean))]
+  if (codes.length === 0) return []
+  let pool
+  try {
+    pool = await getCrmPool()
+  } catch (err) {
+    console.error('CRM (getEmailsFromCrmUsers): connection failed', err.message)
+    return []
+  }
+  const table = stripEnvQuotes(process.env.CRM_USERS_TABLE) || 'USERS'
+  const emailCol = stripEnvQuotes(process.env.CRM_USERS_EMAIL) || 'EMAIL'
+  const matchCol = stripEnvQuotes(process.env.CRM_USERS_MATCH_COLUMN) || 'EMPLOYEE_ID'
+  try {
+    const Mssql = await getMssql()
+    const request = pool.request()
+    codes.forEach((c, i) => { request.input(`c${i}`, Mssql.VarChar(100), c) })
+    const inClause = codes.map((_, i) => `@c${i}`).join(', ')
+    const query = `SELECT ${emailCol} FROM ${table} WHERE ${matchCol} IN (${inClause}) AND ${emailCol} IS NOT NULL AND LTRIM(RTRIM(${emailCol})) != ''`
+    const result = await request.query(query)
+    const rows = result.recordset || []
+    return rows.map((r) => r[emailCol] || r.EMAIL).filter(Boolean)
+  } catch (err) {
+    console.error('CRM getEmailsFromCrmUsers error:', err.message)
+    return []
+  }
+}
+
 export async function closeCrmPool() {
   if (crmPool) {
     try {

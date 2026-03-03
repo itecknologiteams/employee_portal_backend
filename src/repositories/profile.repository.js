@@ -1,6 +1,6 @@
 import { executeQuery } from '../../config/database.js'
 
-// Full profile: department, designation, employee_type, station, city + extended profile fields
+// Full profile: department, designation, employee_type, station, city, grade (names) + extended profile fields
 const profileQueryFull = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
     e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
@@ -8,15 +8,17 @@ const profileQueryFull = `
     e.employee_type_id, et.emp_type_name AS employee_type_name,
     e.station_id, s.station_name,
     e.city_id, c.city_name,
-    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion,
+    COALESCE(g.grade_name, e.grade) AS grade,
     e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
-    e.emergency_contact_number, e.employee_extension, e.personal_cell_number, e.region
+    e.emergency_contact_number, e.employee_extension, e.personal_cell_number
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
   LEFT JOIN designation desg ON e.designation_id = desg.desg_id
   LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
   LEFT JOIN station s ON e.station_id = s.station_id
   LEFT JOIN city c ON e.city_id = c.city_id
+  LEFT JOIN grade g ON e.grade_id = g.grade_id
   WHERE e.employee_id = $1
 `
 
@@ -26,7 +28,10 @@ const profileQueryNoStationCity = `
     e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
     e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name,
-    e.station_id, e.city_id, NULL::text AS station_name, NULL::text AS city_name
+    e.station_id, e.city_id, NULL::text AS station_name, NULL::text AS city_name,
+    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+    e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.emergency_contact_number, e.employee_extension, e.personal_cell_number
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
   LEFT JOIN designation desg ON e.designation_id = desg.desg_id
@@ -46,15 +51,39 @@ const profileQueryMinimal = `
   WHERE e.employee_id = $1
 `
 
+// Full profile without grade table (fallback when grade table or grade_id column missing)
+const profileQueryFullNoGrade = `
+  SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
+    e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
+    e.designation_id, desg.desg_name AS designation_name,
+    e.employee_type_id, et.emp_type_name AS employee_type_name,
+    e.station_id, s.station_name,
+    e.city_id, c.city_name,
+    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+    e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.emergency_contact_number, e.employee_extension, e.personal_cell_number
+  FROM employees e
+  LEFT JOIN departments d ON e.department_id = d.department_id
+  LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+  LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
+  LEFT JOIN station s ON e.station_id = s.station_id
+  LEFT JOIN city c ON e.city_id = c.city_id
+  WHERE e.employee_id = $1
+`
+
 export async function getProfile(employeeId) {
   try {
     return await executeQuery(profileQueryFull, [employeeId])
   } catch (err) {
     if (err.code === '42P01' || err.code === '42703') {
       try {
-        return await executeQuery(profileQueryNoStationCity, [employeeId])
+        return await executeQuery(profileQueryFullNoGrade, [employeeId])
       } catch (_) {
-        return await executeQuery(profileQueryMinimal, [employeeId])
+        try {
+          return await executeQuery(profileQueryNoStationCity, [employeeId])
+        } catch (__) {
+          return await executeQuery(profileQueryMinimal, [employeeId])
+        }
       }
     }
     throw err
@@ -190,7 +219,6 @@ export async function approveProfileChangeRequest(requestId, reviewedByEmployeeI
   if (d.emergencyContactNumber != null) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(d.emergencyContactNumber ? String(d.emergencyContactNumber).trim() : null); idx++ }
   if (d.employeeExtension != null) { setClauses.push(`employee_extension = $${idx}`); params.push(d.employeeExtension ? String(d.employeeExtension).trim() : null); idx++ }
   if (d.personalCellNumber != null) { setClauses.push(`personal_cell_number = $${idx}`); params.push(d.personalCellNumber ? String(d.personalCellNumber).trim() : null); idx++ }
-  if (d.region != null) { setClauses.push(`region = $${idx}`); params.push(d.region ? String(d.region).trim() : null); idx++ }
 
   if (setClauses.length > 0) {
     setClauses.push('updated_at = CURRENT_TIMESTAMP')

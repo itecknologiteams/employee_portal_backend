@@ -1,4 +1,5 @@
 import { executeQuery } from '../config/database.js'
+import { getEmailsFromCrmUsers } from '../config/crmDatabase.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
 import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, buildRequisitionBucketChangedPlainText, getPortalUrl } from '../config/requisition-email-template.js'
@@ -27,48 +28,47 @@ function getRequisitionBucket(row) {
   return 'hod'
 }
 
-async function getHodEmailForDepartment(departmentId) {
+async function getHodEmployeeCodesForDepartment(departmentId) {
   if (departmentId == null) return []
   try {
     const q = `
-      SELECT e.email FROM employees e
+      SELECT e.employee_code FROM employees e
       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
-      WHERE e.department_id = $1 AND e.is_active = true
+      WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''
         AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
-      LIMIT 1
+      LIMIT 5
     `
     const rows = await executeQuery(q, [departmentId])
-    if (rows[0]?.email) return [rows[0].email]
+    return (rows || []).map((r) => r.employee_code).filter(Boolean)
   } catch (err) {
     if (err.code === '42P01') return []
     throw err
   }
   try {
     const rows = await executeQuery(
-      `SELECT e.email FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
-       WHERE e.department_id = $1 AND e.is_active = true LIMIT 1`,
+      `SELECT e.employee_code FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+       WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL LIMIT 5`,
       [departmentId]
     )
-    return rows[0]?.email ? [rows[0].email] : []
+    return (rows || []).map((r) => r.employee_code).filter(Boolean)
   } catch (err) {
     if (err.code === '42P01') return []
-    throw err
+    return []
   }
-  return []
 }
 
-async function getEmailsByRole(roleName) {
+async function getEmployeeCodesByRole(roleName) {
   try {
     const q = `
-      SELECT DISTINCT e.email FROM employees e
+      SELECT DISTINCT e.employee_code FROM employees e
       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = $1
       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = $1
-      WHERE e.is_active = true AND e.email IS NOT NULL AND e.email != ''
+      WHERE e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''
         AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
     `
     const rows = await executeQuery(q, [roleName])
-    return rows.map((r) => r.email).filter(Boolean)
+    return (rows || []).map((r) => r.employee_code).filter(Boolean)
   } catch (err) {
     if (err.code === '42P01') return []
     throw err
@@ -76,12 +76,15 @@ async function getEmailsByRole(roleName) {
 }
 
 async function getEmailsForBucket(bucket, departmentId) {
-  if (bucket === 'hod') return getHodEmailForDepartment(departmentId)
-  if (bucket === 'committee') return getEmailsByRole('Committee')
-  if (bucket === 'ceo') return getEmailsByRole('CEO')
-  if (bucket === 'procurement') return getEmailsByRole('Procurement')
-  if (bucket === 'finance') return getEmailsByRole('Finance')
-  return []
+  let codes = []
+  if (bucket === 'hod') codes = await getHodEmployeeCodesForDepartment(departmentId)
+  else if (bucket === 'hr') codes = await getEmployeeCodesByRole('HR')
+  else if (bucket === 'committee') codes = await getEmployeeCodesByRole('Committee')
+  else if (bucket === 'ceo') codes = await getEmployeeCodesByRole('CEO')
+  else if (bucket === 'procurement') codes = await getEmployeeCodesByRole('Procurement')
+  else if (bucket === 'finance') codes = await getEmployeeCodesByRole('Finance')
+  if (codes.length === 0) return []
+  return getEmailsFromCrmUsers(codes)
 }
 
 /**
@@ -282,6 +285,7 @@ export async function handleRequisitionCreated(data) {
 
 const BUCKET_LABELS = {
   hod: 'Pending HOD',
+  hr: 'Pending HR',
   committee: 'Pending Committee',
   ceo: 'Pending CEO',
   procurement: 'Procurement',
@@ -297,7 +301,7 @@ export async function handleRequisitionBucketChanged(data) {
     console.warn('[BullMQ] requisition-bucket-changed: missing requisitionId or newBucket')
     return
   }
-  const validBuckets = ['committee', 'ceo', 'procurement', 'finance']
+  const validBuckets = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance']
   if (!validBuckets.includes(newBucket)) {
     console.warn('[BullMQ] requisition-bucket-changed: invalid newBucket', newBucket)
     return
