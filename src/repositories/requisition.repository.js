@@ -1136,11 +1136,17 @@ export async function getPendingFinanceRequisitions() {
   )
 }
 
+/** Req is in Procurement bucket (by flow) and can be acknowledged by Procurement. Use current_stage_key so all flow paths (e.g. Committee→Procurement or HOD→…→CEO→Procurement) work. */
 export async function getRequisitionForProcurementAck(reqId) {
-  return executeQuery(
-    'SELECT req_id FROM requisition WHERE req_id = $1 AND req_is_rejected = 0 AND req_hod_approval = 1 AND req_committee_approval = 1 AND req_ceo_approval = 1',
-    [reqId]
-  )
+  try {
+    return await executeQuery(
+      `SELECT req_id FROM requisition WHERE req_id = $1 AND COALESCE(req_is_rejected, 0) = 0 AND req_current_stage_key = 'procurement'`,
+      [reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return [] // column missing
+    throw err
+  }
 }
 
 export async function getRequisitionForQuotations(reqId) {
