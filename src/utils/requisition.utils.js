@@ -28,10 +28,14 @@ export function getRequisitionStatus(row) {
     if (hasQuotations) return 'Quotations Added - Hand over to Finance'
     return 'Acknowledged by Procurement - Add 3 Quotations'
   }
-  if (row.req_ceo_approval === 1) return 'Forwarded to Procurement'
-  if (row.req_committee_approval === 1) return 'Pending CEO'
+  // Flow-driven stage: show current bucket so e.g. Devices/Accessories shows Finance/CEO, not Procurement
+  if (row.req_current_stage_key === 'finance') return 'Pending Finance Approval'
+  if (row.req_current_stage_key === 'ceo') return 'Pending CEO'
+  if (row.req_current_stage_key === 'procurement') return 'Forwarded to Procurement'
   if (row.req_current_stage_key === 'hr') return 'Pending HR'
   if (row.req_current_stage_key === 'admin') return 'Pending Admin'
+  if (row.req_ceo_approval === 1) return 'Forwarded to Procurement'
+  if (row.req_committee_approval === 1) return 'Pending CEO'
   if (row.req_hod_approval === 1) return 'Pending Committee'
   return 'Pending HOD'
 }

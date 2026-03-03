@@ -1160,11 +1160,18 @@ export async function getRequisitionForHandover(reqId) {
   )
 }
 
+/** Req in Procurement bucket (by flow or after ack) so Procurement can set expected handover date. */
 export async function getRequisitionForExpectedHandover(reqId) {
-  return executeQuery(
-    'SELECT req_id FROM requisition WHERE req_id = $1 AND req_is_rejected = 0 AND req_hod_approval = 1 AND req_committee_approval = 1 AND req_ceo_approval = 1',
-    [reqId]
-  )
+  try {
+    return await executeQuery(
+      `SELECT req_id FROM requisition WHERE req_id = $1 AND COALESCE(req_is_rejected, 0) = 0
+       AND (req_current_stage_key = 'procurement' OR COALESCE(req_procurement_ack, 0) = 1)`,
+      [reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
 }
 
 /** Req eligible for Finance approval: either handed by Procurement (with quotations) or at finance stage (e.g. Loan direct from HR/CEO). */

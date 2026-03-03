@@ -813,7 +813,21 @@ export async function approveCommittee(body) {
   }
   await reqRepo.approveCommittee(reqId)
 
-  // CEO approval is required only when total (after committee-approved qty) is greater than 100K; if total <= 100K skip CEO and forward to Procurement.
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  const categoryName = reqRow[0]?.req_category
+  const stages = await reqRepo.getFlowStages()
+  const useFlow = stages && stages.length > 0
+  const nextKeyFromFlow = categoryName && useFlow ? await reqRepo.getNextStageKey(categoryName, 'committee') : null
+
+  // When category flow defines next stage after committee (e.g. Devices/Accessories → Finance, not CEO), respect it.
+  if (nextKeyFromFlow && nextKeyFromFlow !== 'ceo') {
+    await setCurrentStageIfFlowEnabled(reqId, nextKeyFromFlow)
+    await notifyBucketChanged(reqId, nextKeyFromFlow)
+    const statusLabel = nextKeyFromFlow === 'finance' ? 'Pending Finance Approval' : nextKeyFromFlow === 'procurement' ? 'Forwarded to Procurement' : `Pending ${nextKeyFromFlow}`
+    return { message: 'Committee approval recorded', status: statusLabel }
+  }
+
+  // When next stage is CEO (or no flow): apply 100K rule — total <= 100K skip CEO and forward to Procurement.
   const LIMIT_100K = 100000
   const itemsAfter = await reqRepo.getRequisitionItems(reqId)
   let totalAfterCommittee = 0
@@ -833,11 +847,9 @@ export async function approveCommittee(body) {
     return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
   }
 
-  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
-  const categoryName = reqRow[0]?.req_category
-  const nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'committee') : 'ceo'
-  await setCurrentStageIfFlowEnabled(reqId, nextKey || 'ceo')
-  await notifyBucketChanged(reqId, 'ceo')
+  const nextKey = nextKeyFromFlow || 'ceo'
+  await setCurrentStageIfFlowEnabled(reqId, nextKey)
+  await notifyBucketChanged(reqId, nextKey)
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
