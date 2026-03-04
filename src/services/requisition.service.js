@@ -885,11 +885,14 @@ export async function approveCeo(body) {
   await reqRepo.approveCeo(reqId)
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
-  // Loan & Advance Salary: after CEO go to Finance (not Procurement)
-  const nextKey = isCategoryHrAfterHod(categoryName) ? 'finance' : 'procurement'
+  const stages = await reqRepo.getFlowStages()
+  const useFlow = stages && stages.length > 0
+  const nextKeyFromFlow = categoryName && useFlow ? await reqRepo.getNextStageKey(categoryName, 'ceo') : null
+  const nextKey = nextKeyFromFlow ?? (isCategoryHrAfterHod(categoryName) ? 'finance' : 'procurement')
   await setCurrentStageIfFlowEnabled(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
-  return { message: 'CEO approval recorded', status: nextKey === 'finance' ? 'Pending Finance' : 'Forwarded to Procurement' }
+  const statusLabel = nextKey === 'finance' ? 'Pending Finance' : nextKey === 'admin' ? 'Pending Admin' : 'Forwarded to Procurement'
+  return { message: 'CEO approval recorded', status: statusLabel }
 }
 
 export async function approveAdmin(body) {
