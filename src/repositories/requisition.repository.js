@@ -11,7 +11,7 @@ export async function getRequisitionsByEmployeeId(employeeId) {
 export async function getRequisitionItemsByReqIds(reqIds) {
   if (!reqIds.length) return []
   return executeQuery(
-    'SELECT item_id, req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks FROM requisition_items WHERE req_id = ANY($1)',
+    'SELECT item_id, req_id, item_desc, item_product_description, item_size, item_brand, item_qty, item_est_cost, item_remarks FROM requisition_items WHERE req_id = ANY($1)',
     [reqIds]
   )
 }
@@ -93,11 +93,12 @@ export async function createRequisition(employeeId, location, material, required
 
 export async function insertRequisitionItem(reqId, item) {
   return executeQuery(
-    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    `INSERT INTO requisition_items (req_id, item_desc, item_product_description, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
       reqId,
       item.itemDesc || item.item_desc || null,
+      item.itemProductDescription || item.item_product_description || null,
       item.itemSize || item.item_size || null,
       item.itemBrand || item.item_brand || null,
       item.itemQty ?? item.item_qty ?? 1,
@@ -115,18 +116,19 @@ export async function insertRequisitionItemsBatch(reqId, items) {
   let i = 0
   for (const item of items) {
     const desc = item.itemDesc || item.item_desc || null
+    const productDesc = item.itemProductDescription || item.item_product_description || null
     const size = item.itemSize || item.item_size || null
     const brand = item.itemBrand || item.item_brand || null
     const qty = item.itemQty ?? item.item_qty ?? 1
     const cost = item.itemEstCost || item.item_est_cost || null
     const remarks = item.itemRemarks || item.item_remarks || null
-    const base = i * 7
-    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`)
-    params.push(reqId, desc, size, brand, qty, cost, remarks)
+    const base = i * 8
+    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`)
+    params.push(reqId, desc, productDesc, size, brand, qty, cost, remarks)
     i++
   }
   await executeQuery(
-    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+    `INSERT INTO requisition_items (req_id, item_desc, item_product_description, item_size, item_brand, item_qty, item_est_cost, item_remarks)
      VALUES ${values.join(', ')}`,
     params
   )
