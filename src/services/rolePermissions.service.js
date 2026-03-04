@@ -4,18 +4,29 @@ const ROLES = ['Admin', 'Staff', 'User']
 const PERMISSION_KEYS = [
   'dashboard',
   'profile',
+  'profile_update_requests',
   'salary_slip',
+  'view_salary_slips',
   'leave',
+  'leave_pending',
   'feedback',
+  'feedback_history',
+  'feedback_records_hr',
   'requisition_create',
+  'requisition_history',
+  'requisition_acknowledgment',
   'requisition_pending',
   'requisition_approved',
   'requisition_reports',
-  'requisition_history',
   'tat_report',
+  'help_support',
   'extensions',
   'administration',
-  'payroll'
+  'payroll',
+  'payroll_gross_salaries',
+  'payroll_other_allowances',
+  'payroll_deductions',
+  'payroll_incentives'
 ]
 
 /** Permission key in camelCase (e.g. salary_slip -> salarySlip) for frontend compatibility. */
