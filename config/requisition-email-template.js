@@ -36,7 +36,8 @@ export function buildRequisitionEmailPlainText(opts) {
   if (items.length > 0) {
     lines.push(`Items (${items.length}):`)
     items.forEach((it, i) => {
-      const desc = (it.item_desc || '').trim() || 'No description'
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'No description'
       const qty = it.item_qty != null ? it.item_qty : 1
       const size = (it.item_size || '').trim()
       const brand = (it.item_brand || '').trim()
@@ -85,7 +86,8 @@ export function buildRequisitionReminderPlainText(opts) {
   if (items.length > 0) {
     lines.push(`Items (${items.length}):`)
     items.forEach((it, i) => {
-      const desc = (it.item_desc || '').trim() || 'No description'
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'No description'
       const qty = it.item_qty != null ? it.item_qty : 1
       const size = (it.item_size || '').trim()
       const brand = (it.item_brand || '').trim()
@@ -133,7 +135,8 @@ export function buildRequisitionBucketChangedPlainText(opts) {
   if (items.length > 0) {
     lines.push(`Items (${items.length}):`)
     items.forEach((it, i) => {
-      const desc = (it.item_desc || '').trim() || 'No description'
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'No description'
       const qty = it.item_qty != null ? it.item_qty : 1
       const size = (it.item_size || '').trim()
       const brand = (it.item_brand || '').trim()
@@ -192,7 +195,8 @@ export function buildRequisitionEmailHtml(opts) {
   let itemsHtml = ''
   if (items.length > 0) {
     const rows = items.map((it, i) => {
-      const desc = (it.item_desc || '').trim() || '—'
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || '—'
       const size = it.item_size || '—'
       const brand = it.item_brand || '—'
       const qty = it.item_qty != null ? it.item_qty : '—'
