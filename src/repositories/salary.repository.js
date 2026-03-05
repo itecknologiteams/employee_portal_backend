@@ -22,6 +22,7 @@ export async function getEmployeeBasicInfo(employeeId) {
 }
 
 // ---------- New payroll (payroll_slip + payroll_period) ----------
+// Returns all slips for employee regardless of payroll_period.status (draft/processing/processed/closed) so generated payroll (e.g. February 2026) shows on Salary Slip page.
 export async function listPayrollSlipsForEmployee(employeeId) {
   try {
     return await executeQuery(
