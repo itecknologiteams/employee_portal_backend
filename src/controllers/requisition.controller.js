@@ -315,6 +315,17 @@ export async function setExpectedHandover(req, res) {
   }
 }
 
+export async function updateItemsByHod(req, res) {
+  try {
+    const result = await requisitionService.updateItemsByHod(req.params.reqId, req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Update items by HOD error:', error)
+    res.status(500).json({ error: 'Failed to update items' })
+  }
+}
+
 export async function updateRequiredByDate(req, res) {
   try {
     const result = await requisitionService.updateRequiredByDate(req.params.reqId, req.body)

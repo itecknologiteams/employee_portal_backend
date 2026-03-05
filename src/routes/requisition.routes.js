@@ -50,6 +50,8 @@ router.get('/tat-report', requisitionController.getTatReport)
 router.get('/tat/:reqId', requisitionController.getTat)
 // HOD: update required-by date (must be before GET /:reqId)
 router.put('/required-by-date/:reqId', requisitionController.updateRequiredByDate)
+// HOD: edit items (description, size, brand, qty, cost, remarks) only while in HOD bucket
+router.put('/:reqId/items', requisitionController.updateItemsByHod)
 // Procurement: mark requisition complete (must be before GET /:reqId)
 router.post('/complete-purchase/:reqId', requisitionController.completePurchase)
 router.get('/pending/admin-execution/:employeeId', requisitionController.getPendingAdminExecution)

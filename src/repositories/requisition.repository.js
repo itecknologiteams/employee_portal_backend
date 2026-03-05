@@ -97,7 +97,7 @@ export async function insertRequisitionItem(reqId, item) {
      VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       reqId,
-      item.itemDesc || item.item_desc || null,
+      item.itemProductDescription || item.itemDesc || item.item_desc || null,
       item.itemSize || item.item_size || null,
       item.itemBrand || item.item_brand || null,
       item.itemQty ?? item.item_qty ?? 1,
@@ -114,7 +114,7 @@ export async function insertRequisitionItemsBatch(reqId, items) {
   const params = []
   let i = 0
   for (const item of items) {
-    const desc = item.itemDesc || item.item_desc || null
+    const desc = item.itemProductDescription || item.itemDesc || item.item_desc || null
     const size = item.itemSize || item.item_size || null
     const brand = item.itemBrand || item.item_brand || null
     const qty = item.itemQty ?? item.item_qty ?? 1
@@ -501,6 +501,17 @@ export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost)
        hod_item_size = $1, hod_item_brand = $2, hod_item_qty = $3, hod_item_est_cost = $4
      WHERE item_id = $5 AND req_id = $6`,
     [size || null, brand || null, (qty != null && !Number.isNaN(qty)) ? qty : null, estCost || null, itemId, reqId]
+  )
+}
+
+/** Update a single requisition item (description, size, brand, qty, est_cost, remarks). Only for items belonging to reqId. */
+export async function updateRequisitionItem(itemId, reqId, payload) {
+  const { item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks } = payload
+  return executeQuery(
+    `UPDATE requisition_items SET
+       item_desc = $1, item_size = $2, item_brand = $3, item_qty = $4, item_est_cost = $5, item_remarks = $6
+     WHERE item_id = $7 AND req_id = $8`,
+    [item_desc ?? null, item_size ?? null, item_brand ?? null, item_qty ?? null, item_est_cost ?? null, item_remarks ?? null, itemId, reqId]
   )
 }
 
