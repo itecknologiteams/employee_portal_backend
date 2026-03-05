@@ -71,7 +71,40 @@ export async function uploadGrossSalaries(req, res) {
   }
 }
 
+/** Upload full payroll sheet (CSV/Excel) with title rows – e.g. "iTecknologi Payroll - February 2026". */
+export async function uploadPayrollSheet(req, res) {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No file uploaded. Use form field "file".' })
+    }
+    const filename = req.file.originalname || ''
+    const result = await payrollService.uploadPayrollSheetFromFile(req.file.buffer, filename)
+    res.json({
+      message: result.message,
+      added: result.added,
+      totalRows: result.totalRows,
+      errors: result.errors
+    })
+  } catch (err) {
+    if (err.message && (err.message.includes('header') || err.message.includes('Employee ID') || err.message.includes('empty'))) {
+      return res.status(400).json({ error: err.message })
+    }
+    console.error('Upload payroll sheet error:', err)
+    res.status(500).json({ error: err.message || 'Failed to upload payroll sheet' })
+  }
+}
+
 // ---------- Periods ----------
+export async function checkUnclosed(req, res) {
+  try {
+    const result = await payrollService.checkUnclosed()
+    res.json(result)
+  } catch (err) {
+    console.error('Payroll check unclosed error:', err)
+    res.status(500).json({ hasUnclosed: false })
+  }
+}
+
 export async function listPeriods(req, res) {
   try {
     const status = req.query.status && VALID_STATUSES.includes(req.query.status) ? req.query.status : null
@@ -100,6 +133,7 @@ export async function createPeriod(req, res) {
     res.status(201).json(result)
   } catch (err) {
     if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
+    if (err.message && err.message.includes('Pehle current')) return res.status(400).json({ error: err.message })
     console.error('Payroll period create error:', err)
     res.status(500).json({ error: err.message || 'Failed to create period' })
   }
@@ -152,6 +186,31 @@ export async function saveOverrides(req, res) {
   }
 }
 
+/** Upload period overrides from CSV/Excel (e.g. Allowances Sheet). */
+export async function uploadPeriodOverrides(req, res) {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No file uploaded. Use form field "file".' })
+    }
+    const result = await payrollService.uploadPeriodOverridesFromFile(
+      req.params.id,
+      req.file.buffer,
+      req.file.originalname || ''
+    )
+    if (result.error) return res.status(400).json({ error: result.error })
+    res.json({
+      message: result.message,
+      added: result.added,
+      totalRows: result.totalRows,
+      errors: result.errors
+    })
+  } catch (err) {
+    if (err.code === '42P01') return res.status(404).json({ error: 'Period not found' })
+    console.error('Upload period overrides error:', err)
+    res.status(500).json({ error: err.message || 'Failed to upload overrides' })
+  }
+}
+
 export async function runPayroll(req, res) {
   try {
     const result = await payrollService.runPayroll(req.params.id)
@@ -178,7 +237,10 @@ export async function closePeriod(req, res) {
   try {
     const result = await payrollService.closePeriod(req.params.id)
     if (!result) return res.status(400).json({ error: 'Period not found or already closed' })
-    res.json({ message: 'Period closed', id: result.id })
+    const message = result.employeesProcessed != null
+      ? `Period closed. ${result.employeesProcessed} salary slip(s) generated.`
+      : 'Period closed'
+    res.json({ message, id: result.id, employeesProcessed: result.employeesProcessed })
   } catch (err) {
     if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     res.status(500).json({ error: 'Failed to close period' })
@@ -220,6 +282,69 @@ export async function saveDesignationAllowances(req, res) {
     if (err.code === '42P01') return res.status(404).json({ error: 'Payroll tables not found. Run database/schema.sql.' })
     console.error('Save designation allowances error:', err)
     res.status(500).json({ error: err.message || 'Failed to save' })
+  }
+}
+
+// ---------- Income tax slabs ----------
+export async function getTaxSlabs(req, res) {
+  try {
+    const result = await payrollService.getActiveTaxSlabsForApi()
+    res.json(result)
+  } catch (err) {
+    if (err.code === '42P01') return res.json({ activeVersion: null, slabs: [] })
+    console.error('Get tax slabs error:', err)
+    res.status(500).json({ error: 'Failed to fetch tax slabs' })
+  }
+}
+
+export async function listTaxSlabVersions(req, res) {
+  try {
+    const list = await payrollService.listTaxSlabVersions()
+    res.json(list)
+  } catch (err) {
+    if (err.code === '42P01') return res.json([])
+    res.status(500).json({ error: 'Failed to fetch tax slab versions' })
+  }
+}
+
+export async function getTaxSlabVersionById(req, res) {
+  try {
+    const result = await payrollService.getTaxSlabVersionWithSlabs(req.params.id)
+    if (!result) return res.status(404).json({ error: 'Tax slab version not found' })
+    res.json(result)
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch tax slab version' })
+  }
+}
+
+export async function createTaxSlabVersion(req, res) {
+  try {
+    const result = await payrollService.createTaxSlabVersionWithSlabs(req.body)
+    if (result.error) return res.status(400).json({ error: result.error })
+    res.status(201).json(result)
+  } catch (err) {
+    if (err.code === '23505') return res.status(400).json({ error: 'Version name already exists' })
+    console.error('Create tax slab version error:', err)
+    res.status(500).json({ error: err.message || 'Failed to create' })
+  }
+}
+
+export async function setActiveTaxSlabVersion(req, res) {
+  try {
+    await payrollService.setActiveTaxSlabVersion(req.params.id)
+    res.json({ message: 'Active tax slab version updated' })
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to set active version' })
+  }
+}
+
+export async function deleteTaxSlabVersion(req, res) {
+  try {
+    const result = await payrollService.deleteTaxSlabVersion(req.params.id)
+    if (!result) return res.status(404).json({ error: 'Tax slab version not found' })
+    res.json({ message: 'Tax slab version deleted', id: result.deleted })
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to delete' })
   }
 }
 

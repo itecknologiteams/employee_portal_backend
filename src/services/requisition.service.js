@@ -547,7 +547,8 @@ export async function getPendingHod(employeeId) {
   }
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+  const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+  return attachCommentsToRequisitions(list)
 }
 
 export async function getApprovedByHod(employeeId) {
@@ -582,6 +583,8 @@ export async function approveHod(body) {
   }
   if (approved === false) {
     await reqRepo.rejectRequisition(requisitionId)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(requisitionId, 'hod', comment, approvedByEmployeeId)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
 
@@ -607,6 +610,8 @@ export async function approveHod(body) {
     await setCurrentStageIfFlowEnabled(requisitionId, nextKey)
     const bucket = nextKey === 'hr' ? 'hr' : (nextKey === 'committee' ? 'committee' : nextKey)
     await notifyBucketChanged(requisitionId, bucket)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(requisitionId, 'hod', comment, approvedByEmployeeId)
     const statusLabel = nextKey === 'hr' ? 'Pending HR' : (nextKey === 'committee' ? 'Pending Committee' : `Pending ${nextKey}`)
     return { message: 'HOD approval recorded', status: statusLabel }
   }
@@ -682,6 +687,8 @@ export async function approveHod(body) {
     await reqRepo.approveHodDirectToProcurement(requisitionId)
     await setCurrentStageIfFlowEnabled(requisitionId, 'procurement')
     await notifyBucketChanged(requisitionId, 'procurement')
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(requisitionId, 'hod', comment, approvedByEmployeeId)
     return { message: 'HOD approval recorded; forwarded to Procurement (total under 50K)', status: 'Forwarded to Procurement' }
   }
 
@@ -690,6 +697,8 @@ export async function approveHod(body) {
   await setCurrentStageIfFlowEnabled(requisitionId, nextKey || 'committee')
   const bucket = nextKey === 'hr' ? 'hr' : 'committee'
   await notifyBucketChanged(requisitionId, bucket)
+  const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+  if (comment) await reqRepo.insertRequisitionComment(requisitionId, 'hod', comment, approvedByEmployeeId)
   return { message: 'HOD approval recorded', status: nextKey === 'hr' ? 'Pending HR' : (totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)') }
 }
 
@@ -704,7 +713,8 @@ export async function getPendingHR(employeeId) {
     : []
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({ ...req, status: 'Pending HR', items: items.filter(i => i.req_id === req.req_id) }))
+  const list = rows.map(req => ({ ...req, status: 'Pending HR', items: items.filter(i => i.req_id === req.req_id) }))
+  return attachCommentsToRequisitions(list)
 }
 
 export async function getPendingAdmin(employeeId) {
@@ -718,7 +728,8 @@ export async function getPendingAdmin(employeeId) {
     : []
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({ ...req, status: 'Pending Admin', items: items.filter(i => i.req_id === req.req_id) }))
+  const list = rows.map(req => ({ ...req, status: 'Pending Admin', items: items.filter(i => i.req_id === req.req_id) }))
+  return attachCommentsToRequisitions(list)
 }
 
 export async function getPendingCommittee(employeeId) {
@@ -734,7 +745,8 @@ export async function getPendingCommittee(employeeId) {
   rows = (rows || []).filter((r) => r.req_current_stage_key !== 'hr')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({ ...req, status: 'Pending Committee', items: items.filter(i => i.req_id === req.req_id) }))
+  const list = rows.map(req => ({ ...req, status: 'Pending Committee', items: items.filter(i => i.req_id === req.req_id) }))
+  return attachCommentsToRequisitions(list)
 }
 
 export async function approveHR(body) {
@@ -751,9 +763,13 @@ export async function approveHR(body) {
   }
   if (approved === false) {
     await reqRepo.rejectRequisition(reqId)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(reqId, 'hr', comment, eid)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveHr(reqId)
+  const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+  if (comment) await reqRepo.insertRequisitionComment(reqId, 'hr', comment, eid)
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
   let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hr') : 'committee'
@@ -786,6 +802,8 @@ export async function approveCommittee(body) {
   }
   if (approved === false) {
     await reqRepo.rejectRequisition(reqId)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(reqId, 'committee', comment, eid)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   // On approve: approved quantity per item is mandatory
@@ -823,6 +841,8 @@ export async function approveCommittee(body) {
   if (nextKeyFromFlow && nextKeyFromFlow !== 'ceo') {
     await setCurrentStageIfFlowEnabled(reqId, nextKeyFromFlow)
     await notifyBucketChanged(reqId, nextKeyFromFlow)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(reqId, 'committee', comment, eid)
     const statusLabel = nextKeyFromFlow === 'finance' ? 'Pending Finance Approval' : nextKeyFromFlow === 'procurement' ? 'Forwarded to Procurement' : `Pending ${nextKeyFromFlow}`
     return { message: 'Committee approval recorded', status: statusLabel }
   }
@@ -844,12 +864,16 @@ export async function approveCommittee(body) {
     await reqRepo.approveCeo(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(reqId, 'committee', comment, eid)
     return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
   }
 
   const nextKey = nextKeyFromFlow || 'ceo'
   await setCurrentStageIfFlowEnabled(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
+  const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+  if (comment) await reqRepo.insertRequisitionComment(reqId, 'committee', comment, eid)
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
@@ -864,7 +888,8 @@ export async function getPendingCeo(employeeId) {
     : await reqRepo.getPendingCeoRequisitions()
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({ ...req, status: 'Pending CEO', items: items.filter(i => i.req_id === req.req_id) }))
+  const list = rows.map(req => ({ ...req, status: 'Pending CEO', items: items.filter(i => i.req_id === req.req_id) }))
+  return attachCommentsToRequisitions(list)
 }
 
 export async function approveCeo(body) {
@@ -880,9 +905,13 @@ export async function approveCeo(body) {
   }
   if (approved === false) {
     await reqRepo.rejectRequisition(reqId)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(reqId, 'ceo', comment, eid)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveCeo(reqId)
+  const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+  if (comment) await reqRepo.insertRequisitionComment(reqId, 'ceo', comment, eid)
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
   const stages = await reqRepo.getFlowStages()
@@ -909,9 +938,13 @@ export async function approveAdmin(body) {
   }
   if (approved === false) {
     await reqRepo.rejectRequisition(reqId)
+    const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+    if (comment) await reqRepo.insertRequisitionComment(reqId, 'admin', comment, eid)
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveAdmin(reqId)
+  const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+  if (comment) await reqRepo.insertRequisitionComment(reqId, 'admin', comment, eid)
   notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Admin:', e?.message))
   return { message: 'Admin approval recorded', status: 'Completed' }
 }
@@ -1206,11 +1239,12 @@ export async function getPendingFinance(employeeId) {
     : await reqRepo.getPendingFinanceRequisitions()
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({
+  const list = rows.map(req => ({
     ...req,
     status: 'Pending Finance Approval',
     items: items.filter(i => i.req_id === req.req_id)
   }))
+  return attachCommentsToRequisitions(list)
 }
 
 export async function approveFinance(body) {
@@ -1233,6 +1267,8 @@ export async function approveFinance(body) {
     return { error: 'approvedQuotationIndex must be 1, 2, or 3 (for requisitions with quotations)', status: 400 }
   }
   await reqRepo.approveFinance(reqId, eid, idx)
+  const comment = (body.comment != null && String(body.comment).trim()) ? String(body.comment).trim() : null
+  if (comment) await reqRepo.insertRequisitionComment(reqId, 'finance', comment, eid)
   try {
     const stages = await reqRepo.getFlowStages()
     if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
@@ -1322,15 +1358,28 @@ export async function getTat(reqId) {
   }
 }
 
+/** Attach approval comments to each requisition in the list (for next approver to see). */
+async function attachCommentsToRequisitions(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return rows
+  const reqIds = rows.map(r => r.req_id)
+  const commentsMap = await reqRepo.getRequisitionCommentsByReqIds(reqIds)
+  return rows.map(req => ({
+    ...req,
+    comments: commentsMap.get(req.req_id) || []
+  }))
+}
+
 export async function getById(reqId) {
   const rows = await reqRepo.getRequisitionById(reqId)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const reqRow = rows[0]
   const items = await reqRepo.getRequisitionItems(reqId)
+  const comments = await reqRepo.getRequisitionComments(reqId)
   return {
     ...reqRow,
     requiredByDate: reqRow.req_required_by_date || null,
     status: getRequisitionStatus(reqRow),
+    comments: comments || [],
     items: items.map(i => ({
       item_id: i.item_id,
       req_id: i.req_id,

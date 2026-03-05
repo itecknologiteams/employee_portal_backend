@@ -88,6 +88,165 @@ export async function uploadGrossSalariesFromExcel(buffer) {
   return { added: added.length, totalRows: rows.length - 1, errors }
 }
 
+/** Parse number from cell (handles "1,234.56" and empty) */
+function parseNum(val) {
+  if (val == null || val === '') return NaN
+  const s = String(val).replace(/,/g, '').trim()
+  const n = parseFloat(s)
+  return Number.isFinite(n) ? n : NaN
+}
+
+/** Find row index where header contains "Employee ID" (for payroll sheet with title rows) */
+function findPayrollHeaderRow(rows) {
+  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+    const row = rows[i] || []
+    for (let j = 0; j < row.length; j++) {
+      const cell = String(row[j] || '').trim()
+      if (/employee\s*id/i.test(cell)) return i
+    }
+  }
+  return -1
+}
+
+/** Get column index by header (case-insensitive, partial match) */
+function colIndex(headerRow, patterns) {
+  const norm = (h) => String(h || '').trim().toLowerCase()
+  for (let c = 0; c < headerRow.length; c++) {
+    const h = norm(headerRow[c])
+    for (const p of patterns) {
+      if (typeof p === 'string' && h.includes(p.toLowerCase())) return c
+      if (p instanceof RegExp && p.test(h)) return c
+    }
+  }
+  return -1
+}
+
+/**
+ * Upload payroll sheet (CSV or Excel) with title rows: "iTecknologi Payroll - February 2026" style.
+ * Finds the row containing "Employee ID", then reads Basic Salary, allowances, etc. and upserts
+ * salary structure + gross salary per employee.
+ */
+export async function uploadPayrollSheetFromFile(buffer, filename = '') {
+  const isCsv = /\.csv$/i.test(filename)
+  let rows
+  if (isCsv) {
+    const str = (buffer.toString && buffer.toString('utf8')) || String(buffer)
+    const wb = XLSX.read(str, { type: 'string', raw: true })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) throw new Error('CSV file is empty or invalid')
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  } else {
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) throw new Error('Excel file has no sheets')
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  }
+  if (!rows || rows.length < 2) throw new Error('File has no data rows')
+
+  const headerRowIndex = findPayrollHeaderRow(rows)
+  if (headerRowIndex < 0) {
+    throw new Error('Could not find header row containing "Employee ID". Ensure your payroll sheet has a row with column "Employee ID".')
+  }
+  const headerRow = (rows[headerRowIndex] || []).map((h) => String(h || '').trim())
+  const getCol = (...patterns) => colIndex(headerRow, patterns)
+
+  const idx = {
+    employeeId: getCol('employee id', 'employee id', /employee\s*id/),
+    basic: getCol('basic salary', 'basic'),
+    medical: getCol('medical allowance', 'medical'),
+    conveyance: getCol('fixed conveyance', 'conveyance'),
+    conveyanceLiters: getCol('conveyance in liters', 'conveyance liters'),
+    communication: getCol('communication'),
+    houseRent: getCol('house allow', 'house rent', 'hra'),
+    utilities: getCol('utilities'),
+    meal: getCol('meal allowance', 'meal'),
+    arrears: getCol('arrears'),
+    incrementalArrears: getCol('incremental arrears'),
+    bikeMaintenance: getCol('bike maintenance'),
+    incentives: getCol('incentives'),
+    deviceReimbursement: getCol('device reimbursement'),
+    overTime: getCol('over time', 'overtime'),
+    total: getCol('total'),
+    eobi: getCol('eobi')
+  }
+  if (idx.employeeId < 0) {
+    throw new Error('Column "Employee ID" not found in header row.')
+  }
+
+  const added = []
+  const errors = []
+  const dataStart = headerRowIndex + 1
+
+  for (let i = dataStart; i < rows.length; i++) {
+    const row = rows[i] || []
+    const rawId = row[idx.employeeId]
+    const codeOrId = rawId != null ? String(rawId).trim() : ''
+    if (!codeOrId) continue
+
+    const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
+    if (!employeeId) {
+      errors.push({ row: i + 1, message: `Employee not found: ${codeOrId}` })
+      continue
+    }
+
+    const basic = idx.basic >= 0 ? parseNum(row[idx.basic]) : 0
+    const medical = idx.medical >= 0 ? parseNum(row[idx.medical]) : 0
+    const conveyance = idx.conveyance >= 0 ? parseNum(row[idx.conveyance]) : 0
+    const conveyanceLiters = idx.conveyanceLiters >= 0 ? parseNum(row[idx.conveyanceLiters]) : 0
+    const communication = idx.communication >= 0 ? parseNum(row[idx.communication]) : 0
+    const houseRent = idx.houseRent >= 0 ? parseNum(row[idx.houseRent]) : 0
+    const utilities = idx.utilities >= 0 ? parseNum(row[idx.utilities]) : 0
+    const meal = idx.meal >= 0 ? parseNum(row[idx.meal]) : 0
+    const arrears = idx.arrears >= 0 ? parseNum(row[idx.arrears]) : 0
+    const incrementalArrears = idx.incrementalArrears >= 0 ? parseNum(row[idx.incrementalArrears]) : 0
+    const bikeMaintenance = idx.bikeMaintenance >= 0 ? parseNum(row[idx.bikeMaintenance]) : 0
+    const incentives = idx.incentives >= 0 ? parseNum(row[idx.incentives]) : 0
+    const deviceReimbursement = idx.deviceReimbursement >= 0 ? parseNum(row[idx.deviceReimbursement]) : 0
+    const eobiFixed = idx.eobi >= 0 ? parseNum(row[idx.eobi]) : 130
+    if (Number.isNaN(basic) || basic < 0) {
+      errors.push({ row: i + 1, message: `Invalid or missing Basic Salary for ${codeOrId}` })
+      continue
+    }
+
+    const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
+    const grossSalary = Number.isFinite(totalFromSheet) && totalFromSheet > 0
+      ? totalFromSheet
+      : basic + medical + conveyance + conveyanceLiters + communication + houseRent + utilities + meal + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimbursement
+
+    try {
+      await repo.upsertGrossSalary(employeeId, grossSalary)
+      await repo.upsertSalaryStructure({
+        employeeId,
+        basicSalary: basic,
+        medicalAllowance: medical,
+        conveyanceAllowance: conveyance,
+        conveyanceLitersAllowance: conveyanceLiters,
+        communicationAllowance: communication,
+        houseRentAllowance: houseRent,
+        utilitiesAllowance: utilities,
+        mealAllowance: meal,
+        otherAllowance: 0,
+        arrears,
+        incrementalArrears,
+        bikeMaintenanceAllowance: bikeMaintenance,
+        incentives,
+        deviceReimbursement,
+        eobiFixed: Number.isFinite(eobiFixed) && eobiFixed >= 0 ? eobiFixed : 130
+      })
+      added.push({ row: i + 1, employeeId, grossSalary })
+    } catch (err) {
+      errors.push({ row: i + 1, message: err.message || 'Failed to save' })
+    }
+  }
+
+  return {
+    added: added.length,
+    totalRows: rows.length - dataStart,
+    errors,
+    message: `Payroll sheet imported: ${added.length} employee(s) updated.`
+  }
+}
+
 export async function listGrossSalaries(search, page = 1, limit = 100) {
   const safeLimit = Math.min(500, Math.max(1, parseInt(limit, 10) || 100))
   const offset = (Math.max(1, parseInt(page, 10) || 1) - 1) * safeLimit
@@ -122,6 +281,32 @@ function overlapDays(leaveStart, leaveEnd, periodStart, periodEnd) {
   return Math.ceil((e - s) / (24 * 60 * 60 * 1000)) + 1
 }
 
+/**
+ * Compute annual income tax from slab table.
+ * Slabs: { min_amt, max_amt, taxable_amt, tax_percent } sorted by min_amt.
+ * Formula: find bracket where min_amt <= annualIncome <= max_amt;
+ * threshold = min_amt === 0 ? 0 : min_amt - 1;
+ * amountInBracket = min(annualIncome, max_amt) - threshold;
+ * tax = taxable_amt + amountInBracket * tax_percent / 100
+ */
+function computeAnnualIncomeTax(annualGross, slabs) {
+  if (!slabs || slabs.length === 0) return 0
+  const income = Math.max(0, parseFloat(annualGross) || 0)
+  const sorted = [...slabs].sort((a, b) => parseFloat(a.min_amt) - parseFloat(b.min_amt))
+  for (const row of sorted) {
+    const minAmt = parseFloat(row.min_amt) || 0
+    const maxAmt = parseFloat(row.max_amt) || 0
+    const taxableAmt = parseFloat(row.taxable_amt) || 0
+    const taxPercent = parseFloat(row.tax_percent) || 0
+    if (income >= minAmt && income <= maxAmt) {
+      const threshold = minAmt === 0 ? 0 : minAmt - 1
+      const amountInBracket = Math.min(income, maxAmt) - threshold
+      return Math.round((taxableAmt + (amountInBracket * taxPercent) / 100) * 100) / 100
+    }
+  }
+  return 0
+}
+
 // ---------- Periods ----------
 export async function listPeriods(status, page, limit) {
   const offset = (page - 1) * limit
@@ -147,7 +332,18 @@ export async function listPeriods(status, page, limit) {
   }
 }
 
+/** Returns { hasUnclosed: boolean, unclosedName?: string } for frontend to block new period and show message */
+export async function checkUnclosed() {
+  const row = await repo.getUnclosedPeriod()
+  if (!row) return { hasUnclosed: false }
+  return { hasUnclosed: true, unclosedName: row.name }
+}
+
 export async function createPeriod(body) {
+  const hasUnclosed = await repo.hasUnclosedPeriod()
+  if (hasUnclosed) {
+    return Promise.reject(new Error('Pehle current payroll period close karein. Jab tak koi period closed nahi hoga, naya period create nahi ho sakta.'))
+  }
   const { name, startDate, endDate, workingDays } = body
   const start = new Date(startDate)
   const end = new Date(endDate)
@@ -243,6 +439,111 @@ export async function saveOverrides(periodId, overridesList) {
   return { saved: true }
 }
 
+/**
+ * Upload period overrides from CSV/Excel (e.g. Allowances Sheet February 2026).
+ * Expects columns: Employee Code (or Employee ID), and either "OT PKR" + "PKR amount" (incentives)
+ * or "Other Allowance", "Other Deduction", "Loan", "Salary Advance", "Working Days".
+ */
+export async function uploadPeriodOverridesFromFile(periodId, buffer, filename = '') {
+  const periodRow = await repo.getPeriodById(periodId)
+  if (!periodRow) return { error: 'Period not found' }
+  if (periodRow.status !== 'draft') {
+    return { error: 'Overrides can only be uploaded for draft periods' }
+  }
+  const defaultDays = parseInt(periodRow.working_days, 10) || 30
+
+  const isCsv = /\.csv$/i.test(filename)
+  let rows
+  if (isCsv) {
+    const str = (buffer.toString && buffer.toString('utf8')) || String(buffer)
+    const wb = XLSX.read(str, { type: 'string', raw: true })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) return { error: 'CSV file is empty or invalid' }
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  } else {
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) return { error: 'Excel file has no sheets' }
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  }
+  if (!rows || rows.length < 2) return { error: 'File has no data rows' }
+
+  let headerRowIndex = 0
+  for (let r = 0; r < Math.min(rows.length, 10); r++) {
+    const row = (rows[r] || []).map((h) => String(h || '').trim().toLowerCase())
+    if (row.some((h) => /employee\s*(code|id)/i.test(h))) {
+      headerRowIndex = r
+      break
+    }
+  }
+  const headerRow = (rows[headerRowIndex] || []).map((h) => String(h || '').trim().toLowerCase())
+  const getCol = (...patterns) => {
+    for (let c = 0; c < headerRow.length; c++) {
+      const h = headerRow[c]
+      for (const p of patterns) {
+        if (typeof p === 'string' && h.includes(p.toLowerCase())) return c
+        if (p instanceof RegExp && p.test(h)) return c
+      }
+    }
+    return -1
+  }
+  const colEmp = getCol('employee code', 'employee id', 'emp id')
+  if (colEmp < 0) return { error: 'Column "Employee Code" or "Employee ID" not found in first row.' }
+
+  const colOtPkr = getCol('ot pkr', 'ot pkr')
+  const colPkrAmount = getCol('pkr amount', 'pkramount')
+  const colOtherAllowance = getCol('other allowance')
+  const colOtherDeduction = getCol('other deduction')
+  const colLoan = getCol('loan')
+  const colSalaryAdvance = getCol('salary advance')
+  const colWorkingDays = getCol('working days', 'wd')
+
+  const added = []
+  const errors = []
+  const dataStart = headerRowIndex + 1
+  for (let i = dataStart; i < rows.length; i++) {
+    const row = rows[i] || []
+    const codeOrId = row[colEmp] != null ? String(row[colEmp]).trim() : ''
+    if (!codeOrId) continue
+
+    const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
+    if (!employeeId) {
+      errors.push({ row: i + 1, message: `Employee not found: ${codeOrId}` })
+      continue
+    }
+
+    let otherAllowance = 0
+    if (colOtPkr >= 0 || colPkrAmount >= 0) {
+      otherAllowance = (colOtPkr >= 0 ? parseNum(row[colOtPkr]) : 0) + (colPkrAmount >= 0 ? parseNum(row[colPkrAmount]) : 0)
+    } else if (colOtherAllowance >= 0) {
+      otherAllowance = parseNum(row[colOtherAllowance])
+    }
+    const otherDeduction = colOtherDeduction >= 0 ? parseNum(row[colOtherDeduction]) : 0
+    const loan = colLoan >= 0 ? parseNum(row[colLoan]) : 0
+    const salaryAdvance = colSalaryAdvance >= 0 ? parseNum(row[colSalaryAdvance]) : 0
+    let workingDays = defaultDays
+    if (colWorkingDays >= 0) {
+      const wd = parseInt(String(row[colWorkingDays] || '').trim(), 10)
+      if (!Number.isNaN(wd) && wd >= 0) workingDays = wd
+    }
+    const hasOverride = otherAllowance !== 0 || otherDeduction !== 0 || loan !== 0 || salaryAdvance !== 0 || workingDays !== defaultDays
+    if (hasOverride) {
+      try {
+        await repo.upsertOverride(periodId, employeeId, workingDays, otherAllowance, otherDeduction, loan, salaryAdvance)
+        added.push({ row: i + 1, employeeId, otherAllowance, otherDeduction, loan, salaryAdvance })
+      } catch (err) {
+        errors.push({ row: i + 1, message: err.message || 'Failed to save override' })
+      }
+    }
+  }
+  return {
+    added: added.length,
+    totalRows: rows.length - dataStart,
+    errors,
+    message: `Overrides uploaded: ${added.length} employee(s) updated for this period.`
+  }
+}
+
 export async function runPayroll(periodId) {
   const period = await repo.getPeriodForRun(periodId)
   if (!period) return { error: 'not_found' }
@@ -255,6 +556,7 @@ export async function runPayroll(periodId) {
 
   await repo.setPeriodProcessing(periodId)
 
+  const taxSlabs = await repo.getActiveTaxSlabs()
   const employees = await repo.getEmployeesForPayroll()
   const designationAllowances = await repo.getDesignationAllowances()
   const desgAllowanceMap = new Map(designationAllowances.map((d) => [d.desg_id, parseFloat(d.fixed_allowance) || 0]))
@@ -313,7 +615,10 @@ export async function runPayroll(periodId) {
     const grossSalary = (basic + totalAllowances) * (paidDays / empWorkingDaysClamped)
     const eobiDeduction = eobiFixed
     const absentDeduction = (basic + (medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance)) * (absentDays / empWorkingDaysClamped)
-    const totalDeductions = eobiDeduction + absentDeduction + periodOtherDeduction + periodLoan + periodSalaryAdvance
+    const annualGross = grossSalary * 12
+    const annualTax = computeAnnualIncomeTax(annualGross, taxSlabs)
+    const incomeTaxMonthly = Math.round((annualTax / 12) * 100) / 100
+    const totalDeductions = eobiDeduction + absentDeduction + periodOtherDeduction + periodLoan + periodSalaryAdvance + incomeTaxMonthly
     const netSalary = Math.max(0, grossSalary - totalDeductions)
 
     await repo.upsertPayrollSlip({
@@ -329,7 +634,8 @@ export async function runPayroll(periodId) {
       eobiDeduction,
       absentDeduction,
       otherDeduction: periodOtherDeduction,
-      otherAllowance: periodOtherAllowance
+      otherAllowance: periodOtherAllowance,
+      incomeTax: incomeTaxMonthly
     })
     inserted++
   }
@@ -344,8 +650,24 @@ export async function runPayroll(periodId) {
 }
 
 export async function closePeriod(id) {
+  const period = await repo.getPeriodById(id)
+  if (!period) return null
+  if (period.status === 'closed') return null
+  let employeesProcessed = null
+  if (period.status === 'draft') {
+    try {
+      const runResult = await runPayroll(id)
+      if (runResult.error === 'not_found') return null
+      if (runResult.error) throw new Error(runResult.error)
+      employeesProcessed = runResult.employeesProcessed
+    } catch (err) {
+      await repo.setPeriodDraft(id).catch(() => {})
+      throw err
+    }
+  }
   const result = await repo.closePeriod(id)
-  return result ? { id: result.id } : null
+  if (!result) return null
+  return { id: result.id, employeesProcessed }
 }
 
 // ---------- Slips ----------
@@ -367,6 +689,7 @@ export async function listSlips(periodId, search, page, limit) {
       totalAllowances: parseFloat(r.total_allowances),
       totalDeductions: parseFloat(r.total_deductions),
       netSalary: parseFloat(r.net_salary),
+      incomeTax: parseFloat(r.income_tax) || 0,
       status: r.status,
       remarks: r.remarks
     })),
@@ -375,6 +698,80 @@ export async function listSlips(periodId, search, page, limit) {
     limit,
     totalPages: Math.ceil(total / limit) || 1
   }
+}
+
+// ---------- Income tax slabs ----------
+export async function listTaxSlabVersions() {
+  const rows = await repo.listTaxSlabVersions()
+  return rows.map((r) => ({
+    id: r.id,
+    versionName: r.version_name,
+    effectiveFrom: r.effective_from,
+    isActive: !!r.is_active,
+    createdAt: r.created_at
+  }))
+}
+
+export async function getActiveTaxSlabsForApi() {
+  const version = await repo.getActiveTaxSlabVersion()
+  const slabs = await repo.getActiveTaxSlabs()
+  return {
+    activeVersion: version ? { id: version.id, versionName: version.version_name } : null,
+    slabs: slabs.map((s) => ({
+      id: s.id,
+      minAmt: parseFloat(s.min_amt),
+      maxAmt: parseFloat(s.max_amt),
+      taxableAmt: parseFloat(s.taxable_amt),
+      taxPercent: parseFloat(s.tax_percent),
+      displayOrder: s.display_order
+    }))
+  }
+}
+
+export async function getTaxSlabVersionWithSlabs(versionId) {
+  const row = await repo.getTaxSlabVersionWithSlabs(versionId)
+  if (!row) return null
+  return {
+    id: row.id,
+    versionName: row.version_name,
+    effectiveFrom: row.effective_from,
+    isActive: !!row.is_active,
+    createdAt: row.created_at,
+    slabs: (row.slabs || []).map((s) => ({
+      id: s.id,
+      minAmt: parseFloat(s.min_amt),
+      maxAmt: parseFloat(s.max_amt),
+      taxableAmt: parseFloat(s.taxable_amt),
+      taxPercent: parseFloat(s.tax_percent),
+      displayOrder: s.display_order
+    }))
+  }
+}
+
+export async function createTaxSlabVersionWithSlabs(body) {
+  const { versionName, effectiveFrom, slabs } = body
+  if (!versionName || !String(versionName).trim()) return { error: 'versionName is required' }
+  if (!Array.isArray(slabs) || slabs.length === 0) return { error: 'At least one slab row is required' }
+  const version = await repo.createTaxSlabVersion(versionName.trim(), effectiveFrom || null)
+  let order = 0
+  for (const s of slabs) {
+    const minAmt = parseFloat(s.minAmt) ?? 0
+    const maxAmt = parseFloat(s.maxAmt) ?? 0
+    const taxableAmt = parseFloat(s.taxableAmt) ?? 0
+    const taxPercent = parseFloat(s.taxPercent) ?? 0
+    await repo.insertTaxSlab(version.id, minAmt, maxAmt, taxableAmt, taxPercent, ++order)
+  }
+  return { id: version.id, versionName: version.version_name, slabsCount: slabs.length }
+}
+
+export async function setActiveTaxSlabVersion(versionId) {
+  await repo.setActiveTaxSlabVersion(versionId)
+  return { ok: true }
+}
+
+export async function deleteTaxSlabVersion(versionId) {
+  const row = await repo.deleteTaxSlabVersion(versionId)
+  return row ? { deleted: row.id } : null
 }
 
 // ---------- Designation allowances ----------

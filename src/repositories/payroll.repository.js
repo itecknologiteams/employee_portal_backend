@@ -26,6 +26,22 @@ export async function listPeriods(status, limit, offset) {
   return executeQuery(listQuery, params)
 }
 
+/** Returns true if any period exists with status != 'closed' */
+export async function hasUnclosedPeriod() {
+  const result = await executeQuery(
+    `SELECT 1 FROM payroll_period WHERE status != 'closed' LIMIT 1`
+  )
+  return (result?.length ?? 0) > 0
+}
+
+/** Returns first unclosed period (name) or null */
+export async function getUnclosedPeriod() {
+  const rows = await executeQuery(
+    `SELECT name FROM payroll_period WHERE status != 'closed' ORDER BY start_date DESC LIMIT 1`
+  )
+  return rows[0] || null
+}
+
 export async function createPeriod(name, startDate, endDate, workingDays) {
   const result = await executeQuery(
     `INSERT INTO payroll_period (name, start_date, end_date, working_days, status)
@@ -363,12 +379,13 @@ export async function getOverridesForRun(periodId) {
 }
 
 export async function upsertPayrollSlip(slip) {
+  const incomeTax = slip.incomeTax != null ? slip.incomeTax : 0
   await executeQuery(
     `INSERT INTO payroll_slip (
       payroll_period_id, employee_id, working_days, paid_days, absent_days,
       gross_salary, total_allowances, total_deductions, net_salary,
-      eobi_deduction, absent_deduction, other_deduction, other_allowance, status
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Generated')
+      eobi_deduction, absent_deduction, other_deduction, other_allowance, income_tax, status
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'Generated')
     ON CONFLICT (payroll_period_id, employee_id) DO UPDATE SET
       working_days = EXCLUDED.working_days,
       paid_days = EXCLUDED.paid_days,
@@ -381,13 +398,38 @@ export async function upsertPayrollSlip(slip) {
       absent_deduction = EXCLUDED.absent_deduction,
       other_deduction = EXCLUDED.other_deduction,
       other_allowance = EXCLUDED.other_allowance,
+      income_tax = EXCLUDED.income_tax,
       status = 'Generated'`,
     [
       slip.periodId, slip.employeeId, slip.workingDays, slip.paidDays, slip.absentDays,
       slip.grossSalary, slip.totalAllowances, slip.totalDeductions, slip.netSalary,
-      slip.eobiDeduction, slip.absentDeduction, slip.otherDeduction, slip.otherAllowance
+      slip.eobiDeduction, slip.absentDeduction, slip.otherDeduction, slip.otherAllowance,
+      incomeTax
     ]
-  )
+  ).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        `INSERT INTO payroll_slip (
+          payroll_period_id, employee_id, working_days, paid_days, absent_days,
+          gross_salary, total_allowances, total_deductions, net_salary,
+          eobi_deduction, absent_deduction, other_deduction, other_allowance, status
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, 'Generated')
+        ON CONFLICT (payroll_period_id, employee_id) DO UPDATE SET
+          working_days = EXCLUDED.working_days, paid_days = EXCLUDED.paid_days, absent_days = EXCLUDED.absent_days,
+          gross_salary = EXCLUDED.gross_salary, total_allowances = EXCLUDED.total_allowances,
+          total_deductions = EXCLUDED.total_deductions, net_salary = EXCLUDED.net_salary,
+          eobi_deduction = EXCLUDED.eobi_deduction, absent_deduction = EXCLUDED.absent_deduction,
+          other_deduction = EXCLUDED.other_deduction, other_allowance = EXCLUDED.other_allowance,
+          status = 'Generated'`,
+        [
+          slip.periodId, slip.employeeId, slip.workingDays, slip.paidDays, slip.absentDays,
+          slip.grossSalary, slip.totalAllowances, slip.totalDeductions, slip.netSalary,
+          slip.eobiDeduction, slip.absentDeduction, slip.otherDeduction, slip.otherAllowance
+        ]
+      )
+    }
+    throw err
+  })
 }
 
 // ---------- Slips ----------
@@ -414,7 +456,7 @@ export async function listSlips(periodId, searchParam, limit, offset) {
   const listQuery = `
     SELECT s.id, s.employee_id, s.working_days, s.paid_days, s.absent_days,
            s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary,
-           s.status, s.remarks,
+           s.status, s.remarks, COALESCE(s.income_tax, 0) AS income_tax,
            e.first_name, e.last_name, e.employee_code
     FROM payroll_slip s
     JOIN employees e ON e.employee_id = s.employee_id
@@ -422,7 +464,15 @@ export async function listSlips(periodId, searchParam, limit, offset) {
     ORDER BY e.first_name, e.last_name
     LIMIT ${searchParam ? '$3' : '$2'} OFFSET ${searchParam ? '$4' : '$3'}
   `
-  return executeQuery(listQuery, params)
+  return executeQuery(listQuery, params).catch((err) => {
+    if (err.code === '42703') {
+      return executeQuery(
+        listQuery.replace(', COALESCE(s.income_tax, 0) AS income_tax', ''),
+        params
+      ).then((rows) => rows.map((r) => ({ ...r, income_tax: 0 })))
+    }
+    throw err
+  })
 }
 
 // ---------- Designation allowances ----------
@@ -579,4 +629,76 @@ export async function upsertSalaryStructure(data) {
     }
     throw err
   })
+}
+
+// ---------- Income tax slabs (separate table – no mix with payroll) ----------
+export async function getActiveTaxSlabVersion() {
+  const rows = await executeQuery(
+    `SELECT id, version_name, effective_from, is_active FROM income_tax_slab_version WHERE is_active = true LIMIT 1`
+  ).catch(() => [])
+  return rows[0] || null
+}
+
+export async function getTaxSlabsByVersionId(slabVersionId) {
+  return executeQuery(
+    `SELECT id, slab_version_id, min_amt, max_amt, taxable_amt, tax_percent, display_order
+     FROM income_tax_slab WHERE slab_version_id = $1 ORDER BY display_order, min_amt`,
+    [slabVersionId]
+  ).catch(() => [])
+}
+
+export async function getActiveTaxSlabs() {
+  const version = await getActiveTaxSlabVersion()
+  if (!version) return []
+  return getTaxSlabsByVersionId(version.id)
+}
+
+export async function listTaxSlabVersions() {
+  return executeQuery(
+    `SELECT id, version_name, effective_from, is_active, created_at
+     FROM income_tax_slab_version ORDER BY created_at DESC`
+  ).catch(() => [])
+}
+
+export async function getTaxSlabVersionWithSlabs(versionId) {
+  const versions = await executeQuery(
+    `SELECT id, version_name, effective_from, is_active, created_at FROM income_tax_slab_version WHERE id = $1`,
+    [versionId]
+  )
+  const version = versions[0]
+  if (!version) return null
+  const slabs = await getTaxSlabsByVersionId(version.id)
+  return { ...version, slabs }
+}
+
+export async function createTaxSlabVersion(versionName, effectiveFrom = null) {
+  const result = await executeQuery(
+    `INSERT INTO income_tax_slab_version (version_name, effective_from, is_active) VALUES ($1, $2, false) RETURNING id, version_name, effective_from, is_active`,
+    [versionName.trim(), effectiveFrom]
+  )
+  return result[0]
+}
+
+export async function setActiveTaxSlabVersion(versionId) {
+  await executeQuery(`UPDATE income_tax_slab_version SET is_active = false`)
+  await executeQuery(
+    `UPDATE income_tax_slab_version SET is_active = true WHERE id = $1`,
+    [versionId]
+  )
+}
+
+export async function insertTaxSlab(slabVersionId, minAmt, maxAmt, taxableAmt, taxPercent, displayOrder) {
+  await executeQuery(
+    `INSERT INTO income_tax_slab (slab_version_id, min_amt, max_amt, taxable_amt, tax_percent, display_order)
+     VALUES ($1, $2, $3, $4, $5, $6)`,
+    [slabVersionId, minAmt, maxAmt, taxableAmt, taxPercent, displayOrder]
+  )
+}
+
+export async function deleteTaxSlabVersion(versionId) {
+  const result = await executeQuery(
+    `DELETE FROM income_tax_slab_version WHERE id = $1 RETURNING id`,
+    [versionId]
+  )
+  return result[0] || null
 }

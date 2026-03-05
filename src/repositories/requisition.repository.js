@@ -11,7 +11,7 @@ export async function getRequisitionsByEmployeeId(employeeId) {
 export async function getRequisitionItemsByReqIds(reqIds) {
   if (!reqIds.length) return []
   return executeQuery(
-    'SELECT item_id, req_id, item_desc, item_product_description, item_size, item_brand, item_qty, item_est_cost, item_remarks FROM requisition_items WHERE req_id = ANY($1)',
+    'SELECT item_id, req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks FROM requisition_items WHERE req_id = ANY($1)',
     [reqIds]
   )
 }
@@ -93,12 +93,11 @@ export async function createRequisition(employeeId, location, material, required
 
 export async function insertRequisitionItem(reqId, item) {
   return executeQuery(
-    `INSERT INTO requisition_items (req_id, item_desc, item_product_description, item_size, item_brand, item_qty, item_est_cost, item_remarks)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
     [
       reqId,
       item.itemDesc || item.item_desc || null,
-      item.itemProductDescription || item.item_product_description || null,
       item.itemSize || item.item_size || null,
       item.itemBrand || item.item_brand || null,
       item.itemQty ?? item.item_qty ?? 1,
@@ -116,19 +115,18 @@ export async function insertRequisitionItemsBatch(reqId, items) {
   let i = 0
   for (const item of items) {
     const desc = item.itemDesc || item.item_desc || null
-    const productDesc = item.itemProductDescription || item.item_product_description || null
     const size = item.itemSize || item.item_size || null
     const brand = item.itemBrand || item.item_brand || null
     const qty = item.itemQty ?? item.item_qty ?? 1
     const cost = item.itemEstCost || item.item_est_cost || null
     const remarks = item.itemRemarks || item.item_remarks || null
-    const base = i * 8
-    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8})`)
-    params.push(reqId, desc, productDesc, size, brand, qty, cost, remarks)
+    const base = i * 7
+    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`)
+    params.push(reqId, desc, size, brand, qty, cost, remarks)
     i++
   }
   await executeQuery(
-    `INSERT INTO requisition_items (req_id, item_desc, item_product_description, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
      VALUES ${values.join(', ')}`,
     params
   )
@@ -765,6 +763,66 @@ export async function getRequisitionById(reqId) {
      WHERE r.req_id = $1`,
     [reqId]
   )
+}
+
+/** Insert an optional approval comment for a requisition (stage: hod, hr, committee, ceo, finance, admin). */
+export async function insertRequisitionComment(reqId, stageKey, commentText, addedByEmployeeId) {
+  if (!commentText || typeof commentText !== 'string' || !commentText.trim()) return null
+  try {
+    await executeQuery(
+      `INSERT INTO requisition_comments (req_id, stage_key, comment_text, added_by_employee_id)
+       VALUES ($1, $2, $3, $4)`,
+      [reqId, stageKey, commentText.trim(), addedByEmployeeId || null]
+    )
+    return true
+  } catch (err) {
+    if (err.code === '42P01') return null
+    throw err
+  }
+}
+
+/** Get all comments for a requisition, ordered by added_at. Includes approver name when available. */
+export async function getRequisitionComments(reqId) {
+  try {
+    return await executeQuery(
+      `SELECT c.id, c.req_id, c.stage_key, c.comment_text, c.added_by_employee_id, c.added_at,
+              e.first_name AS approver_first_name, e.last_name AS approver_last_name
+       FROM requisition_comments c
+       LEFT JOIN employees e ON c.added_by_employee_id = e.employee_id
+       WHERE c.req_id = $1
+       ORDER BY c.added_at ASC`,
+      [reqId]
+    )
+  } catch (err) {
+    if (err.code === '42P01') return []
+    throw err
+  }
+}
+
+/** Get comments for multiple requisition IDs. Returns Map<reqId, comments[]>. */
+export async function getRequisitionCommentsByReqIds(reqIds) {
+  if (!Array.isArray(reqIds) || reqIds.length === 0) return new Map()
+  try {
+    const rows = await executeQuery(
+      `SELECT c.id, c.req_id, c.stage_key, c.comment_text, c.added_by_employee_id, c.added_at,
+              e.first_name AS approver_first_name, e.last_name AS approver_last_name
+       FROM requisition_comments c
+       LEFT JOIN employees e ON c.added_by_employee_id = e.employee_id
+       WHERE c.req_id = ANY($1)
+       ORDER BY c.req_id, c.added_at ASC`,
+      [reqIds]
+    )
+    const map = new Map()
+    for (const row of rows || []) {
+      const id = row.req_id
+      if (!map.has(id)) map.set(id, [])
+      map.get(id).push(row)
+    }
+    return map
+  } catch (err) {
+    if (err.code === '42P01') return new Map()
+    throw err
+  }
 }
 
 /** Get creator (requester) email and name for a requisition – for acknowledgment notifications. */
