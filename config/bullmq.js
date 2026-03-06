@@ -44,12 +44,13 @@ export function isBullMQEnabled() {
 }
 
 /**
- * Add repeatable job and start worker. Run every 15 minutes (or REMINDER_CRON).
+ * Add repeatable job and start worker. Default: every 1 hour (0 * * * *) so that
+ * 3d=4hr, 2d=3hr, 1d=1hr intervals can be applied. Override with REMINDER_CRON.
  */
 export async function addRepeatableReminderJob(processor) {
   const q = getQueue()
   const conn = getConnection()
-  const repeatCron = process.env.REMINDER_CRON || '*/15 * * * *' // every 15 min
+  const repeatCron = process.env.REMINDER_CRON || '0 * * * *' // every hour
   await q.add('check-reminders', {}, {
     repeat: { pattern: repeatCron }
   }).catch((err) => {

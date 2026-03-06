@@ -4,9 +4,9 @@ import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.j
 import { sendRequisitionReminder } from '../config/email.js'
 import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, buildRequisitionBucketChangedPlainText, getPortalUrl } from '../config/requisition-email-template.js'
 
-const SIX_HOURS_MS = 6 * 60 * 60 * 1000   // 3 days left → email every 6 hr
+const FOUR_HOURS_MS = 4 * 60 * 60 * 1000  // 3 days left → email every 4 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
-const ONE_HOUR_MS = 60 * 60 * 1000        // last day → email every 1 hr
+const ONE_HOUR_MS = 60 * 60 * 1000        // 1 day / due today → email every 1 hr
 
 function getRequisitionBucket(row) {
   if (row.req_is_rejected === 1) return null
@@ -88,12 +88,35 @@ async function getEmailsForBucket(bucket, departmentId) {
 }
 
 /**
- * Job processor: find pending requisitions by required_by_date, apply 3/2/1 day rule, send emails, store last sent in Redis.
+ * Job processor: find pending requisitions by required_by_date, send reminders by rule:
+ * - 4+ days left: 1 email per day only
+ * - 3 days left: every 4 hours
+ * - 2 days left: every 3 hours
+ * - 1 day / due today: every 1 hour
  */
+/** Office hours: only send reminder emails between 9 AM and 5 PM. Uses REMINDER_TIMEZONE if set (e.g. Asia/Karachi), else server local time. */
+function isWithinOfficeHours() {
+  const tz = process.env.REMINDER_TIMEZONE || null
+  let hour
+  if (tz) {
+    const parts = new Intl.DateTimeFormat('en-CA', { hour: '2-digit', hour12: false, timeZone: tz }).formatToParts(new Date())
+    const h = parts.find((p) => p.type === 'hour')
+    hour = h ? parseInt(h.value, 10) : new Date().getHours()
+  } else {
+    hour = new Date().getHours()
+  }
+  return hour >= 9 && hour < 17
+}
+
 export async function processRequisitionReminders() {
+  if (!isWithinOfficeHours()) {
+    return // 9 AM – 5 PM only; skip sending outside office hours
+  }
+
   const redis = getConnection()
   const today = new Date()
   today.setHours(0, 0, 0, 0)
+  const todayStr = today.toISOString().slice(0, 10) // yyyy-mm-dd for daily throttle
 
   const query = `
     SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_emp_id, r.req_material,
@@ -130,6 +153,15 @@ export async function processRequisitionReminders() {
       if (v) lastSent = parseInt(v, 10)
     } catch (_) {}
 
+    // 4+ days left: only one reminder per calendar day
+    let alreadySentToday = false
+    if (daysLeft >= 4) {
+      try {
+        const dayKey = getReminderRedisKey(reqId) + ':day:' + todayStr
+        if (await redis.get(dayKey)) alreadySentToday = true
+      } catch (_) {}
+    }
+
     const now = Date.now()
     let shouldSend = false
     let subject = ''
@@ -140,8 +172,16 @@ export async function processRequisitionReminders() {
       ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
       : '—'
 
-    if (daysLeft === 3) {
-      if (lastSent === null || (now - lastSent) >= SIX_HOURS_MS) {
+    if (daysLeft >= 4) {
+      if (!alreadySentToday) {
+        shouldSend = true
+        const d = daysLeft
+        urgencyLabel = d === 4 ? '4 Days Remaining' : `${d} Days Remaining`
+        daysMessage = d === 4 ? '4 days remaining' : `${d} days remaining`
+        subject = `Requisition ${refNo} – ${urgencyLabel} Until Required Date`
+      }
+    } else if (daysLeft === 3) {
+      if (lastSent === null || (now - lastSent) >= FOUR_HOURS_MS) {
         shouldSend = true
         urgencyLabel = '3 Days Remaining'
         daysMessage = '3 days remaining'
@@ -218,8 +258,13 @@ export async function processRequisitionReminders() {
     await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html })
     try {
       await redis.set(key, String(now))
-      const ttlDays = 3
-      await redis.expire(key, ttlDays * 24 * 60 * 60)
+      await redis.expire(key, 3 * 24 * 60 * 60)
+      // 4+ days left: mark "sent today" so we send at most 1 email per day
+      if (daysLeft >= 4) {
+        const dayKey = getReminderRedisKey(reqId) + ':day:' + todayStr
+        await redis.set(dayKey, '1')
+        await redis.expire(dayKey, 2 * 24 * 60 * 60)
+      }
     } catch (_) {}
   }
 }

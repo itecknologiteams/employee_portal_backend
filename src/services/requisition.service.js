@@ -263,6 +263,16 @@ export async function createRequisition(body) {
     return { error: `Category must be one of: ${allowedCategories.join(', ')}`, status: 400 }
   }
 
+  // Required by date must be at least 4 days from today (cannot select today or next 3 days)
+  if (requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())) {
+    const minDate = new Date()
+    minDate.setDate(minDate.getDate() + 4)
+    const minStr = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, '0')}-${String(minDate.getDate()).padStart(2, '0')}`
+    if (requiredByDate.trim() < minStr) {
+      return { error: 'Required by date must be at least 4 days from today. You cannot select today or the next 3 days.', status: 400 }
+    }
+  }
+
   const deptId = await reqRepo.getCreatorDepartment(employeeId)
   const hodId = await reqRepo.getHodByDepartment(deptId)
   const creatorIsHod = hodId != null && hodId === parseInt(employeeId, 10)
@@ -1072,6 +1082,14 @@ export async function updateRequiredByDate(reqId, body) {
   const dateVal = requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())
     ? requiredByDate.trim()
     : null
+  if (dateVal) {
+    const minDate = new Date()
+    minDate.setDate(minDate.getDate() + 4)
+    const minStr = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, '0')}-${String(minDate.getDate()).padStart(2, '0')}`
+    if (dateVal < minStr) {
+      return { error: 'Required by date must be at least 4 days from today. You cannot select today or the next 3 days.', status: 400 }
+    }
+  }
   await reqRepo.updateRequiredByDate(reqIdNum, dateVal)
   return { message: 'Required by date updated', requiredByDate: dateVal }
 }
