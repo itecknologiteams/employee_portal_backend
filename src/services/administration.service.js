@@ -244,13 +244,14 @@ export async function createEmployee(body) {
   }
   const joinDate = new Date()
   const code = (employeeCode && String(employeeCode).trim()) || `EMP-${Date.now()}`
+  const addressVal = body.address != null ? String(body.address).trim() : null
   const paramsFull = [
-    code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
+    code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null, addressVal || null,
     departmentId || null, designationId || null, employeeTypeId || null, resolvedStationId,
     cityId ?? null, position?.trim() || null, joinDate, true
   ]
   const paramsMinimal = [
-    code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
+    code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null, addressVal || null,
     departmentId || null, position?.trim() || null, joinDate, true
   ]
   let insertError
@@ -276,6 +277,15 @@ export async function createEmployee(body) {
   const result = await adminRepo.getEmployeeByEmail(email)
   const newId = result[0].id
   await adminRepo.initLeaveBalanceForEmployee(newId)
+  await adminRepo.updateEmployeePersonalDetails(newId, {
+    address: body.address,
+    dateOfBirth: body.dateOfBirth,
+    fatherName: body.fatherName,
+    gender: body.gender,
+    maritalStatus: body.maritalStatus,
+    cnicNumber: body.cnicNumber,
+    emergencyContactNumber: body.emergencyContactNumber
+  }).catch(() => {})
   const hodIds = Array.isArray(hodDepartmentIds) ? hodDepartmentIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)) : []
   if (hodIds.length > 0) await adminRepo.setHodDepartments(newId, hodIds)
   if (portalUsername && portalUsername.trim() && portalPassword && portalUserType) {
@@ -324,7 +334,14 @@ export async function updateEmployee(id, body) {
   }
   await adminRepo.updateEmployee(id, {
     firstName, lastName, email, phone, departmentId, designationId, employeeTypeId,
-    stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive
+    stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive,
+    address: body.address,
+    dateOfBirth: body.dateOfBirth,
+    fatherName: body.fatherName,
+    gender: body.gender,
+    maritalStatus: body.maritalStatus,
+    cnicNumber: body.cnicNumber,
+    emergencyContactNumber: body.emergencyContactNumber
   })
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {

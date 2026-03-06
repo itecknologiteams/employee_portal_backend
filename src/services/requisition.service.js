@@ -531,7 +531,7 @@ export async function getPendingHod(employeeId) {
   try {
     const flowStages = await reqRepo.getFlowStages()
     if (flowStages && flowStages.length > 0) {
-      const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName, excludeEmployeeId: eid })
+      const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName })
       let ackList = []
       try {
         ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)

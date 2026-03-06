@@ -971,10 +971,7 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
     if (stageKey === 'hod' && (departmentId != null || (departmentName != null && String(departmentName).trim() !== ''))) {
       q += ` AND (e.department_id = $2 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $3 AND $3 != ''))`
       params.push(departmentId ?? null, (departmentName || '').trim().toLowerCase())
-      if (excludeEmployeeId != null) {
-        q += ` AND r.req_emp_id != $4`
-        params.push(excludeEmployeeId)
-      }
+      // Do not exclude creator for hod stage so HOD's own requisitions appear in Pending HOD
     }
     q += ` ORDER BY r.req_created_at ASC`
     return executeQuery(q, params)
@@ -1087,7 +1084,7 @@ export async function getEmployeeDept(employeeId) {
   return r[0]
 }
 
-/** HOD pending: (1) from employee – awaiting HOD approval, (2) from Procurement – complete, awaiting HOD acknowledgment. */
+/** HOD pending: (1) awaiting HOD approval (including when HOD is creator), (2) from Procurement – complete, awaiting HOD acknowledgment. */
 export async function getPendingHodRequisitions(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
@@ -1096,12 +1093,12 @@ export async function getPendingHodRequisitions(deptId, deptName, excludeEmploye
      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0)
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
        AND (
-         ( (COALESCE(r.req_hod_approval, 0)::int = 0) AND (r.req_emp_id != $3) )
+         (COALESCE(r.req_hod_approval, 0)::int = 0)
          OR
          ( (COALESCE(r.req_purchase_completed, 0) = 1) AND (COALESCE(r.req_hod_acknowledged, 0) = 0) )
        )
      ORDER BY r.req_created_at ASC`,
-    [deptId, deptName, excludeEmployeeId]
+    [deptId, deptName]
   )
 }
 
@@ -1112,10 +1109,9 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND (COALESCE(r.req_hod_approval, 0)::int = 0)
-       AND r.req_emp_id != $3
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_created_at ASC`,
-    [deptId, deptName, excludeEmployeeId]
+    [deptId, deptName]
   )
 }
 

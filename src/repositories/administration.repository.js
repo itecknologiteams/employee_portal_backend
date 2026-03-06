@@ -251,7 +251,8 @@ const employeesSelect = `
     e.department_id, d.department_name, e.position, e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
     e.city_id, c.city_name,
-    e.is_active, e.join_date
+    e.is_active, e.join_date,
+    e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.emergency_contact_number
 `
 const employeesFullQuery = employeesSelect + employeesBaseFrom + ` ORDER BY e.first_name, e.last_name `
 
@@ -360,13 +361,13 @@ export async function findEmployeeByEmail(email) {
 }
 
 const insertEmployeeFull = `INSERT INTO employees (
-  employee_code, first_name, last_name, email, phone,
+  employee_code, first_name, last_name, email, phone, address,
   department_id, designation_id, employee_type_id, station_id, city_id, position, join_date, is_active
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`
 const insertEmployeeMinimal = `INSERT INTO employees (
-  employee_code, first_name, last_name, email, phone,
+  employee_code, first_name, last_name, email, phone, address,
   department_id, position, join_date, is_active
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`
 
 export async function createEmployeeFull(params) {
   return executeQuery(insertEmployeeFull, params)
@@ -374,6 +375,27 @@ export async function createEmployeeFull(params) {
 
 export async function createEmployeeMinimal(params) {
   return executeQuery(insertEmployeeMinimal, params)
+}
+
+/** Update only personal-detail columns (for use after create; columns may not exist if migration not run). */
+export async function updateEmployeePersonalDetails(id, data) {
+  const { address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber } = data
+  const setClauses = []
+  const params = []
+  let idx = 1
+  if (address !== undefined) { setClauses.push(`address = $${idx}`); params.push(address?.trim() || null); idx++ }
+  if (dateOfBirth !== undefined) { setClauses.push(`date_of_birth = $${idx}`); params.push(dateOfBirth || null); idx++ }
+  if (fatherName !== undefined) { setClauses.push(`father_name = $${idx}`); params.push(fatherName?.trim() || null); idx++ }
+  if (gender !== undefined) { setClauses.push(`gender = $${idx}`); params.push(gender?.trim() || null); idx++ }
+  if (maritalStatus !== undefined) { setClauses.push(`marital_status = $${idx}`); params.push(maritalStatus?.trim() || null); idx++ }
+  if (cnicNumber !== undefined) { setClauses.push(`cnic_number = $${idx}`); params.push(cnicNumber?.trim() || null); idx++ }
+  if (emergencyContactNumber !== undefined) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(emergencyContactNumber?.trim() || null); idx++ }
+  if (params.length === 0) return
+  params.push(id)
+  await executeQuery(`UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`, params).catch((err) => {
+    if (err.code === '42703') return
+    throw err
+  })
 }
 
 export async function getEmployeeByEmail(email) {
@@ -398,7 +420,10 @@ export async function createUser(username, hashedPassword, userType, empId) {
 }
 
 export async function updateEmployee(id, updates) {
-  const { firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive } = updates
+  const {
+    firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive,
+    address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber
+  } = updates
   let params = [
     firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
     departmentId || null, designationId || null, employeeTypeId || null, stationId, cityId ?? null, position?.trim() || null,
@@ -414,11 +439,32 @@ export async function updateEmployee(id, updates) {
     params.push(isActive)
     idx++
   }
+  if (address !== undefined) { setClauses.push(`address = $${idx}`); params.push(address?.trim() || null); idx++ }
+  if (dateOfBirth !== undefined) { setClauses.push(`date_of_birth = $${idx}`); params.push(dateOfBirth || null); idx++ }
+  if (fatherName !== undefined) { setClauses.push(`father_name = $${idx}`); params.push(fatherName?.trim() || null); idx++ }
+  if (gender !== undefined) { setClauses.push(`gender = $${idx}`); params.push(gender?.trim() || null); idx++ }
+  if (maritalStatus !== undefined) { setClauses.push(`marital_status = $${idx}`); params.push(maritalStatus?.trim() || null); idx++ }
+  if (cnicNumber !== undefined) { setClauses.push(`cnic_number = $${idx}`); params.push(cnicNumber?.trim() || null); idx++ }
+  if (emergencyContactNumber !== undefined) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(emergencyContactNumber?.trim() || null); idx++ }
   params.push(id)
   await executeQuery(
     `UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`,
     params
-  )
+  ).catch((err) => {
+    if (err.code === '42703') {
+      const basicOnly = [
+        firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
+        departmentId || null, designationId || null, employeeTypeId || null, stationId, cityId ?? null, position?.trim() || null,
+        employeeCode?.trim() || null
+      ]
+      const basicClauses = ['first_name = $1', 'last_name = $2', 'email = $3', 'phone = $4', 'department_id = $5', 'designation_id = $6', 'employee_type_id = $7', 'station_id = $8', 'city_id = $9', 'position = $10', 'employee_code = $11']
+      let i = 12
+      if (typeof isActive === 'boolean') { basicClauses.push(`is_active = $${i}`); basicOnly.push(isActive); i++ }
+      basicOnly.push(id)
+      return executeQuery(`UPDATE employees SET ${basicClauses.join(', ')} WHERE employee_id = $${i}`, basicOnly)
+    }
+    throw err
+  })
 }
 
 export async function findUserByEmpId(empId) {

@@ -211,6 +211,31 @@ export async function uploadPeriodOverrides(req, res) {
   }
 }
 
+/** Apply deduction columns from main payroll CSV/Excel to existing slips (draft or processed). */
+export async function applyDeductionsSheet(req, res) {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'No file uploaded. Use form field "file".' })
+    }
+    const result = await payrollService.applyPayrollSheetDeductionsToPeriod(
+      req.params.id,
+      req.file.buffer,
+      req.file.originalname || ''
+    )
+    if (result.error) return res.status(400).json({ error: result.error })
+    res.json({
+      message: result.message,
+      updated: result.updated,
+      totalRows: result.totalRows,
+      errors: result.errors
+    })
+  } catch (err) {
+    if (err.code === '42P01') return res.status(404).json({ error: 'Period not found' })
+    console.error('Apply deductions sheet error:', err)
+    res.status(500).json({ error: err.message || 'Failed to apply deductions from sheet' })
+  }
+}
+
 export async function runPayroll(req, res) {
   try {
     const result = await payrollService.runPayroll(req.params.id)

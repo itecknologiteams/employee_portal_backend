@@ -379,6 +379,7 @@ CREATE TABLE IF NOT EXISTS employee_salary_structure (
     utilities_allowance DECIMAL(18,2) DEFAULT 0,
     meal_allowance DECIMAL(18,2) DEFAULT 0,
     other_allowance DECIMAL(18,2) DEFAULT 0,
+    overtime_allowance DECIMAL(18,2) DEFAULT 0,
     arrears DECIMAL(18,2) DEFAULT 0,
     incremental_arrears DECIMAL(18,2) DEFAULT 0,
     bike_maintenance_allowance DECIMAL(18,2) DEFAULT 0,

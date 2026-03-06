@@ -21,7 +21,7 @@ export async function addGrossSalary(employeeId, grossSalary) {
     employeeId: eid,
     grossSalary: gross,
     joinDate: joinDate || null,
-    message: 'Gross salary saved; structure updated from join-date rules.'
+    message: 'Gross salary saved. Breakdown (basic, medical, HRA, utilities, etc.) auto-computed from join-date rules.'
   }
 }
 
@@ -88,13 +88,14 @@ export async function uploadGrossSalariesFromExcel(buffer) {
   return { added: added.length, totalRows: rows.length - 1, errors }
 }
 
-/** Parse number from cell (handles "1,234.56" and empty) */
+/** Parse number from cell (handles "1,234.56", "(1,234.56)" and empty) */
 function parseNum(val) {
   if (val == null || val === '') return NaN
-  const s = String(val).replace(/,/g, '').trim()
+  const s = String(val).replace(/,/g, '').replace(/[()]/g, '').trim()
   const n = parseFloat(s)
   return Number.isFinite(n) ? n : NaN
 }
+
 
 /** Find row index where header contains "Employee ID" (for payroll sheet with title rows) */
 function findPayrollHeaderRow(rows) {
@@ -147,7 +148,12 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
   if (headerRowIndex < 0) {
     throw new Error('Could not find header row containing "Employee ID". Ensure your payroll sheet has a row with column "Employee ID".')
   }
-  const headerRow = (rows[headerRowIndex] || []).map((h) => String(h || '').trim())
+  // Normalise newlines/spaces so "Over\nTime" and "Over Time" both match
+  const headerRow = (rows[headerRowIndex] || []).map((h) =>
+    String(h || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+  )
   const getCol = (...patterns) => colIndex(headerRow, patterns)
 
   const idx = {
@@ -165,7 +171,7 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
     bikeMaintenance: getCol('bike maintenance'),
     incentives: getCol('incentives'),
     deviceReimbursement: getCol('device reimbursement'),
-    overTime: getCol('over time', 'overtime'),
+    overTime: getCol('overtime', 'over time', /over\s*time/),
     total: getCol('total'),
     eobi: getCol('eobi')
   }
@@ -202,6 +208,7 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
     const bikeMaintenance = idx.bikeMaintenance >= 0 ? parseNum(row[idx.bikeMaintenance]) : 0
     const incentives = idx.incentives >= 0 ? parseNum(row[idx.incentives]) : 0
     const deviceReimbursement = idx.deviceReimbursement >= 0 ? parseNum(row[idx.deviceReimbursement]) : 0
+    const overTime = idx.overTime >= 0 ? parseNum(row[idx.overTime]) : 0
     const eobiFixed = idx.eobi >= 0 ? parseNum(row[idx.eobi]) : 130
     if (Number.isNaN(basic) || basic < 0) {
       errors.push({ row: i + 1, message: `Invalid or missing Basic Salary for ${codeOrId}` })
@@ -209,9 +216,8 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
     }
 
     const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
-    const grossSalary = Number.isFinite(totalFromSheet) && totalFromSheet > 0
-      ? totalFromSheet
-      : basic + medical + conveyance + conveyanceLiters + communication + houseRent + utilities + meal + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimbursement
+    const sumComponents = basic + medical + conveyance + conveyanceLiters + communication + houseRent + utilities + meal + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimbursement + (Number.isFinite(overTime) ? overTime : 0)
+    const grossSalary = Number.isFinite(totalFromSheet) && totalFromSheet > 0 ? totalFromSheet : sumComponents
 
     try {
       await repo.upsertGrossSalary(employeeId, grossSalary)
@@ -226,6 +232,7 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
         utilitiesAllowance: utilities,
         mealAllowance: meal,
         otherAllowance: 0,
+        overtimeAllowance: Number.isFinite(overTime) ? overTime : 0,
         arrears,
         incrementalArrears,
         bikeMaintenanceAllowance: bikeMaintenance,
@@ -544,6 +551,225 @@ export async function uploadPeriodOverridesFromFile(periodId, buffer, filename =
   }
 }
 
+/**
+ * Apply deduction columns from the main payroll CSV/Excel to existing slips for a period.
+ * Works for draft or processed periods. Reads: WD, Income Tax, Loan, Salary Advance,
+ * Other Deduction, EOBI, Late, Absent (amount in PKR) and updates payroll_slip accordingly.
+ * Sheet column "Absent Days/Late Joining" is treated as deduction amount, not day count.
+ */
+export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, filename = '') {
+  const periodRow = await repo.getPeriodById(periodId)
+  if (!periodRow) return { error: 'Period not found' }
+
+  const isCsv = /\.csv$/i.test(filename)
+  let rows
+  if (isCsv) {
+    const str = (buffer.toString && buffer.toString('utf8')) || String(buffer)
+    const wb = XLSX.read(str, { type: 'string', raw: true })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) return { error: 'CSV file is empty or invalid' }
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  } else {
+    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) return { error: 'Excel file has no sheets' }
+    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  }
+  if (!rows || rows.length < 2) return { error: 'File has no data rows' }
+
+  const headerRowIndex = findPayrollHeaderRow(rows)
+  if (headerRowIndex < 0) {
+    return { error: 'Could not find header row containing "Employee ID".' }
+  }
+  const headerRow = (rows[headerRowIndex] || []).map((h) =>
+    String(h || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+  )
+  const getCol = (...patterns) => colIndex(headerRow, patterns)
+
+  const idx = {
+    employeeId: getCol('employee id', 'employee id', /employee\s*id/),
+    wd: getCol('wd', 'working days'),
+    basic: getCol('basic salary', 'basic'),
+    medical: getCol('medical allowance', 'medical'),
+    conveyance: getCol('fixed conveyance', 'conveyance'),
+    conveyanceLiters: getCol('conveyance in liters', 'conveyance liters'),
+    communication: getCol('communication'),
+    houseRent: getCol('house allow', 'house rent', 'hra'),
+    utilities: getCol('utilities'),
+    meal: getCol('meal allowance', 'meal'),
+    arrears: getCol('arrears'),
+    incrementalArrears: getCol('incremental arrears'),
+    bikeMaintenance: getCol('bike maintenance'),
+    incentives: getCol('incentives'),
+    deviceReimbursement: getCol('device reimbursement'),
+    otherAllowance: getCol('other allowance'),
+    overTime: getCol('overtime', 'over time', /over\s*time/),
+    total: getCol('total'),
+    netSalaryPayable: getCol('net salary payable', 'net salary'),
+    incomeTax: getCol('income tax'),
+    loan: getCol('loan'),
+    salaryAdvance: getCol('salary advance'),
+    otherDeduction: getCol('other deduction'),
+    eobi: getCol('eobi'),
+    late: getCol('late'),
+    absentAmount: getCol('absent days', 'absent', 'absent days/'),
+    deviceDeduction: getCol('device deduction'),
+    cellphoneInstallment: getCol('cellphone installment', 'cellphone'),
+    foodpandaDeduction: getCol('foodpanda deduction', 'foodpanda'),
+    fuelOverusage: getCol('fuel overusage', 'fuel over'),
+    overUtilizationMobile: getCol('over utilization', 'over utilization of mobile', 'mobile')
+  }
+  if (idx.employeeId < 0) {
+    return { error: 'Column "Employee ID" not found in header row.' }
+  }
+
+  const updated = []
+  const errors = []
+  const dataStart = headerRowIndex + 1
+
+  for (let i = dataStart; i < rows.length; i++) {
+    const row = rows[i] || []
+    const codeOrId = row[idx.employeeId] != null ? String(row[idx.employeeId]).trim() : ''
+    if (!codeOrId) continue
+
+    const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
+    if (!employeeId) {
+      errors.push({ row: i + 1, message: `Employee not found: ${codeOrId}` })
+      continue
+    }
+
+    let slip = await repo.getSlipByPeriodAndEmployee(periodId, employeeId)
+
+    const wd = idx.wd >= 0 ? parseInt(String(row[idx.wd] || '').trim(), 10) : null
+    const workingDays = wd != null && !Number.isNaN(wd) && wd >= 0 ? wd : (slip?.working_days ?? 30)
+    // Gross and total_allowances from sheet as-is (Total column)
+    const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
+    const gross = Number.isFinite(totalFromSheet) ? totalFromSheet : (slip ? parseFloat(slip.gross_salary) || 0 : 0)
+    const totalAllowancesFromSheet = Number.isFinite(totalFromSheet) ? totalFromSheet : null
+
+    const eobiDeduction = idx.eobi >= 0 ? Math.abs(parseNum(row[idx.eobi]) || 0) : (slip?.eobi_deduction ?? 0)
+    const incomeTax = idx.incomeTax >= 0 ? Math.abs(parseNum(row[idx.incomeTax]) || 0) : (slip?.income_tax ?? 0)
+    const loan = idx.loan >= 0 ? Math.abs(parseNum(row[idx.loan]) || 0) : 0
+    const salaryAdvance = idx.salaryAdvance >= 0 ? Math.abs(parseNum(row[idx.salaryAdvance]) || 0) : 0
+    const otherDeductionCol = idx.otherDeduction >= 0 ? Math.abs(parseNum(row[idx.otherDeduction]) || 0) : 0
+    const late = idx.late >= 0 ? Math.abs(parseNum(row[idx.late]) || 0) : 0
+    const deviceDed = idx.deviceDeduction >= 0 ? Math.abs(parseNum(row[idx.deviceDeduction]) || 0) : 0
+    const cellphoneInst = idx.cellphoneInstallment >= 0 ? Math.abs(parseNum(row[idx.cellphoneInstallment]) || 0) : 0
+    const foodpanda = idx.foodpandaDeduction >= 0 ? Math.abs(parseNum(row[idx.foodpandaDeduction]) || 0) : 0
+    const fuelOver = idx.fuelOverusage >= 0 ? Math.abs(parseNum(row[idx.fuelOverusage]) || 0) : 0
+    const overUtilMobile = idx.overUtilizationMobile >= 0 ? Math.abs(parseNum(row[idx.overUtilizationMobile]) || 0) : 0
+    const otherDeduction = otherDeductionCol
+
+    const absentDeduction =
+      idx.absentAmount >= 0 ? Math.abs(parseNum(row[idx.absentAmount]) || 0) : (slip?.absent_deduction ?? 0)
+    const effectiveWd = (workingDays ?? 0) > 0 ? workingDays : 1
+    const dayRate = effectiveWd > 0 && gross > 0 ? gross / effectiveWd : 0
+    const absentDaysComputed =
+      dayRate > 0 && absentDeduction > 0 ? absentDeduction / dayRate : (slip?.absent_days ?? 0)
+    const absentDays = Number.isFinite(absentDaysComputed) ? Math.round(absentDaysComputed) : 0
+    const paidDays = Math.max(0, (workingDays ?? 0) - absentDays)
+
+    const totalDeductions =
+      (eobiDeduction || 0) + (absentDeduction || 0) + (otherDeduction || 0) + (incomeTax || 0) +
+      (loan || 0) + (salaryAdvance || 0) + (late || 0) + (deviceDed || 0) + (cellphoneInst || 0) +
+      (foodpanda || 0) + (fuelOver || 0) + (overUtilMobile || 0)
+    const netFromSheet = idx.netSalaryPayable >= 0 ? parseNum(row[idx.netSalaryPayable]) : NaN
+    const netSalary = Number.isFinite(netFromSheet) ? Math.round(netFromSheet * 100) / 100 : Math.round((gross - totalDeductions) * 100) / 100
+
+    // If no slip exists for this period+employee, create one from sheet (sheet-only payroll flow)
+    if (!slip) {
+      try {
+        await repo.upsertPayrollSlip({
+          periodId,
+          employeeId,
+          workingDays: workingDays ?? 30,
+          paidDays,
+          absentDays,
+          grossSalary: gross,
+          totalAllowances: totalAllowancesFromSheet ?? gross,
+          totalDeductions,
+          netSalary,
+          eobiDeduction,
+          absentDeduction,
+          otherDeduction,
+          otherAllowance: 0,
+          incomeTax
+        })
+        slip = await repo.getSlipByPeriodAndEmployee(periodId, employeeId)
+      } catch (err) {
+        errors.push({ row: i + 1, message: `Could not create slip: ${err.message || 'Unknown error'}` })
+        continue
+      }
+    }
+    if (!slip) {
+      errors.push({ row: i + 1, message: `Slip not found after create: ${codeOrId}` })
+      continue
+    }
+
+    try {
+      await repo.updatePayrollSlipDeductions(slip.id, {
+        working_days: workingDays,
+        paid_days: paidDays,
+        absent_days: absentDays,
+        gross_salary: totalAllowancesFromSheet ?? undefined,
+        total_allowances: totalAllowancesFromSheet ?? undefined,
+        eobi_deduction: eobiDeduction,
+        absent_deduction: absentDeduction,
+        other_deduction: otherDeduction,
+        income_tax: incomeTax,
+        loan_deduction: loan,
+        salary_advance_deduction: salaryAdvance,
+        late_deduction: late,
+        device_deduction: deviceDed,
+        cellphone_installment_deduction: cellphoneInst,
+        foodpanda_deduction: foodpanda,
+        fuel_overusage_deduction: fuelOver,
+        over_utilization_mobile_deduction: overUtilMobile,
+        total_deductions: totalDeductions,
+        net_salary: netSalary
+      })
+      updated.push({ row: i + 1, employeeId, netSalary })
+
+      // Update salary structure from sheet as-is: use sheet value when column present, else keep existing
+      const existingStructure = await repo.getSalaryStructureByEmployee(employeeId)
+      const n = (v, def) => (v != null && !Number.isNaN(parseFloat(v))) ? parseFloat(v) : def
+      const fromSheet = (colIdx, existingVal, def = 0) =>
+        (colIdx >= 0 && Number.isFinite(parseNum(row[colIdx]))) ? parseNum(row[colIdx]) : (existingStructure ? n(existingVal, def) : def)
+      const payload = {
+        employeeId,
+        basicSalary: fromSheet(idx.basic, existingStructure?.basic_salary),
+        medicalAllowance: fromSheet(idx.medical, existingStructure?.medical_allowance),
+        conveyanceAllowance: fromSheet(idx.conveyance, existingStructure?.conveyance_allowance),
+        conveyanceLitersAllowance: fromSheet(idx.conveyanceLiters, existingStructure?.conveyance_liters_allowance),
+        communicationAllowance: fromSheet(idx.communication, existingStructure?.communication_allowance),
+        houseRentAllowance: fromSheet(idx.houseRent, existingStructure?.house_rent_allowance),
+        utilitiesAllowance: fromSheet(idx.utilities, existingStructure?.utilities_allowance),
+        mealAllowance: fromSheet(idx.meal, existingStructure?.meal_allowance),
+        otherAllowance: fromSheet(idx.otherAllowance, existingStructure?.other_allowance),
+        overtimeAllowance: fromSheet(idx.overTime, existingStructure?.overtime_allowance),
+        arrears: fromSheet(idx.arrears, existingStructure?.arrears),
+        incrementalArrears: fromSheet(idx.incrementalArrears, existingStructure?.incremental_arrears),
+        bikeMaintenanceAllowance: fromSheet(idx.bikeMaintenance, existingStructure?.bike_maintenance_allowance),
+        incentives: fromSheet(idx.incentives, existingStructure?.incentives),
+        deviceReimbursement: fromSheet(idx.deviceReimbursement, existingStructure?.device_reimbursement),
+        eobiFixed: existingStructure ? n(existingStructure.eobi_fixed, 130) : 130
+      }
+      await repo.upsertSalaryStructure(payload).catch(() => {})
+    } catch (err) {
+      errors.push({ row: i + 1, message: err.message || 'Failed to update slip' })
+    }
+  }
+
+  return {
+    updated: updated.length,
+    totalRows: rows.length - dataStart,
+    errors,
+    message: `Sheet applied: ${updated.length} slip(s) created or updated from sheet. Allowance breakdown updated from sheet where present.`
+  }
+}
+
 export async function runPayroll(periodId) {
   const period = await repo.getPeriodForRun(periodId)
   if (!period) return { error: 'not_found' }
@@ -846,6 +1072,7 @@ const mapStructureRow = (r) => {
     utilitiesAllowance: num(r.utilities_allowance),
     mealAllowance: num(r.meal_allowance),
     otherAllowance: num(r.other_allowance),
+    overtimeAllowance: num(r.overtime_allowance),
     arrears: num(r.arrears),
     incrementalArrears: num(r.incremental_arrears),
     bikeMaintenanceAllowance: num(r.bike_maintenance_allowance),
@@ -876,6 +1103,7 @@ export async function saveSalaryStructure(body) {
     utilitiesAllowance: n(body.utilitiesAllowance),
     mealAllowance: n(body.mealAllowance),
     otherAllowance: n(body.otherAllowance),
+    overtimeAllowance: n(body.overtimeAllowance),
     arrears: n(body.arrears),
     incrementalArrears: n(body.incrementalArrears),
     bikeMaintenanceAllowance: n(body.bikeMaintenanceAllowance),

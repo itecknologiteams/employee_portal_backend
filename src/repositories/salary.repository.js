@@ -56,6 +56,35 @@ export async function getPayrollSlipById(slipId, employeeId) {
   }
 }
 
+/** Get employee_salary_structure for one employee (for gross breakdown on payroll slip). */
+export async function getEmployeeSalaryStructure(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT employee_id, basic_salary, medical_allowance, conveyance_allowance,
+              conveyance_liters_allowance, communication_allowance,
+              house_rent_allowance, utilities_allowance, meal_allowance, other_allowance,
+              COALESCE(overtime_allowance, 0) AS overtime_allowance,
+              arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement
+       FROM employee_salary_structure WHERE employee_id = $1`,
+      [employeeId]
+    )
+    return rows[0] || null
+  } catch (e) {
+    if (e.code === '42P01') return null
+    if (e.code === '42703') {
+      const rows = await executeQuery(
+        `SELECT employee_id, basic_salary, medical_allowance, conveyance_allowance,
+                house_rent_allowance, utilities_allowance, meal_allowance, other_allowance
+         FROM employee_salary_structure WHERE employee_id = $1`,
+        [employeeId]
+      )
+      const row = rows[0]
+      return row ? { ...row, overtime_allowance: 0 } : null
+    }
+    throw e
+  }
+}
+
 // ---------- Legacy (salary_slip + payroll, hr_emp_id) ----------
 export async function listLegacySlipsForEmployee(hrEmpIds) {
   if (!hrEmpIds || hrEmpIds.length === 0) return []

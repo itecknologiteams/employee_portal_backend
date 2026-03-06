@@ -276,6 +276,7 @@ export function computeStructureFromGross(grossSalary, joinDate) {
       utilitiesAllowance: 0,
       mealAllowance: 0,
       otherAllowance: 0,
+      overtimeAllowance: 0,
       arrears: 0,
       incrementalArrears: 0,
       bikeMaintenanceAllowance: 0,
@@ -294,6 +295,7 @@ export function computeStructureFromGross(grossSalary, joinDate) {
     utilitiesAllowance: Math.round(gross * 0.06 * 100) / 100,
     mealAllowance: 0,
     otherAllowance: 0,
+    overtimeAllowance: 0,
     arrears: 0,
     incrementalArrears: 0,
     bikeMaintenanceAllowance: 0,
@@ -336,7 +338,7 @@ export async function getDesignationAllowances() {
 
 const salaryStructureColumns = `employee_id, basic_salary, medical_allowance, conveyance_allowance,
   conveyance_liters_allowance, communication_allowance, house_rent_allowance, utilities_allowance, meal_allowance,
-  other_allowance, arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement, eobi_fixed`
+  other_allowance, overtime_allowance, arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement, eobi_fixed`
 const salaryStructureColumnsLegacy = `employee_id, basic_salary, medical_allowance, conveyance_allowance,
   house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed`
 
@@ -433,6 +435,101 @@ export async function upsertPayrollSlip(slip) {
 }
 
 // ---------- Slips ----------
+/** Get one payroll_slip by period and employee (for applying deductions from sheet). */
+export async function getSlipByPeriodAndEmployee(periodId, employeeId) {
+  const rows = await executeQuery(
+    `SELECT id, payroll_period_id, employee_id, working_days, paid_days, absent_days,
+            gross_salary, total_allowances, total_deductions, net_salary,
+            eobi_deduction, absent_deduction, other_deduction, other_allowance, income_tax
+     FROM payroll_slip
+     WHERE payroll_period_id = $1 AND employee_id = $2`,
+    [periodId, employeeId]
+  )
+  return rows[0] || null
+}
+
+/** Update deduction fields (and optional gross_salary, total_allowances) on an existing payroll_slip after applying sheet. */
+export async function updatePayrollSlipDeductions(slipId, updates) {
+  const {
+    working_days,
+    paid_days,
+    absent_days,
+    gross_salary,
+    total_allowances,
+    eobi_deduction,
+    absent_deduction,
+    other_deduction,
+    income_tax,
+    loan_deduction,
+    salary_advance_deduction,
+    late_deduction,
+    device_deduction,
+    cellphone_installment_deduction,
+    foodpanda_deduction,
+    fuel_overusage_deduction,
+    over_utilization_mobile_deduction,
+    total_deductions,
+    net_salary
+  } = updates
+  await executeQuery(
+    `UPDATE payroll_slip SET
+       working_days = COALESCE($2, working_days),
+       paid_days = COALESCE($3, paid_days),
+       absent_days = COALESCE($4, absent_days),
+       gross_salary = COALESCE($5, gross_salary),
+       total_allowances = COALESCE($6, total_allowances),
+       eobi_deduction = COALESCE($7, eobi_deduction),
+       absent_deduction = COALESCE($8, absent_deduction),
+       other_deduction = COALESCE($9, other_deduction),
+       income_tax = COALESCE($10, income_tax),
+       total_deductions = COALESCE($11, total_deductions),
+       net_salary = COALESCE($12, net_salary)
+     WHERE id = $1`,
+    [
+      slipId,
+      working_days ?? null,
+      paid_days ?? null,
+      absent_days ?? null,
+      gross_salary ?? null,
+      total_allowances ?? null,
+      eobi_deduction ?? null,
+      absent_deduction ?? null,
+      other_deduction ?? null,
+      income_tax ?? null,
+      total_deductions ?? null,
+      net_salary ?? null
+    ]
+  )
+  // Optional columns (exist after migration-payroll-slip-deduction-columns.sql)
+  try {
+    await executeQuery(
+      `UPDATE payroll_slip SET
+         loan_deduction = COALESCE($2, loan_deduction),
+         salary_advance_deduction = COALESCE($3, salary_advance_deduction),
+         late_deduction = COALESCE($4, late_deduction),
+         device_deduction = COALESCE($5, device_deduction),
+         cellphone_installment_deduction = COALESCE($6, cellphone_installment_deduction),
+         foodpanda_deduction = COALESCE($7, foodpanda_deduction),
+         fuel_overusage_deduction = COALESCE($8, fuel_overusage_deduction),
+         over_utilization_mobile_deduction = COALESCE($9, over_utilization_mobile_deduction)
+       WHERE id = $1`,
+      [
+        slipId,
+        loan_deduction ?? null,
+        salary_advance_deduction ?? null,
+        late_deduction ?? null,
+        device_deduction ?? null,
+        cellphone_installment_deduction ?? null,
+        foodpanda_deduction ?? null,
+        fuel_overusage_deduction ?? null,
+        over_utilization_mobile_deduction ?? null
+      ]
+    )
+  } catch (e) {
+    if (e.code !== '42703') throw e
+  }
+}
+
 export async function countSlips(periodId, searchParam) {
   const searchCondition = searchParam
     ? `AND (e.first_name ILIKE $2 OR e.last_name ILIKE $2 OR e.employee_code::text ILIKE $2 OR CONCAT(e.first_name, ' ', e.last_name) ILIKE $2)`
@@ -556,6 +653,7 @@ export async function upsertSalaryStructure(data) {
     data.employeeId, data.basicSalary ?? 0, data.medicalAllowance ?? 0, data.conveyanceAllowance ?? 0,
     data.conveyanceLitersAllowance ?? 0, data.communicationAllowance ?? 0,
     data.houseRentAllowance ?? 0, data.utilitiesAllowance ?? 0, data.mealAllowance ?? 0, data.otherAllowance ?? 0,
+    data.overtimeAllowance ?? 0,
     data.arrears ?? 0, data.incrementalArrears ?? 0, data.bikeMaintenanceAllowance ?? 0, data.incentives ?? 0, data.deviceReimbursement ?? 0,
     data.eobiFixed ?? 130
   ]
@@ -564,9 +662,10 @@ export async function upsertSalaryStructure(data) {
       employee_id, basic_salary, medical_allowance, conveyance_allowance,
       conveyance_liters_allowance, communication_allowance,
       house_rent_allowance, utilities_allowance, meal_allowance, other_allowance,
+      overtime_allowance,
       arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement,
       eobi_fixed
-    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
     ON CONFLICT (employee_id) DO UPDATE SET
       basic_salary = EXCLUDED.basic_salary,
       medical_allowance = EXCLUDED.medical_allowance,
@@ -577,6 +676,7 @@ export async function upsertSalaryStructure(data) {
       utilities_allowance = EXCLUDED.utilities_allowance,
       meal_allowance = EXCLUDED.meal_allowance,
       other_allowance = EXCLUDED.other_allowance,
+      overtime_allowance = EXCLUDED.overtime_allowance,
       arrears = EXCLUDED.arrears,
       incremental_arrears = EXCLUDED.incremental_arrears,
       bike_maintenance_allowance = EXCLUDED.bike_maintenance_allowance,
@@ -614,6 +714,7 @@ export async function upsertSalaryStructure(data) {
     `SELECT id, employee_id, basic_salary, medical_allowance, conveyance_allowance,
             conveyance_liters_allowance, communication_allowance,
             house_rent_allowance, utilities_allowance, meal_allowance, other_allowance,
+            COALESCE(overtime_allowance, 0) AS overtime_allowance,
             arrears, incremental_arrears, bike_maintenance_allowance, incentives, device_reimbursement,
             eobi_fixed
      FROM employee_salary_structure WHERE employee_id = $1`,
@@ -625,7 +726,7 @@ export async function upsertSalaryStructure(data) {
                 house_rent_allowance, utilities_allowance, meal_allowance, other_allowance, eobi_fixed
          FROM employee_salary_structure WHERE employee_id = $1`,
         [data.employeeId]
-      )
+      ).then((rows) => (rows[0] ? [{ ...rows[0], overtime_allowance: 0 }] : []))
     }
     throw err
   })

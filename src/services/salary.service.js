@@ -108,8 +108,47 @@ export async function getSlipById(rawId, employeeId) {
     const slip = await salaryRepo.getPayrollSlipById(numericId, employeeId)
     if (!slip) return null
     const emp = await salaryRepo.getEmployeeBasicInfo(employeeId)
+    const structure = await salaryRepo.getEmployeeSalaryStructure(employeeId)
     const monthLabel = slip.period_name || monthLabelFromDate(slip.pay_month) || 'Payroll'
     const name = emp ? [emp.first_name, emp.last_name].filter(Boolean).join(' ').trim() : '—'
+    const gross = parseFloat(slip.gross_salary ?? 0)
+    const totAll = parseFloat(slip.total_allowances ?? 0)
+    const totDed = parseFloat(slip.total_deductions ?? 0)
+    const net = parseFloat(slip.net_salary ?? 0)
+    const eobi = parseFloat(slip.eobi_deduction ?? 0)
+    const absentDed = parseFloat(slip.absent_deduction ?? 0)
+    const otherDed = parseFloat(slip.other_deduction ?? 0)
+    const otherAll = parseFloat(slip.other_allowance ?? 0)
+    const incomeTax = (slip.income_tax != null && slip.income_tax !== '') ? (parseFloat(slip.income_tax) || 0) : 0
+    const f = (v) => (v != null && v !== '' && !Number.isNaN(parseFloat(v))) ? parseFloat(v) : 0
+    const basicVal = structure ? f(structure.basic_salary) : gross
+    const medicalVal = structure ? f(structure.medical_allowance) : 0
+    const conveyanceVal = structure ? f(structure.conveyance_allowance) : 0
+    const houseRentVal = structure ? f(structure.house_rent_allowance) : 0
+    const utilitiesVal = structure ? f(structure.utilities_allowance) : 0
+    const mealVal = structure ? f(structure.meal_allowance) : 0
+    const arrearsVal = structure ? f(structure.arrears) : 0
+    const bikeVal = structure ? f(structure.bike_maintenance_allowance) : 0
+    const incentivesVal = structure ? f(structure.incentives) : 0
+    const deviceVal = structure ? f(structure.device_reimbursement) : 0
+    const communicationVal = structure ? f(structure.communication_allowance) : 0
+    const otherAllVal = structure ? f(structure.other_allowance) : otherAll
+    const conveyanceLitersVal = structure ? f(structure.conveyance_liters_allowance) : 0
+    const incrementalArrearsVal = structure ? f(structure.incremental_arrears) : 0
+    const overtimeVal = structure ? f(structure.overtime_allowance) : 0
+    // Total Gross = basic_salary + utilities_allowance + house_rent_allowance + medical_allowance
+    const totGross = (structure && (basicVal || medicalVal || houseRentVal || utilitiesVal))
+      ? (basicVal + utilitiesVal + houseRentVal + medicalVal)
+      : gross
+    // Net = (Total Gross + all other allowances including fixed: conveyance, meal, bike, etc.) - total_deductions
+    const otherAllowancesSum = conveyanceVal + conveyanceLitersVal + communicationVal + mealVal + overtimeVal +
+      arrearsVal + incrementalArrearsVal + bikeVal + incentivesVal + deviceVal + otherAllVal
+    const totEarnings = totGross + otherAllowancesSum
+    const computedNet = Math.round((totEarnings - totDed) * 100) / 100
+    const fallbackNet = Math.round((gross - totDed) * 100) / 100
+    const totNet = (structure && (basicVal || medicalVal || houseRentVal || utilitiesVal))
+      ? (otherAllowancesSum > 0 ? computedNet : fallbackNet)
+      : net
     return {
       id: slip.id,
       payrollId: slip.payroll_period_id,
@@ -118,12 +157,44 @@ export async function getSlipById(rawId, employeeId) {
       employeeName: name || '—',
       employeeCode: emp?.employee_code || '—',
       email: emp?.email || '—',
-      totGrossSalary: parseFloat(slip.gross_salary ?? 0) + parseFloat(slip.total_allowances ?? 0),
-      totAllowances: parseFloat(slip.total_allowances ?? 0),
-      totDeductions: parseFloat(slip.total_deductions ?? 0),
-      totNetSalary: parseFloat(slip.net_salary ?? 0),
+      totGrossSalary: totGross,
+      totAllowances: totAll,
+      totDeductions: totDed,
+      totNetSalary: totNet,
       remarks: slip.remarks || '',
-      salaryStatus: slip.status || 'Generated'
+      salaryStatus: slip.status || 'Generated',
+      mDays: slip.working_days,
+      wDays: slip.paid_days,
+      aDays: slip.absent_days,
+      // Gross breakdown: basic_salary, medical, house_rent, utilities, etc. (overtime separate, not part of gross)
+      basicSalary1: basicVal,
+      medicalAllowance2: medicalVal,
+      conveyanceFixed3: conveyanceVal,
+      overtime4: overtimeVal,
+      houseRent5: houseRentVal,
+      utilities6: utilitiesVal,
+      meal7: mealVal,
+      arrears8: arrearsVal,
+      bikeMaintainence9: bikeVal,
+      incentivesTech10: incentivesVal,
+      deviceReimbursment11: deviceVal,
+      communication12: communicationVal,
+      incentivesKpi13: 0,
+      otherAllowance14: otherAllVal,
+      conveyanceLiters28: conveyanceLitersVal,
+      incrementalArrears31: incrementalArrearsVal,
+      eobi17: eobi,
+      incomeTax18: incomeTax,
+      absentDays19: absentDed,
+      otherDeduction25: otherDed,
+      loan15: parseFloat(slip.loan_deduction ?? 0) || 0,
+      advanceSalary16: parseFloat(slip.salary_advance_deduction ?? 0) || 0,
+      lateDays24: parseFloat(slip.late_deduction ?? 0) || 0,
+      deviceDeduction20: parseFloat(slip.device_deduction ?? 0) || 0,
+      mobileInstallment26: parseFloat(slip.cellphone_installment_deduction ?? 0) || 0,
+      foodPanda27: parseFloat(slip.foodpanda_deduction ?? 0) || 0,
+      vehicleFuel22: parseFloat(slip.fuel_overusage_deduction ?? 0) || 0,
+      overUtilizationMobile21: parseFloat(slip.over_utilization_mobile_deduction ?? 0) || 0
     }
   }
 
