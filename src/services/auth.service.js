@@ -1,6 +1,6 @@
 import bcrypt from 'bcryptjs'
 import * as authRepo from '../repositories/auth.repository.js'
-import { checkCrmLogin } from '../../config/crmDatabase.js'
+import { checkCrmLogin, getCrmEmployeeIdByUsername } from '../../config/crmDatabase.js'
 
 const ALL_PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
@@ -58,7 +58,13 @@ export async function login(loginId, password) {
       if (!crm.valid || !crm.crmEmployeeId) {
         return { error: 'Invalid username or password', status: 401 }
       }
-      const portalEmployees = await authRepo.findEmployeeByEmployeeCode(crm.crmEmployeeId)
+      let portalEmployees = await authRepo.findEmployeeByEmployeeCode(crm.crmEmployeeId)
+      if (portalEmployees.length === 0) {
+        const resolvedId = await getCrmEmployeeIdByUsername(loginId)
+        if (resolvedId) {
+          portalEmployees = await authRepo.findEmployeeByEmployeeCode(resolvedId)
+        }
+      }
       if (portalEmployees.length === 0) {
         return { error: 'No portal account linked to this CRM user. Contact HR to set employee_code.', status: 401 }
       }

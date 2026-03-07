@@ -95,6 +95,38 @@ export async function checkCrmLogin(username, password) {
 }
 
 /**
+ * Resolve CRM username (U_ID) to employee ID for portal matching.
+ * When CheckLogin returns only username, use this to get EMPLOYEE_ID from USERS.
+ * .env: CRM_USERS_TABLE, CRM_USERS_MATCH_COLUMN (e.g. EMPLOYEE_ID), CRM_USERS_USERNAME_COLUMN (e.g. U_ID).
+ * @param {string} username - Login username (e.g. ALI.ASIF)
+ * @returns {Promise<string|null>} EMPLOYEE_ID from CRM or null
+ */
+export async function getCrmEmployeeIdByUsername(username) {
+  if (!username || String(username).trim() === '') return null
+  let pool
+  try {
+    pool = await getCrmPool()
+  } catch (err) {
+    return null
+  }
+  const table = stripEnvQuotes(process.env.CRM_USERS_TABLE) || 'USERS'
+  const matchCol = stripEnvQuotes(process.env.CRM_USERS_MATCH_COLUMN) || 'EMPLOYEE_ID'
+  const usernameCol = stripEnvQuotes(process.env.CRM_USERS_USERNAME_COLUMN) || 'U_ID'
+  try {
+    const Mssql = await getMssql()
+    const request = pool.request()
+    request.input('username', Mssql.VarChar(200), String(username).trim())
+    const query = `SELECT ${matchCol} FROM ${table} WHERE ${usernameCol} = @username`
+    const result = await request.query(query)
+    const rows = result.recordset || []
+    const val = rows[0]?.[matchCol] ?? rows[0]?.['EMPLOYEE_ID'] ?? rows[0]?.[Object.keys(rows[0] || {})[0]]
+    return val != null ? String(val).trim() : null
+  } catch (err) {
+    return null
+  }
+}
+
+/**
  * Get official email for a single employee from CRM SQL Server USERS table.
  * Uses .env: CRM_HOST, CRM_USER, CRM_PASS, CRM_DB; CRM_USERS_TABLE, CRM_USERS_EMAIL, CRM_USERS_MATCH_COLUMN.
  * @param {string} employeeCode - Employee code (matches EMPLOYEE_ID in USERS)
