@@ -71,7 +71,7 @@ For requisition track-records and pagination, see [docs/TRACK_RECORDS_API.md](do
 
    | Variable       | Description                    | Example / default     |
    |----------------|--------------------------------|------------------------|
-   | `PORT`         | Server port                    | `3001`                 |
+   | `PORT`         | Server port                    | `4000`                 |
    | `DB_DRIVER`    | `postgres` or `sqlserver`      | `postgres` (default)   |
    | `DB_HOST`      | Database host                  | `localhost` / `192.168.20.21` |
    | `DB_DATABASE`  | Database name                  | `employee_portal`      |
@@ -109,7 +109,7 @@ For requisition track-records and pagination, see [docs/TRACK_RECORDS_API.md](do
    npm run dev
    ```
 
-   Server runs at `http://localhost:3001` (or your `PORT`). Use `GET /api/health` and `GET /api/test-db` to verify.
+   Server runs at `http://localhost:4000` (or your `PORT`). Use `GET /api/health` and `GET /api/test-db` to verify.
 
 ## Optional: Redis and Requisition Emailer
 

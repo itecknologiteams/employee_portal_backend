@@ -93,13 +93,13 @@ From the project root:
 npm start
 ```
 
-Or, if you use a different script (e.g. `node server.js`), run that. The API should be available at the URL shown in the console (e.g. `http://localhost:3001`).
+Or, if you use a different script (e.g. `node server.js`), run that. The API should be available at the URL shown in the console (e.g. `http://localhost:4000`).
 
 ---
 
 ## Step 6: Verify (optional)
 
-- **Health:** Open `http://localhost:3001/` or your app’s health/status route if it has one.
+- **Health:** Open `http://localhost:4000/` or your app’s health/status route if it has one.
 - **Administration:**  
   - List departments: `GET /api/administration/departments`  
   - List employees (with HOD): `GET /api/administration/employees?page=1&limit=10`
