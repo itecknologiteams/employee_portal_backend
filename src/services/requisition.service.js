@@ -236,10 +236,11 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
 
 export async function createRequisition(body) {
   const { employeeId, location, material, requiredByDate, business, items, category } = body
-  if (!employeeId || !items || !Array.isArray(items) || items.length === 0) {
-    return { error: 'employeeId and at least one item are required', status: 400 }
+  if (!employeeId) {
+    return { error: 'employeeId is required', status: 400 }
   }
-  const validItems = items.filter(it => {
+  const itemsList = Array.isArray(items) ? items : []
+  const validItems = itemsList.filter(it => {
     const qty = it.itemQty ?? it.item_qty ?? 0
     const hasData = (it.itemDesc && it.itemDesc.trim()) || (it.item_desc && String(it.item_desc).trim()) ||
       (it.itemSize && it.itemSize.trim()) || (it.item_size && String(it.item_size).trim()) ||
@@ -247,8 +248,15 @@ export async function createRequisition(body) {
       (Number(qty) > 0)
     return hasData
   })
-  if (validItems.length === 0) {
-    return { error: 'Each item must have at least size, brand, or quantity', status: 400 }
+  if (validItems.length > 0) {
+    const deptIdForCheck = await reqRepo.getCreatorDepartment(employeeId)
+    const hodIdForCheck = await reqRepo.getHodByDepartment(deptIdForCheck)
+    const creatorIsHodForItems = hodIdForCheck != null && hodIdForCheck === parseInt(employeeId, 10)
+    const { employeeHasPermission } = await import('./auth.service.js')
+    const canAddItems = creatorIsHodForItems || await employeeHasPermission(employeeId, 'requisition_can_add_items')
+    if (!canAddItems) {
+      return { error: 'You do not have permission to add items to requisitions. Contact Administration for "Can add items" access.', status: 403 }
+    }
   }
   if (!category || typeof category !== 'string' || !category.trim()) {
     return { error: 'Category is required', status: 400 }

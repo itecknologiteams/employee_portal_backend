@@ -4,7 +4,7 @@ import * as adminRepo from '../repositories/administration.repository.js'
 const PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
   'leave', 'leave_pending', 'feedback', 'feedback_history', 'feedback_records_hr',
-  'requisition_create', 'requisition_history', 'requisition_acknowledgment',
+  'requisition_create', 'requisition_can_add_items', 'requisition_history', 'requisition_acknowledgment',
   'requisition_pending', 'requisition_approved', 'requisition_reports',
   'tat_report', 'help_support', 'extensions', 'administration',
   'payroll', 'payroll_gross_salaries', 'payroll_other_allowances', 'payroll_deductions', 'payroll_incentives'

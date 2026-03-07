@@ -5,7 +5,7 @@ import { checkCrmLogin, getCrmEmployeeIdByUsername } from '../../config/crmDatab
 const ALL_PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
   'leave', 'leave_pending', 'feedback', 'feedback_history', 'feedback_records_hr',
-  'requisition_create', 'requisition_history', 'requisition_acknowledgment',
+  'requisition_create', 'requisition_can_add_items', 'requisition_history', 'requisition_acknowledgment',
   'requisition_pending', 'requisition_approved', 'requisition_reports',
   'tat_report', 'help_support', 'extensions', 'administration',
   'payroll', 'payroll_gross_salaries', 'payroll_other_allowances', 'payroll_deductions', 'payroll_incentives'
@@ -47,6 +47,18 @@ async function getEffectivePermissions(empId, roleName) {
     if (err.code !== '42P01') throw err
   }
   return getPermissionsForRole(roleName)
+}
+
+/** Check if an employee has a specific permission (role + user overrides). */
+export async function employeeHasPermission(empId, permissionKey) {
+  if (!empId || !permissionKey) return false
+  try {
+    const userType = await authRepo.getUserTypeByEmployeeId(empId) || 'User'
+    const perms = await getEffectivePermissions(empId, userType)
+    return Array.isArray(perms) && perms.includes(permissionKey)
+  } catch (_) {
+    return false
+  }
 }
 
 export async function login(loginId, password) {
