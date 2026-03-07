@@ -14,7 +14,8 @@
     "check-user": "node scripts/check-user.js",
     "update-password": "node scripts/update-user-password.js",
     "import-old-slips": "node scripts/import-old-salary-slips.js",
-    "consumer:requisition": "node scripts/requisition-consumer.js"
+    "consumer:requisition": "node scripts/requisition-consumer.js",
+    "sync-cards-pictures": "node scripts/sync-cards-profile-pictures.js"
   },
   "dependencies": {
     "amqplib": "^0.10.9",
