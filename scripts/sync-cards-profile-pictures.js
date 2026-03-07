@@ -10,8 +10,8 @@
  *       20101.jpg
  *
  * Each image file name (without extension) is treated as employee_code. The script:
- * 1. Copies each image to BackEnd uploads/cards/<employee_code>.<ext>
- * 2. Updates employee_cards.employees.profile_image = 'cards/<employee_code>.<ext>'
+ * 1. Reads each image file and converts to base64 data URL.
+ * 2. Updates employee_cards.employees.profile_image with the data URL (no URL/path; works on any host).
  *
  * Usage:
  *   node scripts/sync-cards-profile-pictures.js [path-to-Cards-folder]
@@ -27,9 +27,9 @@ import { executeQueryCards, closeCardsPool } from '../config/cardsDatabase.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const BACKEND_ROOT = path.resolve(__dirname, '..')
-const UPLOADS_CARDS = path.join(BACKEND_ROOT, 'uploads', 'cards')
 
 const IMAGE_EXT = ['.jpg', '.jpeg', '.png', '.gif', '.webp']
+const MIME_BY_EXT = { '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png', '.gif': 'image/gif', '.webp': 'image/webp' }
 
 function getCardsDir() {
   const envDir = process.env.CARDS_DIR || process.env.CARDS_IMAGES_DIR
@@ -38,13 +38,6 @@ function getCardsDir() {
   if (cliDir && fs.existsSync(cliDir)) return path.resolve(cliDir)
   const defaultDir = path.join(BACKEND_ROOT, '..', 'Emp_Portal_FrontEnd', 'Cards')
   return path.resolve(defaultDir)
-}
-
-function ensureDir(dir) {
-  if (!fs.existsSync(dir)) {
-    fs.mkdirSync(dir, { recursive: true })
-    console.log('Created directory:', dir)
-  }
 }
 
 function isImageFile(name) {
@@ -71,10 +64,18 @@ function* walkCityImages(cardsDir) {
   }
 }
 
-async function updateEmployeeProfileImage(employeeCode, profileImagePath) {
+function fileToDataUrl(filePath) {
+  const buf = fs.readFileSync(filePath)
+  const base64 = buf.toString('base64')
+  const ext = path.extname(filePath).toLowerCase()
+  const mime = MIME_BY_EXT[ext] || 'image/jpeg'
+  return `data:${mime};base64,${base64}`
+}
+
+async function updateEmployeeProfileImage(employeeCode, profileImageDataUrl) {
   const rows = await executeQueryCards(
     'UPDATE employees SET profile_image = $1 WHERE employee_code = $2 RETURNING id, name',
-    [profileImagePath, String(employeeCode).trim()]
+    [profileImageDataUrl, String(employeeCode).trim()]
   )
   return rows.length > 0 ? rows[0] : null
 }
@@ -89,8 +90,6 @@ async function main() {
     process.exit(1)
   }
 
-  ensureDir(UPLOADS_CARDS)
-
   let processed = 0
   let updated = 0
   let skipped = 0
@@ -102,13 +101,9 @@ async function main() {
     if (!employeeCode) continue
 
     processed++
-    const destFileName = `${employeeCode}${ext}`
-    const destPath = path.join(UPLOADS_CARDS, destFileName)
-    const dbPath = `cards/${destFileName}`
-
     try {
-      fs.copyFileSync(filePath, destPath)
-      const row = await updateEmployeeProfileImage(employeeCode, dbPath)
+      const dataUrl = fileToDataUrl(filePath)
+      const row = await updateEmployeeProfileImage(employeeCode, dataUrl)
       if (row) {
         updated++
         console.log(`  [${city || 'root'}] ${fileName} -> ${employeeCode} (${row.name || row.id})`)

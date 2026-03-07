@@ -1,4 +1,5 @@
 import * as cardsRepo from '../repositories/cards.repository.js'
+import { fileToDataUrl } from '../utils/file.utils.js'
 
 /** GET /api/cards/technicians – list technicians for card grid (public, no auth). */
 export async function listTechnicians(req, res) {
@@ -99,14 +100,17 @@ export async function updateEmployee(req, res) {
   }
 }
 
-/** POST /api/cards/upload-profile – upload profile image; returns path for profile_image (e.g. cards/profile-xxx.jpg). */
+/** POST /api/cards/upload-profile – upload profile image; returns base64 data URL to save in DB (no URL dependency). */
 export async function uploadProfileImage(req, res) {
   try {
-    if (!req.file || !req.file.filename) {
+    if (!req.file || !req.file.buffer) {
       return res.status(400).json({ error: 'No file uploaded. Use form field "profileImage".' })
     }
-    const pathForDb = `cards/${req.file.filename}`
-    res.status(200).json({ path: pathForDb })
+    const profileImageData = fileToDataUrl(req.file)
+    if (!profileImageData) {
+      return res.status(400).json({ error: 'Could not read image data' })
+    }
+    res.status(200).json({ profileImageData })
   } catch (err) {
     console.error('Cards uploadProfileImage:', err.message)
     res.status(500).json({ error: err.message || 'Upload failed' })
