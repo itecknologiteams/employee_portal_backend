@@ -414,7 +414,7 @@ export async function initLeaveBalanceForEmployee(employeeId) {
 
 export async function createUser(username, hashedPassword, userType, empId) {
   return executeQuery(
-    'INSERT INTO users (username, password, user_type, emp_id) VALUES ($1, $2, $3, $4)',
+    'INSERT INTO users (username, password, hashed_password, user_type, emp_id) VALUES ($1, $2, $2, $3, $4)',
     [username.trim(), hashedPassword, userType, empId]
   )
 }
@@ -473,7 +473,7 @@ export async function findUserByEmpId(empId) {
 
 export async function updateUser(uid, username, password, userType) {
   if (password) {
-    await executeQuery('UPDATE users SET username = $1, password = $2, user_type = $3 WHERE user_id = $4', [username, password, userType, uid])
+    await executeQuery('UPDATE users SET username = $1, password = $2, hashed_password = $2, user_type = $3 WHERE user_id = $4', [username, password, userType, uid])
   } else {
     await executeQuery('UPDATE users SET username = $1, user_type = $2 WHERE user_id = $3', [username, userType, uid])
   }

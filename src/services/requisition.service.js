@@ -1,7 +1,6 @@
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
 import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
-import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText } from '../../config/requisition-email-template.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import {
   getRequisitionStatus,
@@ -52,7 +51,8 @@ export async function getCategories() {
           ceo_approve: r.ceo_approve === 1,
           execution_admin: r.execution_admin === 1,
           execution_finance: r.execution_finance === 1,
-          execution_procurement: r.execution_procurement === 1
+          execution_procurement: r.execution_procurement === 1,
+          form_layout: r.form_layout || null
         }))
       }
     }
@@ -239,6 +239,15 @@ export async function createRequisition(body) {
   if (!employeeId) {
     return { error: 'employeeId is required', status: 400 }
   }
+  if (!location || typeof location !== 'string' || !String(location).trim()) {
+    return { error: 'Location is required', status: 400 }
+  }
+  if (!material || typeof material !== 'string' || !String(material).trim()) {
+    return { error: 'Material / Summary is required', status: 400 }
+  }
+  if (!requiredByDate || typeof requiredByDate !== 'string' || !String(requiredByDate).trim()) {
+    return { error: 'Required by date is required', status: 400 }
+  }
   const itemsList = Array.isArray(items) ? items : []
   const validItems = itemsList.filter(it => {
     const qty = it.itemQty ?? it.item_qty ?? 0
@@ -342,54 +351,7 @@ export async function createRequisition(body) {
     await notifyBucketChanged(reqId, bucket)
   }
 
-  try {
-    const creator = await reqRepo.getCreatorForQueue(employeeId)
-    const creatorName = creator ? `${creator.first_name || ''} ${creator.last_name || ''}`.trim() : 'Employee'
-    const requiredByStr = requiredByDate ? new Date(requiredByDate).toLocaleDateString() : 'Not set'
-    const departmentId = creator?.department_id ?? null
-    const departmentName = creator?.department_name || ''
-    const hodEmails = departmentId != null ? await reqRepo.getHodEmailsForDepartment(departmentId) : []
-    const creatorDescription = (material || '').trim() || ''
-    if (hodEmails.length > 0 && isEmailConfigured()) {
-      let items = []
-      try {
-        items = await reqRepo.getRequisitionItems(reqId) || []
-      } catch (_) {}
-      const html = buildRequisitionEmailHtml({
-        title: 'New requisition',
-        refNo,
-        creatorName,
-        requiredBy: requiredByStr,
-        departmentName,
-        bucketLabel: 'Pending HOD',
-        creatorDescription,
-        items
-      })
-      const subject = `New requisition ${refNo} – pending your approval`
-      const bodyText = buildRequisitionEmailPlainText({ refNo, creatorName, requiredBy: requiredByStr, departmentName, bucketLabel: 'Pending HOD', creatorDescription, items })
-      await sendRequisitionReminder({ to: hodEmails.join(','), subject, body: bodyText, html })
-    }
-    if (isBullMQEnabled()) {
-      const q = getQueue()
-      const payload = {
-        event: 'requisition.created',
-        requisitionId: reqId,
-        referenceNo: refNo,
-        employeeId: parseInt(employeeId, 10),
-        creatorName,
-        creatorDescription,
-        creatorEmail: process.env.TEST_REMINDER_EMAIL || creator?.email || null,
-        departmentId,
-        departmentName: creator?.department_name ?? null,
-        itemCount: validItems.length,
-        requiredByDate: requiredByDate || null,
-        createdAt: new Date().toISOString()
-      }
-      await q.add('requisition-created', payload)
-    }
-  } catch (publishErr) {
-    console.error('Requisition created but notify/add job failed:', publishErr.message)
-  }
+  // Single email per recipient: only notifyBucketChanged above sends (or queues) one email for the current bucket (HOD, committee, CEO, procurement, finance). No duplicate "new requisition" or "requisition-created" email.
 
   return { message: 'Requisition submitted successfully', requisitionId: reqId, referenceNo: refNo }
 }
@@ -1217,6 +1179,27 @@ export async function acknowledgeReceipt(body) {
   
   await reqRepo.updateHodAcknowledged(reqId, eid)
   return { message: 'Receipt acknowledged', status: 'Completed' }
+}
+
+/** Total count of requisitions pending for this employee across all buckets (for dashboard toast). */
+export async function getPendingCount(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { count: 0 }
+  const f = (r) => (Array.isArray(r) ? r.length : 0)
+  const [hod, hr, admin, committee, ceo, procurement, finance, hodAck, adminExec, creatorAck] = await Promise.all([
+    getPendingHod(employeeId),
+    getPendingHR(employeeId),
+    getPendingAdmin(employeeId),
+    getPendingCommittee(employeeId),
+    getPendingCeo(employeeId),
+    getPendingProcurement(employeeId),
+    getPendingFinance(employeeId),
+    getPendingHodAcknowledge(employeeId),
+    getPendingAdminExecution(employeeId),
+    getPendingCreatorAcknowledge(employeeId)
+  ])
+  const count = f(hod) + f(hr) + f(admin) + f(committee) + f(ceo) + f(procurement) + f(finance) + f(hodAck) + f(adminExec) + f(creatorAck)
+  return { count }
 }
 
 /** Requisitions created by this employee where execution is done but creator has not acknowledged (close ticket). */

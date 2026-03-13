@@ -3,7 +3,7 @@
 Requisition records with current status – use either **all records** or **by employee**.  
 Both endpoints support **pagination**. Filter query params can be added later (e.g. `status`, `from`, `to`, `referenceNo`).
 
-Base URL (local): `http://localhost:4000/api/requisition`
+Base URL (local): `http://localhost:3001/api/requisition`
 
 ---
 
@@ -26,8 +26,8 @@ Returns all requisitions with status and creator info. Use for admin/report view
 
 **cURL:**
 ```bash
-curl -s -X GET "http://localhost:4000/api/requisition/track-records"
-curl -s -X GET "http://localhost:4000/api/requisition/track-records?page=1&limit=10"
+curl -s -X GET "http://localhost:3001/api/requisition/track-records"
+curl -s -X GET "http://localhost:3001/api/requisition/track-records?page=1&limit=10"
 ```
 
 **Response:**
@@ -63,8 +63,8 @@ Returns requisitions for a specific employee. Use for “my cases” view.
 
 **cURL:**
 ```bash
-curl -s -X GET "http://localhost:4000/api/requisition/track-records/5"
-curl -s -X GET "http://localhost:4000/api/requisition/track-records/5?page=1&limit=10"
+curl -s -X GET "http://localhost:3001/api/requisition/track-records/5"
+curl -s -X GET "http://localhost:3001/api/requisition/track-records/5?page=1&limit=10"
 ```
 
 Replace `5` with the required employee ID.

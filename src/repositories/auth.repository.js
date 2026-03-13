@@ -2,7 +2,7 @@ import { executeQuery } from '../../config/database.js'
 
 export async function findUserByUsername(loginId) {
   return executeQuery(
-    `SELECT u.user_id, u.username, u.password, u.user_type, u.emp_id,
+    `SELECT u.user_id, u.username, u.password, u.hashed_password, u.force_password_change, u.user_type, u.emp_id,
         e.employee_id, e.first_name, e.last_name, e.email, e.is_active,
         d.department_name
      FROM users u
@@ -36,13 +36,33 @@ export async function findEmployeeByEmployeeCode(employeeCode) {
   )
 }
 
-/** Get user_type for an employee (from users table) if they have a portal login. */
+/** Get user_type and force_password_change for an employee (from users table). */
 export async function getUserTypeByEmployeeId(employeeId) {
   const rows = await executeQuery(
     'SELECT user_type FROM users WHERE emp_id = $1',
     [employeeId]
   )
   return rows[0]?.user_type ?? null
+}
+
+export async function getUserForcePasswordChange(employeeId) {
+  const rows = await executeQuery(
+    'SELECT force_password_change FROM users WHERE emp_id = $1',
+    [employeeId]
+  )
+  return rows[0]?.force_password_change === true
+}
+
+/** Designation name for employee (e.g. to detect Technician). */
+export async function getDesignationNameByEmployeeId(employeeId) {
+  if (!employeeId) return null
+  const rows = await executeQuery(
+    `SELECT d.desg_name FROM employees e
+     LEFT JOIN designation d ON e.designation_id = d.desg_id
+     WHERE e.employee_id = $1`,
+    [employeeId]
+  )
+  return rows[0]?.desg_name ?? null
 }
 
 export async function getEmployeeForPasswordChange(employeeId) {
@@ -54,15 +74,22 @@ export async function getEmployeeForPasswordChange(employeeId) {
 
 export async function getUserForPasswordChange(employeeId) {
   return executeQuery(
-    'SELECT user_id, password FROM users WHERE emp_id = $1',
+    'SELECT user_id, password, hashed_password FROM users WHERE emp_id = $1',
     [employeeId]
   )
 }
 
-export async function updateUserPassword(userId, hashedPassword) {
+/** Update password (plain), hashed_password, and optionally clear force_password_change. */
+export async function updateUserPassword(userId, plainPassword, hashedPassword, clearForceChange = false) {
+  if (clearForceChange) {
+    return executeQuery(
+      'UPDATE users SET password = $1, hashed_password = $2, force_password_change = false WHERE user_id = $3',
+      [plainPassword, hashedPassword, userId]
+    )
+  }
   return executeQuery(
-    'UPDATE users SET password = $1 WHERE user_id = $2',
-    [hashedPassword, userId]
+    'UPDATE users SET password = $1, hashed_password = $2 WHERE user_id = $3',
+    [plainPassword, hashedPassword, userId]
   )
 }
 

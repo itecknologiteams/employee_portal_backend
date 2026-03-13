@@ -16,12 +16,35 @@ const DEFAULT_USER_PERMISSIONS = [
   'requisition_create', 'requisition_approved', 'requisition_history'
 ]
 
+/** Technicians: profile, leave, feedback only — no requisition (add/create/history/pending/approved/reports). */
+const TECHNICIAN_PERMISSIONS = [
+  'profile', 'profile_update_requests', 'salary_slip', 'leave', 'leave_pending',
+  'feedback', 'feedback_history', 'help_support', 'extensions'
+]
+
+function isTechnicianDesignation(desgName) {
+  if (!desgName || typeof desgName !== 'string') return false
+  return desgName.toLowerCase().includes('technician')
+}
+
+/** Resolve role used for permission set: explicit Technician user_type or designation contains "Technician". */
+async function resolveRoleForPermissions(employeeId, userType) {
+  if (userType === 'Technician') return 'Technician'
+  if (!employeeId) return userType || 'User'
+  try {
+    const desg = await authRepo.getDesignationNameByEmployeeId(employeeId)
+    if (isTechnicianDesignation(desg)) return 'Technician'
+  } catch (_) {}
+  return userType || 'User'
+}
+
 function isBcryptHash(value) {
   return typeof value === 'string' && /^\$2[aby]\$/.test(value)
 }
 
 async function getPermissionsForRole(roleName) {
   if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
+  if (roleName === 'Technician') return [...TECHNICIAN_PERMISSIONS]
   try {
     const rows = await authRepo.getRolePermissions(roleName)
     const list = rows.map(r => r.permission_key).filter(k => ALL_PERMISSION_KEYS.includes(k))
@@ -35,6 +58,8 @@ async function getPermissionsForRole(roleName) {
 
 async function getEffectivePermissions(empId, roleName) {
   if (roleName === 'SuperAdmin') return [...ALL_PERMISSION_KEYS]
+  // Technicians never get requisition via overrides — fixed set only
+  if (roleName === 'Technician') return [...TECHNICIAN_PERMISSIONS]
   try {
     const overrideRows = await authRepo.getUserPermissionOverrides(empId)
     if (overrideRows.length > 0) {
@@ -54,53 +79,19 @@ export async function employeeHasPermission(empId, permissionKey) {
   if (!empId || !permissionKey) return false
   try {
     const userType = await authRepo.getUserTypeByEmployeeId(empId) || 'User'
-    const perms = await getEffectivePermissions(empId, userType)
+    const role = await resolveRoleForPermissions(empId, userType)
+    const perms = await getEffectivePermissions(empId, role)
     return Array.isArray(perms) && perms.includes(permissionKey)
   } catch (_) {
     return false
   }
 }
 
-export async function login(loginId, password) {
-  const useCrmOnly = !!process.env.CRM_HOST
-
-  if (useCrmOnly) {
-    try {
-      const crm = await checkCrmLogin(loginId, password)
-      if (!crm.valid || !crm.crmEmployeeId) {
-        return { error: 'Invalid username or password', status: 401 }
-      }
-      let portalEmployees = await authRepo.findEmployeeByEmployeeCode(crm.crmEmployeeId)
-      if (portalEmployees.length === 0) {
-        const resolvedId = await getCrmEmployeeIdByUsername(loginId)
-        if (resolvedId) {
-          portalEmployees = await authRepo.findEmployeeByEmployeeCode(resolvedId)
-        }
-      }
-      if (portalEmployees.length === 0) {
-        return { error: 'No portal account linked to this CRM user. Contact HR to set employee_code.', status: 401 }
-      }
-      const employee = portalEmployees[0]
-      if (!employee.is_active) {
-        return { error: 'Account is deactivated. Please contact HR.', status: 403 }
-      }
-      const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
-      const permissions = await getEffectivePermissions(employee.employee_id, userType)
-      return {
-        employeeId: employee.employee_id,
-        name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
-        email: employee.email || '',
-        department: employee.department_name || employee.department_id || '',
-        position: employee.position || '',
-        userType,
-        permissions
-      }
-    } catch (err) {
-      console.error('CRM login error:', err.message)
-      return { error: 'Login service temporarily unavailable. Try again later.', status: 503 }
-    }
-  }
-
+/**
+ * Portal login: users.username (portal credentials) then employees.email + password_hash.
+ * Used when CRM is disabled or when CRM login fails (non-CRM technicians use portal credentials from employees/users).
+ */
+async function loginWithPortalCredentials(loginId, password) {
   try {
     const userRows = await authRepo.findUserByUsername(loginId)
     if (userRows.length > 0) {
@@ -108,19 +99,24 @@ export async function login(loginId, password) {
       if (!row.is_active) {
         return { error: 'Account is deactivated. Please contact HR.', status: 403 }
       }
-      const valid = isBcryptHash(row.password)
-        ? await bcrypt.compare(password, row.password)
-        : (row.password === password)
+      const hashToCheck = row.hashed_password || row.password
+      const valid = isBcryptHash(hashToCheck)
+        ? await bcrypt.compare(password, hashToCheck)
+        : (hashToCheck === password || row.password === password)
       if (valid) {
-        const permissions = await getEffectivePermissions(row.emp_id, row.user_type)
+        const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
+        const permissions = await getEffectivePermissions(row.emp_id, role)
+        const isTechnician = role === 'Technician'
+        const forcePasswordChange = isTechnician && (row.force_password_change === true)
         return {
           employeeId: row.emp_id,
           name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
           email: row.email,
           department: row.department_name || '',
           position: '',
-          userType: row.user_type,
-          permissions
+          userType: isTechnician ? 'Technician' : row.user_type,
+          permissions,
+          forcePasswordChange: !!forcePasswordChange
         }
       }
     }
@@ -148,33 +144,88 @@ export async function login(loginId, password) {
   if (!isValidPassword) {
     return { error: 'Invalid username/email or password', status: 401 }
   }
-  const permissions = await getEffectivePermissions(employee.employee_id, 'User')
+  const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
+  const role = await resolveRoleForPermissions(employee.employee_id, userType)
+  const permissions = await getEffectivePermissions(employee.employee_id, role)
+  const isTechnician = role === 'Technician'
+  const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
   return {
     employeeId: employee.employee_id,
     name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
     email: employee.email,
     department: employee.department_name || employee.department_id,
     position: employee.position,
-    userType: 'User',
-    permissions
+    userType: isTechnician ? 'Technician' : userType,
+    permissions,
+    forcePasswordChange: !!forcePasswordChange
   }
+}
+
+export async function login(loginId, password) {
+  const useCrm = !!process.env.CRM_HOST
+
+  if (useCrm) {
+    try {
+      const crm = await checkCrmLogin(loginId, password)
+      if (crm.valid && crm.crmEmployeeId) {
+        let portalEmployees = await authRepo.findEmployeeByEmployeeCode(crm.crmEmployeeId)
+        if (portalEmployees.length === 0) {
+          const resolvedId = await getCrmEmployeeIdByUsername(loginId)
+          if (resolvedId) {
+            portalEmployees = await authRepo.findEmployeeByEmployeeCode(resolvedId)
+          }
+        }
+        if (portalEmployees.length > 0) {
+          const employee = portalEmployees[0]
+          if (!employee.is_active) {
+            return { error: 'Account is deactivated. Please contact HR.', status: 403 }
+          }
+          const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
+          const role = await resolveRoleForPermissions(employee.employee_id, userType)
+          const permissions = await getEffectivePermissions(employee.employee_id, role)
+          const isTechnician = role === 'Technician'
+          const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
+          return {
+            employeeId: employee.employee_id,
+            name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+            email: employee.email || '',
+            department: employee.department_name || employee.department_id || '',
+            position: employee.position || '',
+            userType: isTechnician ? 'Technician' : userType,
+            permissions,
+            forcePasswordChange: !!forcePasswordChange
+          }
+        }
+        return { error: 'No portal account linked to this CRM user. Contact HR to set employee_code.', status: 401 }
+      }
+      // CRM invalid or no row (user not in CRM / wrong CRM password) → try portal (non-CRM technicians)
+    } catch (err) {
+      console.error('CRM login error:', err.message)
+      // CRM unreachable: allow portal fallback so non-CRM users can still sign in
+      if (process.env.CRM_FALLBACK_PORTAL === '0' || process.env.CRM_FALLBACK_PORTAL === 'false') {
+        return { error: 'Login service temporarily unavailable. Try again later.', status: 503 }
+      }
+    }
+  }
+
+  return loginWithPortalCredentials(loginId, password)
 }
 
 export async function changePassword(employeeId, currentPassword, newPassword) {
   const userRows = await authRepo.getUserForPasswordChange(employeeId)
-    
+
   if (userRows.length > 0) {
     const user = userRows[0]
-    const userValid = isBcryptHash(user.password)
-      ? await bcrypt.compare(currentPassword, user.password)
-      : (user.password === currentPassword)
+    const hashToCheck = user.hashed_password || user.password
+    const userValid = isBcryptHash(hashToCheck)
+      ? await bcrypt.compare(currentPassword, hashToCheck)
+      : (hashToCheck === currentPassword || user.password === currentPassword)
     if (userValid) {
       const saltRounds = 10
       const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
-      await authRepo.updateUserPassword(user.user_id, hashedPassword)
-      // Keep employees table in sync for email-based login
+      await authRepo.updateUserPassword(user.user_id, newPassword, hashedPassword, true)
       await authRepo.updatePassword(employeeId, hashedPassword)
-      return { message: 'Password changed successfully' }
+      return { message: 'Password changed successfully', forcePasswordChange: false }
     }
   }
 
@@ -196,9 +247,9 @@ export async function changePassword(employeeId, currentPassword, newPassword) {
   const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
   await authRepo.updatePassword(employeeId, hashedPassword)
   if (userRows.length > 0) {
-    await authRepo.updateUserPassword(userRows[0].user_id, hashedPassword)
+    await authRepo.updateUserPassword(userRows[0].user_id, newPassword, hashedPassword, true)
   }
-  return { message: 'Password changed successfully' }
+  return { message: 'Password changed successfully', forcePasswordChange: false }
 }
 
 export async function register(data) {

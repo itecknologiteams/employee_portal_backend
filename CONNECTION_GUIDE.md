@@ -22,7 +22,7 @@ DB_DATABASE=ATS_HRMS
 DB_USER=tech
 DB_PASSWORD=tech
 DB_PORT=1433
-PORT=4000
+PORT=3001
 ```
 
 ## Testing the Connection
@@ -50,14 +50,14 @@ When you start the server, you should see:
 **Option B: Use the Test Endpoint**
 Open your browser or use curl:
 ```
-http://localhost:4000/api/test-db
+http://localhost:3001/api/test-db
 ```
 
 This will return connection status and database information.
 
 **Option C: Check Health Endpoint**
 ```
-http://localhost:4000/api/health
+http://localhost:3001/api/health
 ```
 
 ## Troubleshooting

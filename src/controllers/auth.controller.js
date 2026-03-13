@@ -11,11 +11,41 @@ export async function login(req, res) {
     if (result.error) {
       return res.status(result.status || 401).json({ error: result.error })
     }
+    req.session.user = {
+      employeeId: result.employeeId,
+      name: result.name,
+      email: result.email,
+      department: result.department,
+      position: result.position,
+      userType: result.userType,
+      permissions: result.permissions || [],
+      forcePasswordChange: result.forcePasswordChange === true
+    }
     res.json(result)
   } catch (error) {
     console.error('Login error:', error)
     res.status(500).json({ error: 'Failed to login. Please try again.' })
   }
+}
+
+/** GET /api/auth/me – return current session user or 401. Used by frontend to restore session. */
+export async function me(req, res) {
+  if (!req.session || !req.session.user) {
+    return res.status(401).json({ error: 'Not authenticated' })
+  }
+  res.json(req.session.user)
+}
+
+/** POST /api/auth/logout – destroy session. */
+export async function logout(req, res) {
+  req.session.destroy((err) => {
+    if (err) {
+      console.error('Logout session destroy error:', err)
+      return res.status(500).json({ error: 'Logout failed' })
+    }
+    res.clearCookie('emp.portal.sid')
+    res.json({ ok: true, message: 'Logged out' })
+  })
 }
 
 export async function changePassword(req, res) {

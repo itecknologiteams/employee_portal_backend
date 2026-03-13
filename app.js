@@ -1,5 +1,6 @@
 import express from 'express'
 import path from 'path'
+import session from 'express-session'
 import { fileURLToPath } from 'url'
 import cors from 'cors'
 import bodyParser from 'body-parser'
@@ -62,6 +63,20 @@ app.use(cors({
 }))
 app.use(bodyParser.json())
 app.use(bodyParser.urlencoded({ extended: true }))
+const SESSION_MAX_AGE_MS = parseInt(process.env.SESSION_MAX_AGE_MS || String(7 * 60 * 1000), 10) || 7 * 60 * 1000 // default 7 min
+
+app.use(session({
+  name: 'emp.portal.sid',
+  secret: process.env.SESSION_SECRET || 'emp-portal-session-secret-change-in-production',
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: SESSION_MAX_AGE_MS
+  }
+}))
 app.use(requestLogger)
 
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')))

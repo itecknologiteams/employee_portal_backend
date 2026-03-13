@@ -1,5 +1,45 @@
 import { executeQuery } from '../../config/database.js'
 
+/** FPIN: get existing pin_hash and lockout fields for employee (salary slip view PIN). */
+export async function getFpinByEmployeeId(employeeId) {
+  try {
+    const rows = await executeQuery(
+      'SELECT pin_hash, failed_attempts, locked_until FROM salary_fpin WHERE employee_id = $1',
+      [employeeId]
+    )
+    return rows.length ? rows[0] : null
+  } catch (e) {
+    if (e.code === '42703') {
+      const rows = await executeQuery('SELECT pin_hash FROM salary_fpin WHERE employee_id = $1', [employeeId])
+      return rows.length ? { ...rows[0], failed_attempts: 0, locked_until: null } : null
+    }
+    throw e
+  }
+}
+
+/** FPIN: update failed_attempts and locked_until after verify attempt. */
+export async function updateFpinAttempts(employeeId, failedAttempts, lockedUntil) {
+  try {
+    await executeQuery(
+      'UPDATE salary_fpin SET failed_attempts = $2, locked_until = $3, updated_at = NOW() WHERE employee_id = $1',
+      [employeeId, failedAttempts, lockedUntil]
+    )
+  } catch (e) {
+    if (e.code === '42703') return // columns not yet migrated
+    throw e
+  }
+}
+
+/** FPIN: set or update hashed PIN for employee. */
+export async function upsertFpin(employeeId, pinHash) {
+  await executeQuery(
+    `INSERT INTO salary_fpin (employee_id, pin_hash, updated_at)
+     VALUES ($1, $2, NOW())
+     ON CONFLICT (employee_id) DO UPDATE SET pin_hash = $2, updated_at = NOW()`,
+    [employeeId, pinHash]
+  )
+}
+
 /** Get hr_emp_id(s) for portal employee (employee_code often matches legacy hr_emp_id). */
 export async function getHrEmpIdsForEmployee(employeeId) {
   const rows = await executeQuery(

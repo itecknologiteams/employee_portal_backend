@@ -1,6 +1,6 @@
 import * as rolePermissionsRepo from '../repositories/rolePermissions.repository.js'
 
-const ROLES = ['Admin', 'Staff', 'User']
+const ROLES = ['Admin', 'Staff', 'User', 'Technician']
 const PERMISSION_KEYS = [
   'dashboard',
   'profile',
@@ -48,15 +48,26 @@ function permKeyPresentInPayload(perms, key) {
   return key in perms || toCamelCase(key) in perms
 }
 
+/** Match DB role name to canonical ROLES (case-insensitive) so Technician is always returned correctly. */
+function matchRoleName(roleName) {
+  if (!roleName || typeof roleName !== 'string') return null
+  const lower = roleName.trim().toLowerCase()
+  return ROLES.find((r) => r.toLowerCase() === lower) || null
+}
+
 function buildByRoleFromRows(rows) {
   const byRole = {}
   ROLES.forEach(r => { byRole[r] = {} })
   PERMISSION_KEYS.forEach(k => {
     ROLES.forEach(r => { byRole[r][k] = false })
   })
-  rows.forEach(({ role_name, permission_key, allowed }) => {
-    if (byRole[role_name] && PERMISSION_KEYS.includes(permission_key)) {
-      byRole[role_name][permission_key] = !!allowed
+  rows.forEach((row) => {
+    const roleName = row.role_name ?? row.roleName ?? row.role
+    const permissionKey = row.permission_key ?? row.permissionKey ?? row.permission
+    const allowed = row.allowed === true || row.allowed === 'true'
+    const role = matchRoleName(roleName)
+    if (role && byRole[role] && PERMISSION_KEYS.includes(permissionKey)) {
+      byRole[role][permissionKey] = !!allowed
     }
   })
   return byRole

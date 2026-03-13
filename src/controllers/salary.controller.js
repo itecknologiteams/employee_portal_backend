@@ -113,3 +113,43 @@ export async function createOldSlips(req, res) {
     res.status(500).json({ error: error.message || 'Failed to create old salary slips' })
   }
 }
+
+/** GET /fpin/status/:employeeId – has the employee set a FPIN? */
+export async function getFpinStatus(req, res) {
+  try {
+    const { employeeId } = req.params
+    const result = await salaryService.getFpinStatus(employeeId)
+    res.json(result)
+  } catch (error) {
+    console.error('FPIN status error:', error)
+    res.status(500).json({ error: 'Failed to get FPIN status' })
+  }
+}
+
+/** POST /fpin/set – body: { employeeId, pin }. Set or update FPIN (4–8 digits). */
+export async function setFpin(req, res) {
+  try {
+    const { employeeId, pin } = req.body
+    if (!employeeId) return res.status(400).json({ error: 'employeeId is required' })
+    const result = await salaryService.setFpin(employeeId, pin)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('FPIN set error:', error)
+    res.status(500).json({ error: 'Failed to set FPIN' })
+  }
+}
+
+/** POST /fpin/verify – body: { employeeId, pin }. Verify FPIN for viewing salary. */
+export async function verifyFpin(req, res) {
+  try {
+    const { employeeId, pin } = req.body
+    if (!employeeId) return res.status(400).json({ error: 'employeeId is required' })
+    const result = await salaryService.verifyFpin(employeeId, pin)
+    if (result.error) return res.status(result.status || 401).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('FPIN verify error:', error)
+    res.status(500).json({ error: 'Failed to verify FPIN' })
+  }
+}

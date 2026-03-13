@@ -138,6 +138,16 @@ export async function getReportAll(req, res) {
   }
 }
 
+export async function getPendingCount(req, res) {
+  try {
+    const result = await requisitionService.getPendingCount(req.params.employeeId)
+    res.json(result)
+  } catch (error) {
+    console.error('Pending count error:', error)
+    res.status(500).json({ count: 0, error: 'Failed to fetch pending count' })
+  }
+}
+
 export async function getPendingHod(req, res) {
   try {
     const result = await requisitionService.getPendingHod(req.params.employeeId)

@@ -1,3 +1,4 @@
+import bcrypt from 'bcryptjs'
 import * as salaryRepo from '../repositories/salary.repository.js'
 
 function monthLabelFromDate(date) {
@@ -447,4 +448,52 @@ export async function getSalarySlipForDownload(rawId, employeeId) {
       slip
     }
   }
+}
+
+// ---------- FPIN (salary slip view PIN) ----------
+const FPIN_SALT_ROUNDS = 10
+
+/** GET status: has the employee set a FPIN? */
+export async function getFpinStatus(employeeId) {
+  const row = await salaryRepo.getFpinByEmployeeId(employeeId)
+  return { hasSet: !!row }
+}
+
+/** POST set: set or update FPIN. Body: { employeeId, pin } – pin 4–8 digits. */
+export async function setFpin(employeeId, pin) {
+  const p = String(pin).trim()
+  if (!/^\d{4,8}$/.test(p)) {
+    return { error: 'FPIN must be 4 to 8 digits', status: 400 }
+  }
+  const pinHash = await bcrypt.hash(p, FPIN_SALT_ROUNDS)
+  await salaryRepo.upsertFpin(employeeId, pinHash)
+  return { message: 'FPIN set successfully' }
+}
+
+const FPIN_MAX_ATTEMPTS = 5
+const FPIN_LOCK_MINUTES = 3
+
+/** POST verify: verify FPIN to allow viewing salary. Body: { employeeId, pin }. 5 wrong attempts -> lock 3 min. */
+export async function verifyFpin(employeeId, pin) {
+  const row = await salaryRepo.getFpinByEmployeeId(employeeId)
+  if (!row) return { error: 'FPIN not set', status: 404 }
+  const now = new Date()
+  const lockedUntil = row.locked_until ? new Date(row.locked_until) : null
+  if (lockedUntil && lockedUntil > now) {
+    const mins = Math.ceil((lockedUntil - now) / 60000)
+    return { error: `Too many wrong attempts. Try again after ${mins} minute(s).`, status: 429 }
+  }
+  const match = await bcrypt.compare(String(pin).trim(), row.pin_hash)
+  if (match) {
+    await salaryRepo.updateFpinAttempts(employeeId, 0, null)
+    return { verified: true }
+  }
+  const failed = (row.failed_attempts || 0) + 1
+  const lockUntil = failed >= FPIN_MAX_ATTEMPTS ? new Date(now.getTime() + FPIN_LOCK_MINUTES * 60 * 1000) : null
+  await salaryRepo.updateFpinAttempts(employeeId, failed, lockUntil)
+  const remaining = Math.max(0, FPIN_MAX_ATTEMPTS - failed)
+  if (remaining === 0) {
+    return { error: `Too many wrong attempts. Try again after ${FPIN_LOCK_MINUTES} minutes.`, status: 429 }
+  }
+  return { error: `Invalid FPIN. ${remaining} attempt(s) remaining.`, status: 401, remainingAttempts: remaining }
 }

@@ -102,7 +102,9 @@ CREATE TABLE IF NOT EXISTS users (
     user_id SERIAL PRIMARY KEY,
     username VARCHAR(25) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
-    user_type VARCHAR(20) NOT NULL CHECK (user_type IN ('Admin', 'SuperAdmin', 'Staff', 'User')),
+    hashed_password VARCHAR(255),
+    force_password_change BOOLEAN NOT NULL DEFAULT false,
+    user_type VARCHAR(20) NOT NULL CHECK (user_type IN ('Admin', 'SuperAdmin', 'Staff', 'User', 'Technician')),
     emp_id INTEGER NOT NULL REFERENCES employees(employee_id) ON DELETE CASCADE,
     UNIQUE(emp_id)
 );

@@ -353,3 +353,48 @@ export async function getUserByEmployee(req, res) {
     handleError(error, res, 'Failed to fetch user')
   }
 }
+
+// Requisition Category Management (admin)
+export async function listRequisitionCategories(req, res) {
+  try {
+    const rows = await adminService.listRequisitionCategoriesAdmin()
+    res.json(rows)
+  } catch (error) {
+    handleError(error, res, 'Failed to fetch requisition categories')
+  }
+}
+
+export async function createRequisitionCategory(req, res) {
+  try {
+    const { name, ...flags } = req.body
+    if (!name || !String(name).trim()) return res.status(400).json({ error: 'Category name is required' })
+    const result = await adminService.createRequisitionCategoryAdmin(String(name).trim(), flags)
+    res.status(201).json(result)
+  } catch (error) {
+    if (error.code === '23505') return res.status(409).json({ error: 'Category with this name already exists' })
+    handleError(error, res, 'Failed to create category')
+  }
+}
+
+export async function updateRequisitionCategory(req, res) {
+  try {
+    const { id } = req.params
+    const { name, form_layout, ...flags } = req.body
+    const result = await adminService.updateRequisitionCategoryAdmin(id, name || null, { ...flags, form_layout })
+    if (!result) return res.status(404).json({ error: 'Category not found' })
+    res.json(result)
+  } catch (error) {
+    handleError(error, res, 'Failed to update category')
+  }
+}
+
+export async function deleteRequisitionCategory(req, res) {
+  try {
+    const { id } = req.params
+    const deleted = await adminService.deleteRequisitionCategoryAdmin(id)
+    if (!deleted) return res.status(404).json({ error: 'Category not found' })
+    res.json({ message: 'Category deleted' })
+  } catch (error) {
+    handleError(error, res, 'Failed to delete category')
+  }
+}

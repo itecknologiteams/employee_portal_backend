@@ -853,13 +853,14 @@ export async function getCreatorEmailByReqId(reqId) {
   }
 }
 
-/** Requisition categories table (flow flags). */
+/** Requisition categories table (flow flags + optional form_layout for drag-drop form). */
 export async function getAllRequisitionCategories() {
   return executeQuery(
     `SELECT id, name, hod_for_info, hod_approval, hr_finance, committee_review,
       department_admin, department_finance, department_procurement,
       quotations, final_committee, ceo_approve,
-      execution_admin, execution_finance, execution_procurement
+      execution_admin, execution_finance, execution_procurement,
+      form_layout
      FROM requisition_category ORDER BY name`
   )
 }
@@ -875,6 +876,104 @@ export async function getRequisitionCategoryByName(name) {
     [String(name).trim()]
   )
   return rows[0] || null
+}
+
+/** Admin: create requisition category; insert default stage behaviors (skip) for all flow stages. */
+export async function createRequisitionCategory(name, flags = {}) {
+  const n = String(name).trim()
+  if (!n) throw new Error('Category name is required')
+  const rows = await executeQuery(
+    `INSERT INTO requisition_category (name, hod_for_info, hod_approval, hr_finance, committee_review,
+      department_admin, department_finance, department_procurement, quotations, final_committee, ceo_approve,
+      execution_admin, execution_finance, execution_procurement)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     RETURNING id, name, hod_for_info, hod_approval, hr_finance, committee_review,
+       department_admin, department_finance, department_procurement,
+       quotations, final_committee, ceo_approve,
+       execution_admin, execution_finance, execution_procurement`,
+    [
+      n,
+      flags.hod_for_info ? 1 : 0,
+      flags.hod_approval ? 1 : 0,
+      flags.hr_finance ? 1 : 0,
+      flags.committee_review ? 1 : 0,
+      flags.department_admin ? 1 : 0,
+      flags.department_finance ? 1 : 0,
+      flags.department_procurement ? 1 : 0,
+      flags.quotations ? 1 : 0,
+      flags.final_committee ? 1 : 0,
+      flags.ceo_approve ? 1 : 0,
+      flags.execution_admin ? 1 : 0,
+      flags.execution_finance ? 1 : 0,
+      flags.execution_procurement ? 1 : 0
+    ]
+  )
+  const cat = rows[0]
+  if (cat) {
+    try {
+      const stages = await getFlowStages()
+      for (const s of stages || []) {
+        await executeQuery(
+          `INSERT INTO requisition_category_stage (category_id, flow_stage_id, behavior)
+           VALUES ($1, $2, 'skip') ON CONFLICT (category_id, flow_stage_id) DO NOTHING`,
+          [cat.id, s.id]
+        )
+      }
+    } catch (e) {
+      if (e.code !== '42P01') throw e
+    }
+  }
+  return cat
+}
+
+/** Admin: update requisition category by id. flags may include form_layout (JSON array). */
+export async function updateRequisitionCategory(id, name, flags = {}) {
+  const { form_layout: formLayout, ...restFlags } = flags
+  const rows = await executeQuery(
+    `UPDATE requisition_category SET
+       name = COALESCE($2, name),
+       hod_for_info = COALESCE($3, hod_for_info),
+       hod_approval = COALESCE($4, hod_approval),
+       hr_finance = COALESCE($5, hr_finance),
+       committee_review = COALESCE($6, committee_review),
+       department_admin = COALESCE($7, department_admin),
+       department_finance = COALESCE($8, department_finance),
+       department_procurement = COALESCE($9, department_procurement),
+       quotations = COALESCE($10, quotations),
+       final_committee = COALESCE($11, final_committee),
+       ceo_approve = COALESCE($12, ceo_approve),
+       execution_admin = COALESCE($13, execution_admin),
+       execution_finance = COALESCE($14, execution_finance),
+       execution_procurement = COALESCE($15, execution_procurement),
+       form_layout = COALESCE($16, form_layout)
+     WHERE id = $1 RETURNING id, name, form_layout`,
+    [
+      id,
+      name != null ? String(name).trim() : null,
+      restFlags.hod_for_info !== undefined ? (restFlags.hod_for_info ? 1 : 0) : null,
+      restFlags.hod_approval !== undefined ? (restFlags.hod_approval ? 1 : 0) : null,
+      restFlags.hr_finance !== undefined ? (restFlags.hr_finance ? 1 : 0) : null,
+      restFlags.committee_review !== undefined ? (restFlags.committee_review ? 1 : 0) : null,
+      restFlags.department_admin !== undefined ? (restFlags.department_admin ? 1 : 0) : null,
+      restFlags.department_finance !== undefined ? (restFlags.department_finance ? 1 : 0) : null,
+      restFlags.department_procurement !== undefined ? (restFlags.department_procurement ? 1 : 0) : null,
+      restFlags.quotations !== undefined ? (restFlags.quotations ? 1 : 0) : null,
+      restFlags.final_committee !== undefined ? (restFlags.final_committee ? 1 : 0) : null,
+      restFlags.ceo_approve !== undefined ? (restFlags.ceo_approve ? 1 : 0) : null,
+      restFlags.execution_admin !== undefined ? (restFlags.execution_admin ? 1 : 0) : null,
+      restFlags.execution_finance !== undefined ? (restFlags.execution_finance ? 1 : 0) : null,
+      restFlags.execution_procurement !== undefined ? (restFlags.execution_procurement ? 1 : 0) : null,
+      formLayout !== undefined ? (Array.isArray(formLayout) ? JSON.stringify(formLayout) : (typeof formLayout === 'string' ? formLayout : JSON.stringify(formLayout))) : null
+    ]
+  )
+  return rows[0] || null
+}
+
+/** Admin: delete requisition category (and its stage rows). Requisitions with this category keep req_category text. */
+export async function deleteRequisitionCategory(id) {
+  await executeQuery('DELETE FROM requisition_category_stage WHERE category_id = $1', [id])
+  const rows = await executeQuery('DELETE FROM requisition_category WHERE id = $1 RETURNING id', [id])
+  return rows.length > 0
 }
 
 // ---------- DB-driven flow (with short TTL cache to avoid repeated identical queries) ----------

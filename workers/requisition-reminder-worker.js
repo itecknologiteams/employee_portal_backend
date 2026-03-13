@@ -270,7 +270,7 @@ export async function processRequisitionReminders() {
 }
 
 /**
- * Handle requisition-created job: e.g. notify HOD of new requisition.
+ * Handle requisition-created job (legacy): not used on create anymore; create flow sends only one email via requisition-bucket-changed. Kept so existing queued jobs still run.
  */
 export async function handleRequisitionCreated(data) {
   const refNo = data.referenceNo || '#' + data.requisitionId

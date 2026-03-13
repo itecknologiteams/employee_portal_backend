@@ -37,4 +37,9 @@ router.get('/superadmin-status', adminController.getSuperAdminStatus)
 router.get('/role-defaults/:role', adminController.getRoleDefaults)
 router.get('/user-by-employee/:empId', adminController.getUserByEmployee)
 
+router.get('/requisition-categories', adminController.listRequisitionCategories)
+router.post('/requisition-categories', adminController.createRequisitionCategory)
+router.put('/requisition-categories/:id', adminController.updateRequisitionCategory)
+router.delete('/requisition-categories/:id', adminController.deleteRequisitionCategory)
+
 export default router

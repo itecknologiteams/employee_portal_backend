@@ -19,6 +19,7 @@ router.get('/track-records/:employeeId', requisitionController.getTrackRecordsBy
 router.post('/create', requisitionController.createRequisition)
 router.get('/debug/:employeeId', requisitionController.getDebug)
 router.get('/report/all/:employeeId', requisitionController.getReportAll)
+router.get('/pending/count/:employeeId', requisitionController.getPendingCount)
 router.get('/pending/hod/:employeeId', requisitionController.getPendingHod)
 router.get('/approved-by-hod/:employeeId', requisitionController.getApprovedByHod)
 router.post('/approve/hod', requisitionController.approveHod)

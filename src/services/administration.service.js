@@ -1,5 +1,6 @@
 import bcrypt from 'bcryptjs'
 import * as adminRepo from '../repositories/administration.repository.js'
+import * as reqRepo from '../repositories/requisition.repository.js'
 
 const PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
@@ -10,7 +11,13 @@ const PERMISSION_KEYS = [
   'payroll', 'payroll_gross_salaries', 'payroll_other_allowances', 'payroll_deductions', 'payroll_incentives'
 ]
 
-const ROLES_WITH_PERMISSIONS = ['Admin', 'Staff', 'User']
+const ROLES_WITH_PERMISSIONS = ['Admin', 'Staff', 'User', 'Technician']
+
+/** Technician default permissions (no requisition) — keep in sync with auth.service TECHNICIAN_PERMISSIONS */
+const TECHNICIAN_ROLE_DEFAULTS = [
+  'profile', 'profile_update_requests', 'salary_slip', 'leave', 'leave_pending',
+  'feedback', 'feedback_history', 'help_support', 'extensions'
+]
 
 export async function listDepartments() {
   return adminRepo.listDepartments()
@@ -290,7 +297,7 @@ export async function createEmployee(body) {
   if (hodIds.length > 0) await adminRepo.setHodDepartments(newId, hodIds)
   if (portalUsername && portalUsername.trim() && portalPassword && portalUserType) {
     try {
-      const uType = ['Admin', 'SuperAdmin', 'Staff', 'User'].includes(portalUserType) ? portalUserType : 'User'
+      const uType = ['Admin', 'SuperAdmin', 'Staff', 'User', 'Technician'].includes(portalUserType) ? portalUserType : 'User'
       if (uType === 'SuperAdmin') {
         const exists = await adminRepo.checkSuperAdminExists()
         if (exists) {
@@ -346,7 +353,7 @@ export async function updateEmployee(id, body) {
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {
       const existingUser = await adminRepo.findUserByEmpId(id)
-      const uType = portalUserType && ['Admin', 'SuperAdmin', 'Staff', 'User'].includes(portalUserType) ? portalUserType : 'User'
+        const uType = portalUserType && ['Admin', 'SuperAdmin', 'Staff', 'User', 'Technician'].includes(portalUserType) ? portalUserType : 'User'
       if (uType === 'SuperAdmin') {
         const otherExists = await adminRepo.checkSuperAdminExists(id)
         if (otherExists) {
@@ -413,6 +420,10 @@ export async function getRoleDefaults(role) {
     PERMISSION_KEYS.forEach(k => { roleDefaults[k] = true })
     return { roleDefaults }
   }
+  if (role === 'Technician') {
+    TECHNICIAN_ROLE_DEFAULTS.forEach(k => { if (PERMISSION_KEYS.includes(k)) roleDefaults[k] = true })
+    return { roleDefaults }
+  }
   if (!ROLES_WITH_PERMISSIONS.includes(role)) {
     return { roleDefaults }
   }
@@ -439,11 +450,16 @@ export async function getUserByEmployee(empId) {
       permissionOverrides = {}
       overrideRows.forEach(r => { permissionOverrides[r.permission_key] = r.allowed })
     }
-    const roleRows = await adminRepo.getRolePermissions(user.userType)
-    PERMISSION_KEYS.forEach(k => { roleDefaults[k] = false })
-    roleRows.forEach(r => {
-      if (PERMISSION_KEYS.includes(r.permission_key)) roleDefaults[r.permission_key] = r.allowed
-    })
+    if (user.userType === 'Technician') {
+      PERMISSION_KEYS.forEach(k => { roleDefaults[k] = false })
+      TECHNICIAN_ROLE_DEFAULTS.forEach(k => { if (PERMISSION_KEYS.includes(k)) roleDefaults[k] = true })
+    } else {
+      const roleRows = await adminRepo.getRolePermissions(user.userType)
+      PERMISSION_KEYS.forEach(k => { roleDefaults[k] = false })
+      roleRows.forEach(r => {
+        if (PERMISSION_KEYS.includes(r.permission_key)) roleDefaults[r.permission_key] = r.allowed
+      })
+    }
   } catch (err) {
     if (err.code !== '42P01') throw err
   }
@@ -462,4 +478,21 @@ async function applyPermissionOverrides(empId, overrides) {
     if (!PERMISSION_KEYS.includes(key)) continue
     await adminRepo.upsertUserPermission(empId, key, !!overrides[key])
   }
+}
+
+// ---------- Requisition Category Management (admin) ----------
+export async function listRequisitionCategoriesAdmin() {
+  return reqRepo.getAllRequisitionCategories()
+}
+
+export async function createRequisitionCategoryAdmin(name, flags = {}) {
+  return reqRepo.createRequisitionCategory(name, flags)
+}
+
+export async function updateRequisitionCategoryAdmin(id, name, flags) {
+  return reqRepo.updateRequisitionCategory(id, name, flags)
+}
+
+export async function deleteRequisitionCategoryAdmin(id) {
+  return reqRepo.deleteRequisitionCategory(id)
 }
