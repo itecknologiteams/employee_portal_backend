@@ -7,7 +7,7 @@ import os from 'os'
 
 dotenv.config()
 
-const PORT = process.env.PORT || 3001
+const PORT = process.env.PORT || 4000
 
 const getNetworkIP = () => {
   const interfaces = os.networkInterfaces()

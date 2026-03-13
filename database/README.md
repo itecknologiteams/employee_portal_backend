@@ -71,7 +71,7 @@ You have two options:
 #### Option A: Use the Register Endpoint
 
 ```bash
-POST http://localhost:3001/api/auth/register
+POST http://localhost:4000/api/auth/register
 Content-Type: application/json
 
 {

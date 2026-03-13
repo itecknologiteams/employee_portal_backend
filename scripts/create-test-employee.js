@@ -76,7 +76,7 @@ async function createTestEmployee() {
           bonuses, 
           deductions, 
           net_salary
-        ) VALUES ($1, DATE_TRUNC('month', CURRENT_DATE), 3001, 1000, 500, 0, 5500)`,
+        ) VALUES ($1, DATE_TRUNC('month', CURRENT_DATE), 4000, 1000, 500, 0, 5500)`,
         [employee.employee_id]
       )
       console.log('✅ Sample salary slip created')
