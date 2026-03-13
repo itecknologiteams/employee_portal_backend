@@ -476,7 +476,7 @@ const FPIN_LOCK_MINUTES = 3
 /** POST verify: verify FPIN to allow viewing salary. Body: { employeeId, pin }. 5 wrong attempts -> lock 3 min. */
 export async function verifyFpin(employeeId, pin) {
   const row = await salaryRepo.getFpinByEmployeeId(employeeId)
-  if (!row) return { error: 'FPIN not set', status: 404 }
+  if (!row) return { error: 'FPIN not set', status: 400 }
   const now = new Date()
   const lockedUntil = row.locked_until ? new Date(row.locked_until) : null
   if (lockedUntil && lockedUntil > now) {
