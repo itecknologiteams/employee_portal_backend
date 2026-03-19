@@ -252,8 +252,9 @@ const employeesSelect = `
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
     e.city_id, c.city_name,
     e.is_active, e.join_date,
-    e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.emergency_contact_number,
-    e.personal_cell_number
+    e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
+    e.religion, e.grade, e.region, e.bio
 `
 const employeesFullQuery = employeesSelect + employeesBaseFrom + ` ORDER BY e.first_name, e.last_name `
 
@@ -306,7 +307,7 @@ export async function listEmployeesSearchPaginated(searchPattern, limit, offset,
       `
       const qMinimal = selectMinimal + where + ` ORDER BY e.first_name, e.last_name LIMIT $${limitIdx} OFFSET $${offsetIdx} `
       const rows = await executeQuery(qMinimal, params)
-      return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null }))
+      return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null, join_date: null, employee_extension: null, religion: null, grade: null, cnic_issue_date: null, cnic_expiry_date: null, region: null, bio: null }))
     }
     throw err
   }
@@ -341,7 +342,7 @@ export async function listEmployees() {
           FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id
           ORDER BY e.first_name, e.last_name
         `)
-        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null }))
+        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null, join_date: null, employee_extension: null, religion: null, grade: null, cnic_issue_date: null, cnic_expiry_date: null, region: null, bio: null }))
       }
     }
     throw err
@@ -380,7 +381,7 @@ export async function createEmployeeMinimal(params) {
 
 /** Update only personal-detail columns (for use after create; columns may not exist if migration not run). */
 export async function updateEmployeePersonalDetails(id, data) {
-  const { address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber, personalCellNumber } = data
+  const { address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, cnicIssueDate, cnicExpiryDate, emergencyContactNumber, personalCellNumber, employeeExtension, religion, grade, region, bio } = data
   const setClauses = []
   const params = []
   let idx = 1
@@ -390,8 +391,15 @@ export async function updateEmployeePersonalDetails(id, data) {
   if (gender !== undefined) { setClauses.push(`gender = $${idx}`); params.push(gender?.trim() || null); idx++ }
   if (maritalStatus !== undefined) { setClauses.push(`marital_status = $${idx}`); params.push(maritalStatus?.trim() || null); idx++ }
   if (cnicNumber !== undefined) { setClauses.push(`cnic_number = $${idx}`); params.push(cnicNumber?.trim() || null); idx++ }
+  if (cnicIssueDate !== undefined) { setClauses.push(`cnic_issue_date = $${idx}`); params.push(cnicIssueDate || null); idx++ }
+  if (cnicExpiryDate !== undefined) { setClauses.push(`cnic_expiry_date = $${idx}`); params.push(cnicExpiryDate || null); idx++ }
   if (emergencyContactNumber !== undefined) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(emergencyContactNumber?.trim() || null); idx++ }
   if (personalCellNumber !== undefined) { setClauses.push(`personal_cell_number = $${idx}`); params.push(personalCellNumber ? String(personalCellNumber).trim() : null); idx++ }
+  if (employeeExtension !== undefined) { setClauses.push(`employee_extension = $${idx}`); params.push(employeeExtension ? String(employeeExtension).trim() : null); idx++ }
+  if (religion !== undefined) { setClauses.push(`religion = $${idx}`); params.push(religion?.trim() || null); idx++ }
+  if (grade !== undefined) { setClauses.push(`grade = $${idx}`); params.push(grade?.trim() || null); idx++ }
+  if (region !== undefined) { setClauses.push(`region = $${idx}`); params.push(region?.trim() || null); idx++ }
+  if (bio !== undefined) { setClauses.push(`bio = $${idx}`); params.push(bio?.trim() || null); idx++ }
   if (params.length === 0) return
   params.push(id)
   await executeQuery(`UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`, params).catch((err) => {
@@ -423,8 +431,9 @@ export async function createUser(username, hashedPassword, userType, empId, forc
 
 export async function updateEmployee(id, updates) {
   const {
-    firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive,
-    address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber, personalCellNumber
+    firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive, joinDate,
+    address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, cnicIssueDate, cnicExpiryDate, emergencyContactNumber, personalCellNumber,
+    employeeExtension, religion, grade, region, bio
   } = updates
   let params = [
     firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
@@ -441,14 +450,22 @@ export async function updateEmployee(id, updates) {
     params.push(isActive)
     idx++
   }
+  if (joinDate !== undefined) { setClauses.push(`join_date = $${idx}`); params.push(joinDate || null); idx++ }
   if (address !== undefined) { setClauses.push(`address = $${idx}`); params.push(address?.trim() || null); idx++ }
   if (dateOfBirth !== undefined) { setClauses.push(`date_of_birth = $${idx}`); params.push(dateOfBirth || null); idx++ }
   if (fatherName !== undefined) { setClauses.push(`father_name = $${idx}`); params.push(fatherName?.trim() || null); idx++ }
   if (gender !== undefined) { setClauses.push(`gender = $${idx}`); params.push(gender?.trim() || null); idx++ }
   if (maritalStatus !== undefined) { setClauses.push(`marital_status = $${idx}`); params.push(maritalStatus?.trim() || null); idx++ }
   if (cnicNumber !== undefined) { setClauses.push(`cnic_number = $${idx}`); params.push(cnicNumber?.trim() || null); idx++ }
+  if (cnicIssueDate !== undefined) { setClauses.push(`cnic_issue_date = $${idx}`); params.push(cnicIssueDate || null); idx++ }
+  if (cnicExpiryDate !== undefined) { setClauses.push(`cnic_expiry_date = $${idx}`); params.push(cnicExpiryDate || null); idx++ }
   if (emergencyContactNumber !== undefined) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(emergencyContactNumber?.trim() || null); idx++ }
   if (personalCellNumber !== undefined) { setClauses.push(`personal_cell_number = $${idx}`); params.push(personalCellNumber ? String(personalCellNumber).trim() : null); idx++ }
+  if (employeeExtension !== undefined) { setClauses.push(`employee_extension = $${idx}`); params.push(employeeExtension ? String(employeeExtension).trim() : null); idx++ }
+  if (religion !== undefined) { setClauses.push(`religion = $${idx}`); params.push(religion?.trim() || null); idx++ }
+  if (grade !== undefined) { setClauses.push(`grade = $${idx}`); params.push(grade?.trim() || null); idx++ }
+  if (region !== undefined) { setClauses.push(`region = $${idx}`); params.push(region?.trim() || null); idx++ }
+  if (bio !== undefined) { setClauses.push(`bio = $${idx}`); params.push(bio?.trim() || null); idx++ }
   params.push(id)
   await executeQuery(
     `UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`,
@@ -497,8 +514,9 @@ export async function getEmployeeById(id) {
         e.station_id, s.station_name,
         e.city_id, c.city_name,
         e.is_active, e.join_date,
-        e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.emergency_contact_number,
-        e.personal_cell_number
+        e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+        e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
+        e.religion, e.grade, e.region, e.bio
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.department_id
       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
@@ -519,7 +537,7 @@ export async function getEmployeeById(id) {
         LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
         WHERE e.employee_id = $1
       `, [id])
-      if (r.length) Object.assign(r[0], { station_id: null, station_name: null, city_name: null, city_id: null, address: null, date_of_birth: null, father_name: null, gender: null, marital_status: null, cnic_number: null, emergency_contact_number: null, personal_cell_number: null })
+      if (r.length) Object.assign(r[0], { station_id: null, station_name: null, city_name: null, city_id: null, address: null, date_of_birth: null, father_name: null, gender: null, marital_status: null, cnic_number: null, cnic_issue_date: null, cnic_expiry_date: null, emergency_contact_number: null, employee_extension: null, personal_cell_number: null, religion: null, grade: null, region: null, bio: null, join_date: null })
       return r
     }
     throw err

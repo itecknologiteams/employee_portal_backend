@@ -249,7 +249,7 @@ export async function createEmployee(body) {
     err.status = 409
     throw err
   }
-  const joinDate = new Date()
+  const joinDate = body.joinDate ? new Date(body.joinDate) : new Date()
   const code = (employeeCode && String(employeeCode).trim()) || `EMP-${Date.now()}`
   const addressVal = body.address != null ? String(body.address).trim() : null
   const paramsFull = [
@@ -291,8 +291,15 @@ export async function createEmployee(body) {
     gender: body.gender,
     maritalStatus: body.maritalStatus,
     cnicNumber: body.cnicNumber,
+    cnicIssueDate: body.cnicIssueDate,
+    cnicExpiryDate: body.cnicExpiryDate,
     emergencyContactNumber: body.emergencyContactNumber,
-    personalCellNumber: body.personalCellNumber
+    personalCellNumber: body.personalCellNumber,
+    employeeExtension: body.employeeExtension,
+    religion: body.religion,
+    grade: body.grade,
+    region: body.region,
+    bio: body.bio
   }).catch(() => {})
   const hodIds = Array.isArray(hodDepartmentIds) ? hodDepartmentIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)) : []
   if (hodIds.length > 0) await adminRepo.setHodDepartments(newId, hodIds)
@@ -343,15 +350,22 @@ export async function updateEmployee(id, body) {
   }
   await adminRepo.updateEmployee(id, {
     firstName, lastName, email, phone, departmentId, designationId, employeeTypeId,
-    stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive,
+    stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive, joinDate: body.joinDate,
     address: body.address,
     dateOfBirth: body.dateOfBirth,
     fatherName: body.fatherName,
     gender: body.gender,
     maritalStatus: body.maritalStatus,
     cnicNumber: body.cnicNumber,
+    cnicIssueDate: body.cnicIssueDate,
+    cnicExpiryDate: body.cnicExpiryDate,
     emergencyContactNumber: body.emergencyContactNumber,
-    personalCellNumber: body.personalCellNumber
+    personalCellNumber: body.personalCellNumber,
+    employeeExtension: body.employeeExtension,
+    religion: body.religion,
+    grade: body.grade,
+    region: body.region,
+    bio: body.bio
   })
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {
