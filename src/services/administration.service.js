@@ -291,13 +291,14 @@ export async function createEmployee(body) {
     gender: body.gender,
     maritalStatus: body.maritalStatus,
     cnicNumber: body.cnicNumber,
-    emergencyContactNumber: body.emergencyContactNumber
+    emergencyContactNumber: body.emergencyContactNumber,
+    personalCellNumber: body.personalCellNumber
   }).catch(() => {})
   const hodIds = Array.isArray(hodDepartmentIds) ? hodDepartmentIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)) : []
   if (hodIds.length > 0) await adminRepo.setHodDepartments(newId, hodIds)
   if (portalUsername && portalUsername.trim() && portalPassword && portalUserType) {
     try {
-      const uType = ['Admin', 'SuperAdmin', 'Staff', 'User', 'Technician'].includes(portalUserType) ? portalUserType : 'User'
+      const uType = ['Admin', 'SuperAdmin', 'Staff', 'User', 'Technician', 'CRM User', 'Non-CRM User'].includes(portalUserType) ? portalUserType : 'User'
       if (uType === 'SuperAdmin') {
         const exists = await adminRepo.checkSuperAdminExists()
         if (exists) {
@@ -307,7 +308,8 @@ export async function createEmployee(body) {
         }
       }
       const hash = await bcrypt.hash(portalPassword, 10)
-      await adminRepo.createUser(portalUsername.trim(), hash, uType, newId)
+      const forcePasswordChange = uType === 'Technician'
+      await adminRepo.createUser(portalUsername.trim(), hash, uType, newId, forcePasswordChange)
     } catch (err) {
       if (err.status) throw err
       if (err.code === '23505' || err.number === 2627 || err.number === 2601) {
@@ -348,12 +350,13 @@ export async function updateEmployee(id, body) {
     gender: body.gender,
     maritalStatus: body.maritalStatus,
     cnicNumber: body.cnicNumber,
-    emergencyContactNumber: body.emergencyContactNumber
+    emergencyContactNumber: body.emergencyContactNumber,
+    personalCellNumber: body.personalCellNumber
   })
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {
       const existingUser = await adminRepo.findUserByEmpId(id)
-        const uType = portalUserType && ['Admin', 'SuperAdmin', 'Staff', 'User', 'Technician'].includes(portalUserType) ? portalUserType : 'User'
+        const uType = portalUserType && ['Admin', 'SuperAdmin', 'Staff', 'User', 'Technician', 'CRM User', 'Non-CRM User'].includes(portalUserType) ? portalUserType : 'User'
       if (uType === 'SuperAdmin') {
         const otherExists = await adminRepo.checkSuperAdminExists(id)
         if (otherExists) {
@@ -364,19 +367,21 @@ export async function updateEmployee(id, body) {
       }
       if (existingUser.length > 0) {
         const uid = existingUser[0].user_id
+        const forcePasswordChange = uType === 'Technician'
         if (portalUsername && portalUsername.trim()) {
-          if (portalPassword && portalPassword.length >= 8) {
+          if (portalPassword && portalPassword.length >= 4) {
             const hash = await bcrypt.hash(portalPassword, 10)
-            await adminRepo.updateUser(uid, portalUsername.trim(), hash, uType)
+            await adminRepo.updateUser(uid, portalUsername.trim(), hash, uType, forcePasswordChange)
           } else {
-            await adminRepo.updateUser(uid, portalUsername.trim(), null, uType)
+            await adminRepo.updateUser(uid, portalUsername.trim(), null, uType, forcePasswordChange)
           }
         } else {
-          await adminRepo.updateUser(uid, existingUser[0].username, null, uType)
+          await adminRepo.updateUser(uid, existingUser[0].username, null, uType, forcePasswordChange)
         }
-      } else if (portalUsername && portalUsername.trim() && portalPassword && portalPassword.length >= 8) {
+      } else if (portalUsername && portalUsername.trim() && portalPassword && portalPassword.length >= 4) {
         const hash = await bcrypt.hash(portalPassword, 10)
-        await adminRepo.createUser(portalUsername.trim(), hash, uType, id)
+        const forcePasswordChange = uType === 'Technician'
+        await adminRepo.createUser(portalUsername.trim(), hash, uType, id, forcePasswordChange)
       }
     } catch (err) {
       if (err.status) throw err
@@ -424,11 +429,13 @@ export async function getRoleDefaults(role) {
     TECHNICIAN_ROLE_DEFAULTS.forEach(k => { if (PERMISSION_KEYS.includes(k)) roleDefaults[k] = true })
     return { roleDefaults }
   }
-  if (!ROLES_WITH_PERMISSIONS.includes(role)) {
+  // CRM User and Non-CRM User use same permissions as User (avoid conflicts)
+  const roleForPermissions = (role === 'CRM User' || role === 'Non-CRM User') ? 'User' : role
+  if (!ROLES_WITH_PERMISSIONS.includes(roleForPermissions)) {
     return { roleDefaults }
   }
   try {
-    const rows = await adminRepo.getRolePermissions(role)
+    const rows = await adminRepo.getRolePermissions(roleForPermissions)
     rows.forEach(r => {
       if (PERMISSION_KEYS.includes(r.permission_key)) roleDefaults[r.permission_key] = r.allowed
     })

@@ -18,7 +18,7 @@ async function initPool() {
       server: process.env.DB_HOST || '192.168.20.166',
       database: process.env.DB_DATABASE || 'iteck_erp',
       user: process.env.DB_USER || 'tech',
-      password: "EmP$D3v#2026!qR4" || 'tech',
+      password: process.env.DB_PASSWORD || 'tech',
       options: {
         encrypt: false,
         trustServerCertificate: true,

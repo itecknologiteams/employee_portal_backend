@@ -27,9 +27,10 @@ function isTechnicianDesignation(desgName) {
   return desgName.toLowerCase().includes('technician')
 }
 
-/** Resolve role used for permission set: explicit Technician user_type or designation contains "Technician". */
+/** Resolve role used for permission set: explicit Technician user_type or designation contains "Technician". CRM/Non-CRM User use User permissions. */
 async function resolveRoleForPermissions(employeeId, userType) {
   if (userType === 'Technician') return 'Technician'
+  if (userType === 'CRM User' || userType === 'Non-CRM User') return 'User'
   if (!employeeId) return userType || 'User'
   try {
     const desg = await authRepo.getDesignationNameByEmployeeId(employeeId)
@@ -99,10 +100,11 @@ async function loginWithPortalCredentials(loginId, password) {
       if (!row.is_active) {
         return { error: 'Account is deactivated. Please contact HR.', status: 403 }
       }
-      const hashToCheck = row.hashed_password || row.password
-      const valid = isBcryptHash(hashToCheck)
-        ? await bcrypt.compare(password, hashToCheck)
-        : (hashToCheck === password || row.password === password)
+      const hashToCheck = row.hashed_password
+      if (!isBcryptHash(hashToCheck)) {
+        return { error: 'Account password is not set up correctly. Please contact HR.', status: 401 }
+      }
+      const valid = await bcrypt.compare(password, hashToCheck)
       if (valid) {
         const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
         const permissions = await getEffectivePermissions(row.emp_id, role)
@@ -133,14 +135,10 @@ async function loginWithPortalCredentials(loginId, password) {
   if (!employee.is_active) {
     return { error: 'Account is deactivated. Please contact HR.', status: 403 }
   }
-  let isValidPassword = false
-  if (isBcryptHash(employee.password_hash)) {
-    isValidPassword = await bcrypt.compare(password, employee.password_hash)
-  } else if (employee.password_hash) {
-    isValidPassword = (employee.password_hash === password)
-  } else if (employee.password) {
-    isValidPassword = (employee.password === password)
+  if (!isBcryptHash(employee.password_hash)) {
+    return { error: 'Invalid username/email or password', status: 401 }
   }
+  const isValidPassword = await bcrypt.compare(password, employee.password_hash)
   if (!isValidPassword) {
     return { error: 'Invalid username/email or password', status: 401 }
   }
@@ -216,10 +214,11 @@ export async function changePassword(employeeId, currentPassword, newPassword) {
 
   if (userRows.length > 0) {
     const user = userRows[0]
-    const hashToCheck = user.hashed_password || user.password
-    const userValid = isBcryptHash(hashToCheck)
-      ? await bcrypt.compare(currentPassword, hashToCheck)
-      : (hashToCheck === currentPassword || user.password === currentPassword)
+    const hashToCheck = user.hashed_password
+    if (!isBcryptHash(hashToCheck)) {
+      return { error: 'Account password is not set up correctly. Please contact HR.', status: 401 }
+    }
+    const userValid = await bcrypt.compare(currentPassword, hashToCheck)
     if (userValid) {
       const saltRounds = 10
       const hashedPassword = await bcrypt.hash(newPassword, saltRounds)
@@ -234,12 +233,10 @@ export async function changePassword(employeeId, currentPassword, newPassword) {
     return { error: 'Employee not found', status: 404 }
   }
   const employee = verifyResult[0]
-  let isValidPassword = false
-  if (isBcryptHash(employee.password_hash)) {
-    isValidPassword = await bcrypt.compare(currentPassword, employee.password_hash)
-  } else {
-    isValidPassword = (employee.password_hash === currentPassword || employee.password === currentPassword)
+  if (!isBcryptHash(employee.password_hash)) {
+    return { error: 'Current password is incorrect', status: 401 }
   }
+  const isValidPassword = await bcrypt.compare(currentPassword, employee.password_hash)
   if (!isValidPassword) {
     return { error: 'Current password is incorrect', status: 401 }
   }

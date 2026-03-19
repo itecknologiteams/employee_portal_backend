@@ -252,7 +252,8 @@ const employeesSelect = `
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
     e.city_id, c.city_name,
     e.is_active, e.join_date,
-    e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.emergency_contact_number
+    e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.emergency_contact_number,
+    e.personal_cell_number
 `
 const employeesFullQuery = employeesSelect + employeesBaseFrom + ` ORDER BY e.first_name, e.last_name `
 
@@ -305,7 +306,7 @@ export async function listEmployeesSearchPaginated(searchPattern, limit, offset,
       `
       const qMinimal = selectMinimal + where + ` ORDER BY e.first_name, e.last_name LIMIT $${limitIdx} OFFSET $${offsetIdx} `
       const rows = await executeQuery(qMinimal, params)
-      return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null }))
+      return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null }))
     }
     throw err
   }
@@ -340,7 +341,7 @@ export async function listEmployees() {
           FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id
           ORDER BY e.first_name, e.last_name
         `)
-        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null }))
+        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null }))
       }
     }
     throw err
@@ -379,7 +380,7 @@ export async function createEmployeeMinimal(params) {
 
 /** Update only personal-detail columns (for use after create; columns may not exist if migration not run). */
 export async function updateEmployeePersonalDetails(id, data) {
-  const { address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber } = data
+  const { address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber, personalCellNumber } = data
   const setClauses = []
   const params = []
   let idx = 1
@@ -390,6 +391,7 @@ export async function updateEmployeePersonalDetails(id, data) {
   if (maritalStatus !== undefined) { setClauses.push(`marital_status = $${idx}`); params.push(maritalStatus?.trim() || null); idx++ }
   if (cnicNumber !== undefined) { setClauses.push(`cnic_number = $${idx}`); params.push(cnicNumber?.trim() || null); idx++ }
   if (emergencyContactNumber !== undefined) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(emergencyContactNumber?.trim() || null); idx++ }
+  if (personalCellNumber !== undefined) { setClauses.push(`personal_cell_number = $${idx}`); params.push(personalCellNumber ? String(personalCellNumber).trim() : null); idx++ }
   if (params.length === 0) return
   params.push(id)
   await executeQuery(`UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`, params).catch((err) => {
@@ -412,17 +414,17 @@ export async function initLeaveBalanceForEmployee(employeeId) {
   ).catch(() => {})
 }
 
-export async function createUser(username, hashedPassword, userType, empId) {
+export async function createUser(username, hashedPassword, userType, empId, forcePasswordChange = false) {
   return executeQuery(
-    'INSERT INTO users (username, password, hashed_password, user_type, emp_id) VALUES ($1, $2, $2, $3, $4)',
-    [username.trim(), hashedPassword, userType, empId]
+    'INSERT INTO users (username, password, hashed_password, user_type, emp_id, force_password_change) VALUES ($1, $2, $2, $3, $4, $5)',
+    [username.trim(), hashedPassword, userType, empId, !!forcePasswordChange]
   )
 }
 
 export async function updateEmployee(id, updates) {
   const {
     firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive,
-    address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber
+    address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, emergencyContactNumber, personalCellNumber
   } = updates
   let params = [
     firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
@@ -446,6 +448,7 @@ export async function updateEmployee(id, updates) {
   if (maritalStatus !== undefined) { setClauses.push(`marital_status = $${idx}`); params.push(maritalStatus?.trim() || null); idx++ }
   if (cnicNumber !== undefined) { setClauses.push(`cnic_number = $${idx}`); params.push(cnicNumber?.trim() || null); idx++ }
   if (emergencyContactNumber !== undefined) { setClauses.push(`emergency_contact_number = $${idx}`); params.push(emergencyContactNumber?.trim() || null); idx++ }
+  if (personalCellNumber !== undefined) { setClauses.push(`personal_cell_number = $${idx}`); params.push(personalCellNumber ? String(personalCellNumber).trim() : null); idx++ }
   params.push(id)
   await executeQuery(
     `UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`,
@@ -471,11 +474,17 @@ export async function findUserByEmpId(empId) {
   return executeQuery('SELECT user_id, username, user_type FROM users WHERE emp_id = $1', [empId])
 }
 
-export async function updateUser(uid, username, password, userType) {
+export async function updateUser(uid, username, password, userType, forcePasswordChange = false) {
   if (password) {
-    await executeQuery('UPDATE users SET username = $1, password = $2, hashed_password = $2, user_type = $3 WHERE user_id = $4', [username, password, userType, uid])
+    await executeQuery(
+      'UPDATE users SET username = $1, password = $2, hashed_password = $2, user_type = $3, force_password_change = $4 WHERE user_id = $5',
+      [username, password, userType, !!forcePasswordChange, uid]
+    )
   } else {
-    await executeQuery('UPDATE users SET username = $1, user_type = $2 WHERE user_id = $3', [username, userType, uid])
+    await executeQuery(
+      'UPDATE users SET username = $1, user_type = $2, force_password_change = $3 WHERE user_id = $4',
+      [username, userType, !!forcePasswordChange, uid]
+    )
   }
 }
 
@@ -487,7 +496,9 @@ export async function getEmployeeById(id) {
         e.employee_type_id, et.emp_type_name AS employee_type_name,
         e.station_id, s.station_name,
         e.city_id, c.city_name,
-        e.is_active, e.join_date
+        e.is_active, e.join_date,
+        e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.emergency_contact_number,
+        e.personal_cell_number
       FROM employees e
       LEFT JOIN departments d ON e.department_id = d.department_id
       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
@@ -508,7 +519,7 @@ export async function getEmployeeById(id) {
         LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
         WHERE e.employee_id = $1
       `, [id])
-      if (r.length) Object.assign(r[0], { station_id: null, station_name: null, city_name: null, city_id: null })
+      if (r.length) Object.assign(r[0], { station_id: null, station_name: null, city_name: null, city_id: null, address: null, date_of_birth: null, father_name: null, gender: null, marital_status: null, cnic_number: null, emergency_contact_number: null, personal_cell_number: null })
       return r
     }
     throw err

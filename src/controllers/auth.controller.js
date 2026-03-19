@@ -1,8 +1,10 @@
 import * as authService from '../services/auth.service.js'
 
+const REMEMBER_ME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
 export async function login(req, res) {
   try {
-    const { username, email, password } = req.body
+    const { username, email, password, rememberMe } = req.body
     const loginId = username || email
     if (!loginId || !password) {
       return res.status(400).json({ error: 'Username/email and password are required' })
@@ -10,6 +12,9 @@ export async function login(req, res) {
     const result = await authService.login(loginId, password)
     if (result.error) {
       return res.status(result.status || 401).json({ error: result.error })
+    }
+    if (rememberMe) {
+      req.session.cookie.maxAge = REMEMBER_ME_MAX_AGE_MS
     }
     req.session.user = {
       employeeId: result.employeeId,

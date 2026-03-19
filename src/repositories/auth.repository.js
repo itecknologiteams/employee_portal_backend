@@ -79,17 +79,17 @@ export async function getUserForPasswordChange(employeeId) {
   )
 }
 
-/** Update password (plain), hashed_password, and optionally clear force_password_change. */
-export async function updateUserPassword(userId, plainPassword, hashedPassword, clearForceChange = false) {
+/** Update hashed_password and optionally clear force_password_change. Plaintext is never stored. */
+export async function updateUserPassword(userId, _plainPassword, hashedPassword, clearForceChange = false) {
   if (clearForceChange) {
     return executeQuery(
-      'UPDATE users SET password = $1, hashed_password = $2, force_password_change = false WHERE user_id = $3',
-      [plainPassword, hashedPassword, userId]
+      'UPDATE users SET hashed_password = $1, force_password_change = false WHERE user_id = $2',
+      [hashedPassword, userId]
     )
   }
   return executeQuery(
-    'UPDATE users SET password = $1, hashed_password = $2 WHERE user_id = $3',
-    [plainPassword, hashedPassword, userId]
+    'UPDATE users SET hashed_password = $1 WHERE user_id = $2',
+    [hashedPassword, userId]
   )
 }
 

@@ -70,10 +70,23 @@ def main():
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT u.user_id, u.username, u.emp_id, e.phone, e.first_name, e.last_name
+                SELECT 
+                    u.user_id, 
+                    u.username, 
+                    u.emp_id, 
+                    e.personal_cell_number, 
+                    e.first_name, 
+                    e.last_name,
+                    d.desg_name
                 FROM users u
-                JOIN employees e ON u.emp_id = e.employee_id
-                WHERE e.designation_id = 95
+                JOIN employees e 
+                    ON u.emp_id = e.employee_id
+                JOIN designation d 
+                    ON e.designation_id = d.desg_id
+                WHERE 
+                    e.is_active = true
+                    AND e.department_id = 2
+                    AND d.desg_id NOT IN (14, 57, 60, 62, 87)
                 ORDER BY u.username
             """)
             rows = cur.fetchall()
@@ -86,7 +99,7 @@ def main():
         updated = 0
         skipped = 0
         for row in rows:
-            phone = row["phone"]
+            phone = row["personal_cell_number"]
             last4 = get_last_four_digits(phone)
             if not last4:
                 print(f"  SKIP {row['username']} (emp_id={row['emp_id']}): phone missing or < 4 digits: {phone!r}")
