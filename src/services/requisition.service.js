@@ -475,7 +475,7 @@ export async function getReportAll(employeeId) {
   const emp = await reqRepo.getEmployeeDeptForReport(eid)
   const deptId = emp?.department_id ?? null
   const deptNameLower = emp?.department_name_lower ?? ''
-  const youAreHod = deptId != null && (await reqRepo.getHodByDepartment(deptId)) === eid
+  const youAreHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
   const [isCommittee, isCeo] = await Promise.all([
     reqRepo.isCommitteeMember(eid),
     reqRepo.isCeoMember(eid)
@@ -504,8 +504,8 @@ export async function getPendingHod(employeeId) {
   const deptId = emp.department_id
   const deptName = (emp.department_name || '').trim().toLowerCase()
   if (deptId == null && !deptName) return []
-  const hodId = await reqRepo.getHodByDepartment(deptId)
-  if (hodId == null || hodId !== eid) return []
+  const isHodForDept = await reqRepo.isHodOfDepartment(eid, deptId)
+  if (!isHodForDept) return []
 
   let rows
   try {
@@ -529,6 +529,18 @@ export async function getPendingHod(employeeId) {
     if (err.code === '42703') rows = await reqRepo.getPendingHodRequisitionsFallback(deptId, deptName, eid)
     else throw err
   }
+  try {
+    const extRows = await reqRepo.getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName)
+    const seen = new Set((rows || []).map((r) => r.req_id))
+    for (const r of extRows || []) {
+      if (r.req_id != null && !seen.has(r.req_id)) {
+        rows.push(r)
+        seen.add(r.req_id)
+      }
+    }
+  } catch (_) {
+    /* optional merge */
+  }
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
@@ -543,8 +555,8 @@ export async function getApprovedByHod(employeeId) {
   const deptId = emp.department_id
   const deptName = (emp.department_name || '').trim().toLowerCase()
   if (deptId == null && !deptName) return []
-  const hodId = await reqRepo.getHodByDepartment(deptId)
-  if (hodId == null || hodId !== eid) return []
+  const isHodForDept = await reqRepo.isHodOfDepartment(eid, deptId)
+  if (!isHodForDept) return []
 
   const rows = await reqRepo.getApprovedByHodRequisitions(deptId, deptName)
   const reqIds = rows.map(r => r.req_id)
@@ -562,8 +574,10 @@ export async function approveHod(body) {
   }
   const reqRow = await reqRepo.getRequisitionAndDepartment(requisitionId)
   if (!reqRow.length) return { error: 'Requisition not found', status: 404 }
-  const hodId = await reqRepo.getHodByDepartment(reqRow[0].department_id)
-  if (hodId !== parseInt(approvedByEmployeeId, 10)) {
+  const deptIdForReq = reqRow[0].department_id
+  const approverEid = parseInt(approvedByEmployeeId, 10)
+  const isHodForDept = deptIdForReq != null && (await reqRepo.isHodOfDepartment(approverEid, deptIdForReq))
+  if (!isHodForDept) {
     return { error: 'Only HOD of the same department can approve', status: 403 }
   }
   if (approved === false) {
@@ -769,13 +783,14 @@ export async function approveCommittee(body) {
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
     return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
   }
-  const ok = await reqRepo.isCommitteeMember(eid)
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'committee') : await reqRepo.isCommitteeMember(eid)
   if (!ok) {
     return { error: 'Only Committee members can approve. Check your Employee Type or Designation in Administration.', status: 403 }
   }
   if (approved === false) {
     await reqRepo.rejectRequisition(reqId)
-    return { message: 'Requisition rejected', status: 'Rejected' }
+    return { message: 'Requisition cancelled', status: 'Rejected' }
   }
   // On approve: approved quantity per item is mandatory
   const items = await reqRepo.getRequisitionItems(reqId)
@@ -805,8 +820,7 @@ export async function approveCommittee(body) {
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
   const stages = await reqRepo.getFlowStages()
-  const useFlow = stages && stages.length > 0
-  const nextKeyFromFlow = categoryName && useFlow ? await reqRepo.getNextStageKey(categoryName, 'committee') : null
+  const nextKeyFromFlow = categoryName && stages.length > 0 ? await reqRepo.getNextStageKey(categoryName, 'committee') : null
 
   // When category flow defines next stage after committee (e.g. Devices/Accessories → Finance, not CEO), respect it.
   if (nextKeyFromFlow && nextKeyFromFlow !== 'ceo') {
@@ -1041,6 +1055,25 @@ export async function updateItemsByHod(reqId, body) {
   return { message: 'Items updated' }
 }
 
+function toDateOnlyString(val) {
+  if (val == null) return null
+  const s = String(val)
+  if (s.length >= 10 && /^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10)
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return null
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function todayDateOnlyStr() {
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+async function isCommitteeActor(employeeId) {
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  return useFlow ? reqRepo.isEmployeeTypeForStage(employeeId, 'committee') : reqRepo.isCommitteeMember(employeeId)
+}
+
 export async function updateRequiredByDate(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
@@ -1049,6 +1082,37 @@ export async function updateRequiredByDate(reqId, body) {
   if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
   const rows = await reqRepo.getRequisitionById(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const row = rows[0]
+  if (row.req_is_rejected === 1) {
+    return { error: 'Cannot change date for a rejected requisition', status: 400 }
+  }
+  if (row.req_purchase_completed === 1) {
+    return { error: 'Cannot change date after purchase is marked complete', status: 400 }
+  }
+
+  const reqRowDept = await reqRepo.getRequisitionAndDepartment(reqIdNum)
+  const deptId = reqRowDept[0]?.department_id
+  const isHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
+  const isCommittee = await isCommitteeActor(eid)
+
+  const reqDateStr = toDateOnlyString(row.req_required_by_date)
+  const todayStr = todayDateOnlyStr()
+  const deadlineReachedOrPassed = reqDateStr != null && reqDateStr <= todayStr
+  const extensionScenario = deadlineReachedOrPassed
+
+  const normalHodPath = !row.req_hod_approval && isHod
+  const extensionPath = extensionScenario && (isHod || isCommittee)
+
+  if (!normalHodPath && !extensionPath) {
+    if (extensionScenario && !isHod && !isCommittee) {
+      return { error: 'Only the requestor\'s HOD or a Committee member can extend the required-by date after the deadline.', status: 403 }
+    }
+    if (!extensionScenario && !normalHodPath) {
+      return { error: 'Only the requestor\'s HOD can change the required-by date before forwarding, or HOD/Committee can extend after the required-by date has passed.', status: 403 }
+    }
+    return { error: 'You are not allowed to update this requisition\'s required-by date.', status: 403 }
+  }
+
   const dateVal = requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())
     ? requiredByDate.trim()
     : null
@@ -1058,6 +1122,10 @@ export async function updateRequiredByDate(reqId, body) {
     const minStr = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, '0')}-${String(minDate.getDate()).padStart(2, '0')}`
     if (dateVal < minStr) {
       return { error: 'Required by date must be at least 4 days from today. You cannot select today or the next 3 days.', status: 400 }
+    }
+    const d = new Date(dateVal + 'T12:00:00')
+    if (d.getDay() === 0) {
+      return { error: 'Sundays are not allowed. Please select another day.', status: 400 }
     }
   }
   await reqRepo.updateRequiredByDate(reqIdNum, dateVal)

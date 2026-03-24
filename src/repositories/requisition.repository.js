@@ -1226,6 +1226,28 @@ export async function getApprovedByHodRequisitions(deptId, deptName) {
   )
 }
 
+/** Creator-dept requisitions whose required-by date is today or past, not completed — HOD may extend deadline (same as Committee). */
+export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName) {
+  try {
+    return await executeQuery(
+      `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE COALESCE(r.req_is_rejected, 0) = 0
+         AND COALESCE(r.req_purchase_completed, 0) = 0
+         AND r.req_required_by_date IS NOT NULL
+         AND (r.req_required_by_date::date <= CURRENT_DATE)
+         AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+       ORDER BY r.req_required_by_date ASC NULLS LAST, r.req_created_at ASC`,
+      [deptId, deptName]
+    )
+  } catch (err) {
+    if (err.code === '42703' || err.code === '42P01') return []
+    throw err
+  }
+}
+
 export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
   const whereClause = `(COALESCE(r.req_is_rejected, 0)::int = 0)
      AND (
