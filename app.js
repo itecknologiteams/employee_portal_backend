@@ -49,6 +49,7 @@ const allowedOrigins = [
   `http://${NETWORK_IP}:${FRONTEND_PORT}`,
   `http://${NETWORK_IP}:4173`,
   'https://emp.itecknologi.com',
+  'http://rfm.itecknologi.internal',
   ...envCorsOrigins
 ]
 
