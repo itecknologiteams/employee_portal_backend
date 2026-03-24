@@ -39,11 +39,17 @@ const getNetworkIP = () => {
 
 const NETWORK_IP = getNetworkIP()
 const FRONTEND_PORT = process.env.FRONTEND_PORT || 5173
+const envCorsOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map((o) => o.trim())
+  .filter(Boolean)
 const allowedOrigins = [
   'http://localhost:5173',
   'http://127.0.0.1:5173',
   `http://${NETWORK_IP}:${FRONTEND_PORT}`,
-  `http://${NETWORK_IP}:4173`
+  `http://${NETWORK_IP}:4173`,
+  'https://emp.itecknologi.com',
+  ...envCorsOrigins
 ]
 
 const app = express()
