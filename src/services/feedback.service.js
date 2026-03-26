@@ -1,4 +1,6 @@
 import * as feedbackRepo from '../repositories/feedback.repository.js'
+import * as notifRepo from '../repositories/notification.repository.js'
+import * as notifSvc from './notification.service.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
 function isNonEmptyString(value) {
@@ -160,6 +162,20 @@ export async function submitFeedback(data) {
     }
   } else {
     console.warn('Email not configured (SMTP_*). Skipping send.')
+  }
+
+  try {
+    const hrIds = await notifRepo.getHrEmployeeIds()
+    notifSvc.notifySafe(notifSvc.notifyMany(hrIds, {
+      type: 'feedback_submitted',
+      title: `Feedback: ${subject.trim()}`,
+      body: message.trim().slice(0, 240),
+      url: '/feedback/history',
+      relatedEntityType: 'feedback',
+      relatedEntityId: record.id
+    }))
+  } catch (e) {
+    console.warn('feedback notification:', e.message)
   }
 
   return {

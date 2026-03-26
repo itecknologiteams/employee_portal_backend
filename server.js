@@ -2,6 +2,7 @@ import dotenv from 'dotenv'
 import { executeQuery, closeConnection } from './config/database.js'
 import { closeConnection as closeRabbitConnection } from './config/rabbitmq.js'
 import { isBullMQEnabled, addRepeatableReminderJob, closeBullMQ } from './config/bullmq.js'
+import { closeAllSseConnections } from './config/sse.js'
 import app from './app.js'
 import os from 'os'
 
@@ -63,6 +64,7 @@ app.listen(PORT, '0.0.0.0', async () => {
 // Graceful shutdown
 process.on('SIGINT', async () => {
   console.log('\nShutting down server...')
+  await closeAllSseConnections()
   await closeBullMQ()
   await closeRabbitConnection()
   await closeConnection()
@@ -71,6 +73,7 @@ process.on('SIGINT', async () => {
 
 process.on('SIGTERM', async () => {
   console.log('\nShutting down server...')
+  await closeAllSseConnections()
   await closeBullMQ()
   await closeRabbitConnection()
   await closeConnection()

@@ -10,6 +10,22 @@ import {
   formatTotalTime,
   tatReportStatusCondition
 } from '../utils/requisition.utils.js'
+import * as notifRepo from '../repositories/notification.repository.js'
+import * as notifSvc from './notification.service.js'
+
+async function inAppNotifyRequisitionBucket(reqId, bucket, departmentId) {
+  if (departmentId == null || bucket == null) return
+  const ref = await notifRepo.getRequisitionRef(reqId)
+  const label = ref || `#${reqId}`
+  return notifSvc.notifyBucketApprovers(bucket, departmentId, {
+    type: `requisition_pending_${bucket}`,
+    title: `Requisition ${label}`,
+    body: 'Pending your action in the portal.',
+    url: '/requisition/pending',
+    relatedEntityType: 'requisition',
+    relatedEntityId: reqId
+  })
+}
 
 export { parseEmployeeId }
 
@@ -332,26 +348,31 @@ export async function createRequisition(body) {
     await reqRepo.autoAdvanceCeoRequisition(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptId))
   } else if (creatorIsCommittee) {
     await reqRepo.autoAdvanceCommitteeRequisition(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'ceo')
     await notifyBucketChanged(reqId, 'ceo')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', deptId))
   } else if (creatorIsHod) {
     await reqRepo.autoAdvanceHodRequisition(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'committee')
     await notifyBucketChanged(reqId, 'committee')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'committee', deptId))
   } else if (categoryFlowBucket) {
     await setCurrentStageIfFlowEnabled(reqId, categoryFlowBucket)
     await notifyBucketChanged(reqId, categoryFlowBucket)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, categoryFlowBucket, deptId))
   } else {
     // Normal employee: use DB flow so IT Equipments etc go to HOD first; Specialized/General Proc/Devices go to Committee first.
     const firstKey = await reqRepo.getFirstStageKey(categoryTrimmed).catch(() => 'hod')
     const bucket = firstKey || 'hod'
     await setCurrentStageIfFlowEnabled(reqId, bucket)
     await notifyBucketChanged(reqId, bucket)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucket, deptId))
   }
 
-  // Single email per recipient: only notifyBucketChanged above sends (or queues) one email for the current bucket (HOD, committee, CEO, procurement, finance). No duplicate "new requisition" or "requisition-created" email.
+  // Email (notifyBucketChanged) + in-app (inAppNotifyRequisitionBucket) for the current bucket.
 
   return { message: 'Requisition submitted successfully', requisitionId: reqId, referenceNo: refNo }
 }
@@ -581,7 +602,19 @@ export async function approveHod(body) {
     return { error: 'Only HOD of the same department can approve', status: 403 }
   }
   if (approved === false) {
+    const creatorId = await notifRepo.getRequisitionCreatorId(requisitionId)
     await reqRepo.rejectRequisition(requisitionId)
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected',
+        body: 'Your requisition was rejected by HOD.',
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: requisitionId
+      }))
+    }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
 
@@ -607,6 +640,7 @@ export async function approveHod(body) {
     await setCurrentStageIfFlowEnabled(requisitionId, nextKey)
     const bucket = nextKey === 'hr' ? 'hr' : (nextKey === 'committee' ? 'committee' : nextKey)
     await notifyBucketChanged(requisitionId, bucket)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
     const statusLabel = nextKey === 'hr' ? 'Pending HR' : (nextKey === 'committee' ? 'Pending Committee' : `Pending ${nextKey}`)
     return { message: 'HOD approval recorded', status: statusLabel }
   }
@@ -682,6 +716,7 @@ export async function approveHod(body) {
     await reqRepo.approveHodDirectToProcurement(requisitionId)
     await setCurrentStageIfFlowEnabled(requisitionId, 'procurement')
     await notifyBucketChanged(requisitionId, 'procurement')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, 'procurement', deptIdForReq))
     return { message: 'HOD approval recorded; forwarded to Procurement (total under 50K)', status: 'Forwarded to Procurement' }
   }
 
@@ -690,6 +725,7 @@ export async function approveHod(body) {
   await setCurrentStageIfFlowEnabled(requisitionId, nextKey || 'committee')
   const bucket = nextKey === 'hr' ? 'hr' : 'committee'
   await notifyBucketChanged(requisitionId, bucket)
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
   return { message: 'HOD approval recorded', status: nextKey === 'hr' ? 'Pending HR' : (totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)') }
 }
 
@@ -753,7 +789,19 @@ export async function approveHR(body) {
     return { error: 'Only HR can approve this stage. Check your Employee Type or Designation.', status: 403 }
   }
   if (approved === false) {
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
     await reqRepo.rejectRequisition(reqId)
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected',
+        body: 'Your requisition was rejected by HR.',
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveHr(reqId)
@@ -773,6 +821,9 @@ export async function approveHR(body) {
   }
   await setCurrentStageIfFlowEnabled(reqId, nextKey || 'committee')
   await notifyBucketChanged(reqId, nextKey || 'committee')
+  const bucketAfterHr = nextKey || 'committee'
+  const deptIdHr = reqRow[0]?.department_id
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucketAfterHr, deptIdHr))
   return { message: 'HR approval recorded', status: nextKey === 'ceo' ? 'Pending CEO' : (nextKey === 'finance' ? 'Pending Finance' : (nextKey === 'committee' ? 'Pending Committee' : `Pending ${nextKey}`)) }
 }
 
@@ -789,7 +840,19 @@ export async function approveCommittee(body) {
     return { error: 'Only Committee members can approve. Check your Employee Type or Designation in Administration.', status: 403 }
   }
   if (approved === false) {
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
     await reqRepo.rejectRequisition(reqId)
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected',
+        body: 'Your requisition was rejected by Committee.',
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
     return { message: 'Requisition cancelled', status: 'Rejected' }
   }
   // On approve: approved quantity per item is mandatory
@@ -826,6 +889,8 @@ export async function approveCommittee(body) {
   if (nextKeyFromFlow && nextKeyFromFlow !== 'ceo') {
     await setCurrentStageIfFlowEnabled(reqId, nextKeyFromFlow)
     await notifyBucketChanged(reqId, nextKeyFromFlow)
+    const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKeyFromFlow, deptRow[0]?.department_id))
     const statusLabel = nextKeyFromFlow === 'finance' ? 'Pending Finance Approval' : nextKeyFromFlow === 'procurement' ? 'Forwarded to Procurement' : `Pending ${nextKeyFromFlow}`
     return { message: 'Committee approval recorded', status: statusLabel }
   }
@@ -847,12 +912,14 @@ export async function approveCommittee(body) {
     await reqRepo.approveCeo(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
     return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
   }
 
   const nextKey = nextKeyFromFlow || 'ceo'
   await setCurrentStageIfFlowEnabled(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKey, reqRow[0]?.department_id))
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
@@ -883,7 +950,19 @@ export async function approveCeo(body) {
     return { error: 'Only CEO can approve. Check your Employee Type or Designation in Administration.', status: 403 }
   }
   if (approved === false) {
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
     await reqRepo.rejectRequisition(reqId)
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected',
+        body: 'Your requisition was rejected by CEO.',
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveCeo(reqId)
@@ -896,6 +975,7 @@ export async function approveCeo(body) {
   await setCurrentStageIfFlowEnabled(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
   const statusLabel = nextKey === 'finance' ? 'Pending Finance' : nextKey === 'admin' ? 'Pending Admin' : 'Forwarded to Procurement'
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKey, reqRow[0]?.department_id))
   return { message: 'CEO approval recorded', status: statusLabel }
 }
 
@@ -912,7 +992,19 @@ export async function approveAdmin(body) {
     return { error: 'Only Admin can approve this stage.', status: 403 }
   }
   if (approved === false) {
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
     await reqRepo.rejectRequisition(reqId)
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected',
+        body: 'Your requisition was rejected by Admin.',
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveAdmin(reqId)
@@ -1167,6 +1259,18 @@ export async function completePurchase(reqId, body) {
   if (isProcurement) {
     await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
     notifyCreatorAckRequired(reqIdNum).catch((e) => console.error('notifyCreatorAckRequired after completePurchase:', e?.message))
+    const creatorC = await notifRepo.getRequisitionCreatorId(reqIdNum)
+    if (creatorC) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorC,
+        type: 'requisition_ready_for_receipt',
+        title: 'Purchase complete',
+        body: 'Procurement marked your requisition complete. Follow acknowledgment steps in the portal.',
+        url: '/requisition/acknowledgment',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqIdNum
+      }))
+    }
     return { message: 'Requisition marked complete. HOD can acknowledge receipt.', status: 'Completed - Pending HOD Acknowledgment' }
   }
   if (isAdmin) {
@@ -1176,6 +1280,18 @@ export async function completePurchase(reqId, body) {
     if (cat && cat.execution_admin === 1) {
       await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
       notifyCreatorAckRequired(reqIdNum).catch((e) => console.error('notifyCreatorAckRequired after completePurchase (Admin):', e?.message))
+      const creatorA = await notifRepo.getRequisitionCreatorId(reqIdNum)
+      if (creatorA) {
+        notifSvc.notifySafe(notifSvc.notify({
+          recipientEmployeeId: creatorA,
+          type: 'requisition_ready_for_receipt',
+          title: 'Purchase complete',
+          body: 'Your requisition execution is complete. Please acknowledge in the portal.',
+          url: '/requisition/acknowledgment',
+          relatedEntityType: 'requisition',
+          relatedEntityId: reqIdNum
+        }))
+      }
       return { message: 'Requisition marked complete (Admin execution). HOD can acknowledge receipt.', status: 'Completed - Pending HOD Acknowledgment' }
     }
   }
@@ -1317,6 +1433,8 @@ export async function handoverFinance(body) {
   await reqRepo.handoverToFinance(reqId)
   await setCurrentStageIfFlowEnabled(reqId, 'finance')
   await notifyBucketChanged(reqId, 'finance')
+  const deptHandover = await reqRepo.getRequisitionAndDepartment(reqId)
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'finance', deptHandover[0]?.department_id))
   return { message: 'Handed over to Finance', status: 'Pending Finance Approval' }
 }
 
@@ -1363,10 +1481,24 @@ export async function approveFinance(body) {
     const stages = await reqRepo.getFlowStages()
     if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
   } catch (_) {}
+  const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
   if (isLoan) {
     notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Finance (Loan):', e?.message))
+    const cid = await notifRepo.getRequisitionCreatorId(reqId)
+    if (cid) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: cid,
+        type: 'requisition_finance_approved',
+        title: 'Finance approved',
+        body: 'Your requisition was approved by Finance. Please acknowledge when ready.',
+        url: '/requisition/acknowledgment',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
   } else {
     await notifyBucketChanged(reqId, 'procurement')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptFin[0]?.department_id))
   }
   return { message: isLoan ? 'Finance approved (Loan).' : 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: isLoan ? 'Completed' : 'Finance Approved - Ready for Purchase' }
 }

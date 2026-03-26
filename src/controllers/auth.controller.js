@@ -1,4 +1,5 @@
 import * as authService from '../services/auth.service.js'
+import { issueNotificationStreamToken, revokeNotificationStreamToken } from '../../config/notificationStream.js'
 
 const REMEMBER_ME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
@@ -26,7 +27,11 @@ export async function login(req, res) {
       permissions: result.permissions || [],
       forcePasswordChange: result.forcePasswordChange === true
     }
-    res.json(result)
+    const streamToken = await issueNotificationStreamToken(result.employeeId)
+    if (streamToken) req.session.notificationStreamToken = streamToken
+    const payload = { ...result }
+    if (streamToken) payload.notificationStreamToken = streamToken
+    res.json(payload)
   } catch (error) {
     console.error('Login error:', error)
     res.status(500).json({ error: 'Failed to login. Please try again.' })
@@ -43,6 +48,8 @@ export async function me(req, res) {
 
 /** POST /api/auth/logout – destroy session. */
 export async function logout(req, res) {
+  const tok = req.session?.notificationStreamToken
+  if (tok) revokeNotificationStreamToken(tok).catch(() => {})
   req.session.destroy((err) => {
     if (err) {
       console.error('Logout session destroy error:', err)

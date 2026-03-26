@@ -1,5 +1,7 @@
 import * as leaveRepo from '../repositories/leave.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import * as notifRepo from '../repositories/notification.repository.js'
+import * as notifSvc from './notification.service.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
 const defaultBalance = { annual: 15, sick: 10, personal: 5 }
@@ -92,6 +94,34 @@ export async function createLeaveRequest(data) {
     }
   }
 
+  try {
+    const applicantDept = await reqRepo.getEmployeeDept(employeeId)
+    const deptId = applicantDept?.department_id
+    if (initialStatus === 'Pending HR') {
+      const hrIds = await notifRepo.getHrEmployeeIds()
+      notifSvc.notifySafe(notifSvc.notifyMany(hrIds, {
+        type: 'leave_pending_hr',
+        title: 'New leave request',
+        body: `Leave request #${leaveRequestId} is pending HR (employee ${employeeId}).`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: leaveRequestId
+      }))
+    } else if (deptId != null) {
+      const hodIds = await notifRepo.getHodEmployeeIdsForDepartment(deptId)
+      notifSvc.notifySafe(notifSvc.notifyMany(hodIds, {
+        type: 'leave_pending_hod',
+        title: 'New leave request',
+        body: `Leave request #${leaveRequestId} is pending your approval.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: leaveRequestId
+      }))
+    }
+  } catch (nErr) {
+    console.warn('leave create notification:', nErr.message)
+  }
+
   return {
     message: 'Leave request submitted successfully',
     leaveRequestId
@@ -119,6 +149,18 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       if (!isHr) return { error: 'Only HR can approve or reject at this stage', status: 403 }
       const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
       if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+      const applicantId = parseInt(leave.employee_id, 10)
+      if (!Number.isNaN(applicantId)) {
+        notifSvc.notifySafe(notifSvc.notify({
+          recipientEmployeeId: applicantId,
+          type: normalizedStatus === 'Approved' ? 'leave_approved' : 'leave_rejected',
+          title: normalizedStatus === 'Approved' ? 'Leave approved' : 'Leave rejected',
+          body: `Your leave request #${reqId} was ${normalizedStatus.toLowerCase()}.`,
+          url: '/leave',
+          relatedEntityType: 'leave',
+          relatedEntityId: reqId
+        }))
+      }
       return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
     }
     // HOD can set Pending HR (forward to HR) or Rejected
@@ -157,6 +199,30 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         }
       }
     }
+    if (normalizedStatus === 'Pending HR') {
+      notifSvc.notifySafe(notifSvc.notifyMany(await notifRepo.getHrEmployeeIds(), {
+        type: 'leave_pending_hr',
+        title: 'Leave forwarded to HR',
+        body: `Leave #${reqId} was forwarded by HOD for HR review.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: reqId
+      }))
+    }
+    if (normalizedStatus === 'Rejected') {
+      const applicantId = parseInt(leave.employee_id, 10)
+      if (!Number.isNaN(applicantId)) {
+        notifSvc.notifySafe(notifSvc.notify({
+          recipientEmployeeId: applicantId,
+          type: 'leave_rejected',
+          title: 'Leave rejected',
+          body: `Your leave request #${reqId} was rejected by HOD.`,
+          url: '/leave',
+          relatedEntityType: 'leave',
+          relatedEntityId: reqId
+        }))
+      }
+    }
     return { message: normalizedStatus === 'Rejected' ? 'Leave request rejected' : 'Leave forwarded to HR', status: normalizedStatus }
   }
 
@@ -168,6 +234,18 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     if (!isHr) return { error: 'Only HR can approve or reject at this stage', status: 403 }
     const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending HR')
     if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+    const applicantIdHr = parseInt(leave.employee_id, 10)
+    if (!Number.isNaN(applicantIdHr)) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: applicantIdHr,
+        type: normalizedStatus === 'Approved' ? 'leave_approved' : 'leave_rejected',
+        title: normalizedStatus === 'Approved' ? 'Leave approved' : 'Leave rejected',
+        body: `Your leave request #${reqId} was ${normalizedStatus.toLowerCase()} by HR.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: reqId
+      }))
+    }
     return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
   }
 

@@ -1,5 +1,7 @@
 import * as profileRepo from '../repositories/profile.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import * as notifRepo from '../repositories/notification.repository.js'
+import * as notifSvc from './notification.service.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 import { getOfficialEmailFromCrm } from '../../config/crmDatabase.js'
 
@@ -110,6 +112,17 @@ export async function hrApproveProfileRequest(requestId, hrEmployeeId) {
   if (!isHr) return { error: 'Only HR can approve profile change requests', status: 403 }
   const result = await profileRepo.approveProfileChangeRequest(requestId, hrEmployeeId)
   if (!result) return { error: 'Request not found or already processed', status: 404 }
+  if (result.employee_id) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: result.employee_id,
+      type: 'profile_change_approved',
+      title: 'Profile change approved',
+      body: 'Your profile update request was approved and applied.',
+      url: '/profile',
+      relatedEntityType: 'profile',
+      relatedEntityId: requestId
+    }))
+  }
   return { message: 'Profile change approved and applied', request: result }
 }
 
@@ -119,5 +132,16 @@ export async function hrRejectProfileRequest(requestId, hrEmployeeId) {
   if (!isHr) return { error: 'Only HR can reject profile change requests', status: 403 }
   const result = await profileRepo.rejectProfileChangeRequest(requestId, hrEmployeeId)
   if (!result) return { error: 'Request not found or already processed', status: 404 }
+  if (result.employee_id) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: result.employee_id,
+      type: 'profile_change_rejected',
+      title: 'Profile change rejected',
+      body: 'Your profile update request was rejected.',
+      url: '/profile',
+      relatedEntityType: 'profile',
+      relatedEntityId: requestId
+    }))
+  }
   return { message: 'Profile change rejected', request: result }
 }
