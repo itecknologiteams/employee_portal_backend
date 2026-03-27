@@ -1,5 +1,5 @@
 import { executeQuery } from '../config/database.js'
-import { getEmailsFromCrmUsers } from '../config/crmDatabase.js'
+import { resolveEmailsPreferCrmForCodes } from '../src/utils/requisitionEmailRecipients.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
 import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, buildRequisitionBucketChangedPlainText, getPortalUrl } from '../config/requisition-email-template.js'
@@ -75,44 +75,6 @@ async function getEmployeeCodesByRole(roleName) {
   }
 }
 
-/** Dedupe by email (case-insensitive). */
-function mergeEmailLists(crmEmails, portalEmails) {
-  const seen = new Set()
-  const out = []
-  for (const e of [...(crmEmails || []), ...(portalEmails || [])]) {
-    const s = String(e).trim()
-    if (!s) continue
-    const k = s.toLowerCase()
-    if (seen.has(k)) continue
-    seen.add(k)
-    out.push(s)
-  }
-  return out
-}
-
-/**
- * When CRM USERS has no row or CRM is down, still notify using portal employees.email (same employee_code).
- * Bucket-change / queue emails are immediate and do NOT use required_by_date (unlike processRequisitionReminders).
- */
-async function getPortalEmailsForCodes(codes) {
-  if (!codes || codes.length === 0) return []
-  const unique = [...new Set(codes.map((c) => String(c).trim()).filter(Boolean))]
-  if (unique.length === 0) return []
-  const placeholders = unique.map((_, i) => `$${i + 1}`).join(', ')
-  try {
-    const rows = await executeQuery(
-      `SELECT DISTINCT TRIM(e.email) AS email FROM employees e
-       WHERE e.employee_code IN (${placeholders}) AND COALESCE(e.is_active, true) = true
-         AND e.email IS NOT NULL AND TRIM(e.email) != ''`,
-      unique
-    )
-    return (rows || []).map((r) => r.email).filter(Boolean)
-  } catch (e) {
-    console.warn('getPortalEmailsForCodes:', e.message)
-    return []
-  }
-}
-
 async function getEmailsForBucket(bucket, departmentId) {
   let codes = []
   if (bucket === 'hod') codes = await getHodEmployeeCodesForDepartment(departmentId)
@@ -122,13 +84,7 @@ async function getEmailsForBucket(bucket, departmentId) {
   else if (bucket === 'procurement') codes = await getEmployeeCodesByRole('Procurement')
   else if (bucket === 'finance') codes = await getEmployeeCodesByRole('Finance')
   if (codes.length === 0) return []
-  const crmEmails = await getEmailsFromCrmUsers(codes)
-  const portalEmails = await getPortalEmailsForCodes(codes)
-  const merged = mergeEmailLists(crmEmails, portalEmails)
-  if (crmEmails.length === 0 && portalEmails.length > 0) {
-    console.log('[Requisition email] Using portal employees.email (CRM had no addresses) for bucket', bucket)
-  }
-  return merged
+  return resolveEmailsPreferCrmForCodes(codes)
 }
 
 /** HOD recipients for legacy requisition-created job (same resolution as bucket HOD). */

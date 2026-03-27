@@ -1,5 +1,5 @@
 import { executeQuery, executeTransaction } from '../../config/database.js'
-import { getEmailsFromCrmUsers } from '../../config/crmDatabase.js'
+import { resolveEmailsPreferCrmForCodes } from '../utils/requisitionEmailRecipients.js'
 
 export async function getRequisitionsByEmployeeId(employeeId) {
   return executeQuery(
@@ -258,7 +258,7 @@ export async function getHodEmailsForDepartment(departmentId) {
     }
   }
   if (codes.length === 0) return []
-  return getEmailsFromCrmUsers(codes)
+  return resolveEmailsPreferCrmForCodes(codes)
 }
 
 /** True if this employee is HOD of this department (employee_hod_departments first, then by type or designation). */

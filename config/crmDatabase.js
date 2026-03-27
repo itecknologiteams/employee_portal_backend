@@ -192,6 +192,46 @@ export async function getEmailsFromCrmUsers(employeeCodes) {
   }
 }
 
+/**
+ * Map employee_code (lowercase) → official email from CRM USERS.
+ * Used for CRM-first recipient resolution (portal personal email only as fallback).
+ */
+export async function getCrmEmailMapByEmployeeCodes(employeeCodes) {
+  const map = new Map()
+  if (!employeeCodes || !Array.isArray(employeeCodes) || employeeCodes.length === 0) return map
+  const codes = [...new Set(employeeCodes.map((c) => String(c).trim()).filter(Boolean))]
+  if (codes.length === 0) return map
+  let pool
+  try {
+    pool = await getCrmPool()
+  } catch (err) {
+    console.error('CRM (getCrmEmailMapByEmployeeCodes): connection failed', err.message)
+    return map
+  }
+  const table = stripEnvQuotes(process.env.CRM_USERS_TABLE) || 'USERS'
+  const emailCol = stripEnvQuotes(process.env.CRM_USERS_EMAIL) || 'EMAIL'
+  const matchCol = stripEnvQuotes(process.env.CRM_USERS_MATCH_COLUMN) || 'EMPLOYEE_ID'
+  try {
+    const Mssql = await getMssql()
+    const request = pool.request()
+    codes.forEach((c, i) => { request.input(`c${i}`, Mssql.VarChar(100), c) })
+    const inClause = codes.map((_, i) => `@c${i}`).join(', ')
+    const query = `SELECT ${matchCol} AS code_key, ${emailCol} AS email_val FROM ${table} WHERE ${matchCol} IN (${inClause}) AND ${emailCol} IS NOT NULL AND LTRIM(RTRIM(${emailCol})) != ''`
+    const result = await request.query(query)
+    const rows = result.recordset || []
+    for (const r of rows) {
+      const code = r.code_key != null ? String(r.code_key).trim() : ''
+      const emailRaw = r.email_val ?? r[emailCol]
+      const email = emailRaw != null ? String(emailRaw).trim() : ''
+      if (code && email) map.set(code.toLowerCase(), email)
+    }
+    return map
+  } catch (err) {
+    console.error('CRM getCrmEmailMapByEmployeeCodes error:', err.message)
+    return map
+  }
+}
+
 export async function closeCrmPool() {
   if (crmPool) {
     try {

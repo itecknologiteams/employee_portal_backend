@@ -1,7 +1,7 @@
 import { Queue, Worker } from 'bullmq'
 import IORedis from 'ioredis'
 import { executeQuery } from '../config/database.js'
-import { getEmailsFromCrmUsers } from '../config/crmDatabase.js'
+import { resolveEmailsPreferCrmForCodes } from '../src/utils/requisitionEmailRecipients.js'
 import { getEmailTransport, isSmtpConfigured, EMAIL_FROM, APP_NAME } from '../config/email.js'
 
 const REDIS_URL = process.env.REDIS_URL || 'redis://localhost:6379'
@@ -105,7 +105,7 @@ async function getRecipientsForStageAndLevel(stage, level, creatorDepartmentId) 
 
   const codeList = [...codes]
   if (codeList.length === 0) return []
-  return getEmailsFromCrmUsers(codeList)
+  return resolveEmailsPreferCrmForCodes(codeList)
 }
 
 async function processCheckDeadlines() {
