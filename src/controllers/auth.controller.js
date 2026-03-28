@@ -1,7 +1,57 @@
+import crypto from 'crypto'
 import * as authService from '../services/auth.service.js'
 import { issueNotificationStreamToken, revokeNotificationStreamToken } from '../../config/notificationStream.js'
+import {
+  issueSsoConsumeToken,
+  consumeSsoToken,
+  revokeSsoSessionsForEmployee,
+  getSsoTokenTtlSec,
+  clearSsoRevocationForEmployee
+} from '../../config/crmSso.js'
 
 const REMEMBER_ME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
+
+function timingSafeEqualStr(a, b) {
+  if (a == null || b == null) return false
+  const ba = Buffer.from(String(a), 'utf8')
+  const bb = Buffer.from(String(b), 'utf8')
+  if (ba.length !== bb.length) return false
+  return crypto.timingSafeEqual(ba, bb)
+}
+
+function requireCrmSsoConfigured(req, res) {
+  const secret = process.env.CRM_SSO_SECRET
+  const minLen = process.env.NODE_ENV === 'production' ? 24 : 8
+  if (!secret || String(secret).length < minLen) {
+    res.status(503).json({ error: 'CRM SSO is not configured (set CRM_SSO_SECRET)' })
+    return false
+  }
+  const got =
+    req.headers['x-crm-sso-secret'] ||
+    (typeof req.headers.authorization === 'string' && /^Bearer\s+(.+)$/i.exec(req.headers.authorization)?.[1])
+  if (!timingSafeEqualStr(got, secret)) {
+    res.status(401).json({ error: 'Unauthorized' })
+    return false
+  }
+  return true
+}
+
+function portalPublicBase(req) {
+  return (process.env.PORTAL_PUBLIC_URL || '').replace(/\/$/, '') || `${req.protocol}://${req.get('host')}`
+}
+
+/** Same-origin path only (prevents open redirects). */
+function safeRedirectPath(baseUrl, redirect) {
+  if (!redirect || typeof redirect !== 'string') return '/'
+  try {
+    const base = new URL(baseUrl)
+    const u = new URL(redirect, baseUrl)
+    if (u.origin !== base.origin) return '/'
+    return u.pathname + u.search + u.hash || '/'
+  } catch (_) {
+    return '/'
+  }
+}
 
 export async function login(req, res) {
   try {
@@ -27,6 +77,7 @@ export async function login(req, res) {
       permissions: result.permissions || [],
       forcePasswordChange: result.forcePasswordChange === true
     }
+    await clearSsoRevocationForEmployee(result.employeeId)
     const streamToken = await issueNotificationStreamToken(result.employeeId)
     if (streamToken) req.session.notificationStreamToken = streamToken
     const payload = { ...result }
@@ -96,5 +147,111 @@ export async function register(req, res) {
   } catch (error) {
     console.error('Registration error:', error)
     res.status(500).json({ error: 'Failed to register employee' })
+  }
+}
+
+/**
+ * POST /api/auth/sso/prepare — CRM backend only. Returns one-time token and iframe consume URL.
+ * Body: { employeeCode?: string, employeeId?: number } (at least one required)
+ */
+export async function ssoPrepare(req, res) {
+  try {
+    if (!requireCrmSsoConfigured(req, res)) return
+    const { employeeCode, employeeId } = req.body || {}
+    if (
+      (employeeCode == null || String(employeeCode).trim() === '') &&
+      (employeeId == null || employeeId === '')
+    ) {
+      return res.status(400).json({ error: 'employeeCode or employeeId is required' })
+    }
+    const employee = await authService.resolveEmployeeForCrmSso({ employeeCode, employeeId })
+    if (!employee) {
+      return res.status(404).json({ error: 'No portal account for this employee' })
+    }
+    const result = await authService.sessionLoginPayloadFromEmployeeRow(employee)
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error })
+    }
+    const token = await issueSsoConsumeToken(result.employeeId)
+    if (!token) {
+      return res.status(500).json({ error: 'Could not issue SSO token' })
+    }
+    const base = portalPublicBase(req)
+    const consumeUrl = `${base}/api/auth/sso/consume?token=${encodeURIComponent(token)}`
+    res.json({
+      token,
+      expiresInSec: getSsoTokenTtlSec(),
+      consumeUrl
+    })
+  } catch (error) {
+    console.error('ssoPrepare error:', error)
+    res.status(500).json({ error: 'SSO prepare failed' })
+  }
+}
+
+/**
+ * GET /api/auth/sso/consume?token=...&redirect=/optional/path — browser / iframe; sets session cookie.
+ */
+export async function ssoConsume(req, res) {
+  try {
+    const token = req.query.token
+    const employeeId = await consumeSsoToken(token)
+    if (!employeeId) {
+      return res.status(400).send('<!DOCTYPE html><html><body><p>Invalid or expired SSO link. Close this window and sign in again from CRM.</p></body></html>')
+    }
+    const employee = await authService.resolveEmployeeForCrmSso({ employeeId })
+    if (!employee) {
+      return res.status(404).send('<!DOCTYPE html><html><body><p>Portal account not found.</p></body></html>')
+    }
+    const result = await authService.sessionLoginPayloadFromEmployeeRow(employee)
+    if (result.error) {
+      return res.status(result.status || 400).send(`<!DOCTYPE html><html><body><p>${String(result.error)}</p></body></html>`)
+    }
+    req.session.user = {
+      employeeId: result.employeeId,
+      name: result.name,
+      email: result.email,
+      department: result.department,
+      position: result.position,
+      userType: result.userType,
+      permissions: result.permissions || [],
+      forcePasswordChange: result.forcePasswordChange === true
+    }
+    const streamToken = await issueNotificationStreamToken(result.employeeId)
+    if (streamToken) req.session.notificationStreamToken = streamToken
+
+    const base = portalPublicBase(req)
+    const target = safeRedirectPath(base, req.query.redirect)
+    res.redirect(302, target)
+  } catch (error) {
+    console.error('ssoConsume error:', error)
+    res.status(500).send('<!DOCTYPE html><html><body><p>SSO failed</p></body></html>')
+  }
+}
+
+/**
+ * POST /api/auth/sso/invalidate — CRM backend: mark user sessions invalid (portal logs out on next request).
+ * Body: { employeeId?: number, employeeCode?: string }
+ */
+export async function ssoInvalidate(req, res) {
+  try {
+    if (!requireCrmSsoConfigured(req, res)) return
+    const { employeeCode, employeeId } = req.body || {}
+    let eid = employeeId != null && employeeId !== '' ? parseInt(employeeId, 10) : NaN
+    if (Number.isNaN(eid) && employeeCode != null && String(employeeCode).trim() !== '') {
+      const employee = await authService.resolveEmployeeForCrmSso({ employeeCode })
+      if (!employee) {
+        return res.status(404).json({ error: 'No portal account for this employee' })
+      }
+      eid = employee.employee_id
+    }
+    if (Number.isNaN(eid)) {
+      return res.status(400).json({ error: 'employeeId or employeeCode is required' })
+    }
+    await revokeSsoSessionsForEmployee(eid)
+    res.json({ ok: true, employeeId: eid })
+  } catch (error) {
+    console.error('ssoInvalidate error:', error)
+    res.status(500).json({ error: 'SSO invalidate failed' })
   }
 }

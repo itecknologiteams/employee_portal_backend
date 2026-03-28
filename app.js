@@ -23,6 +23,7 @@ import {
 } from './src/routes/index.js'
 import { requestLogger } from './src/middleware/requestLogger.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
+import { ssoRevocationMiddleware } from './src/middleware/ssoRevocation.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -97,6 +98,7 @@ app.use(session({
     maxAge: SESSION_MAX_AGE_MS
   }
 }))
+app.use(ssoRevocationMiddleware)
 app.use(requestLogger)
 
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')))

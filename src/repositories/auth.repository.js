@@ -36,6 +36,18 @@ export async function findEmployeeByEmployeeCode(employeeCode) {
   )
 }
 
+/** Same row shape as findEmployeeByEmployeeCode, keyed by portal employee_id (CRM SSO). */
+export async function findEmployeeByEmployeeId(employeeId) {
+  return executeQuery(
+    `SELECT e.employee_id, e.first_name, e.last_name, e.email, e.department_id,
+        d.department_name, e.position, e.is_active
+     FROM employees e
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE e.employee_id = $1`,
+    [employeeId]
+  )
+}
+
 /** Get user_type and force_password_change for an employee (from users table). */
 export async function getUserTypeByEmployeeId(employeeId) {
   const rows = await executeQuery(

@@ -159,6 +159,49 @@ async function loginWithPortalCredentials(loginId, password) {
   }
 }
 
+/**
+ * Build the same login payload as normal login for an employee row (CRM SSO after CRM already authenticated the user).
+ */
+export async function sessionLoginPayloadFromEmployeeRow(employee) {
+  if (!employee || !employee.employee_id) {
+    return { error: 'Employee not found', status: 404 }
+  }
+  if (!employee.is_active) {
+    return { error: 'Account is deactivated. Please contact HR.', status: 403 }
+  }
+  const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
+  const role = await resolveRoleForPermissions(employee.employee_id, userType)
+  const permissions = await getEffectivePermissions(employee.employee_id, role)
+  const isTechnician = role === 'Technician'
+  const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
+  return {
+    employeeId: employee.employee_id,
+    name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
+    email: employee.email || '',
+    department: employee.department_name || employee.department_id || '',
+    position: employee.position || '',
+    userType: isTechnician ? 'Technician' : userType,
+    permissions,
+    forcePasswordChange: !!forcePasswordChange
+  }
+}
+
+/** Resolve employee by CRM employee_code or numeric portal employee_id. */
+export async function resolveEmployeeForCrmSso({ employeeCode, employeeId }) {
+  if (employeeId != null && employeeId !== '') {
+    const id = parseInt(employeeId, 10)
+    if (!Number.isNaN(id)) {
+      const rows = await authRepo.findEmployeeByEmployeeId(id)
+      if (rows.length > 0) return rows[0]
+    }
+  }
+  if (employeeCode != null && String(employeeCode).trim() !== '') {
+    const rows = await authRepo.findEmployeeByEmployeeCode(String(employeeCode).trim())
+    if (rows.length > 0) return rows[0]
+  }
+  return null
+}
+
 export async function login(loginId, password) {
   const useCrm = !!process.env.CRM_HOST
 
