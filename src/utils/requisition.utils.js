@@ -104,11 +104,19 @@ export function getTATFromRequisition(row) {
     const e = end ? toTs(end).getTime() : now.getTime()
     return (e - s) / (1000 * 60 * 60)
   }
+  /** If committee approved but approval_date missing in DB, infer exit from CEO stamp (same moment when CEO skipped). */
+  const committeeExit =
+    row.req_committee_approval_date ||
+    (Number(row.req_committee_approval) === 1 ? row.req_ceo_approval_date || null : null)
+  const committeeStart = (row.req_hr_approval_date || row.req_hod_approval_date) || null
+  /** CEO stage begins when Committee finishes (same timestamp as committee exit). */
+  const ceoStageStart = committeeExit
+
   const buckets = [
     { name: 'HOD', start: row.req_created_at, end: row.req_hod_approval_date || null },
     ...(row.req_hr_approval_date != null ? [{ name: 'HR', start: row.req_hod_approval_date || null, end: row.req_hr_approval_date || null }] : []),
-    { name: 'Committee', start: (row.req_hr_approval_date || row.req_hod_approval_date) || null, end: row.req_committee_approval_date || null },
-    { name: 'CEO', start: row.req_committee_approval_date || null, end: row.req_ceo_approval_date || null },
+    { name: 'Committee', start: committeeStart, end: committeeExit },
+    { name: 'CEO', start: ceoStageStart, end: row.req_ceo_approval_date || null },
     { name: 'Procurement', start: row.req_ceo_approval_date || null, end: row.req_handed_to_finance_date || null },
     { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null },
     { name: 'Procurement (complete)', start: row.req_finance_approval_date || null, end: row.req_purchase_completed_date || null },
