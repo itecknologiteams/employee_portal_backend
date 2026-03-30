@@ -98,29 +98,16 @@ function rowParamsFromItem(item) {
   const qty = item.itemQty ?? item.item_qty ?? 1
   const cost = item.itemEstCost || item.item_est_cost || null
   const remarks = item.itemRemarks || item.item_remarks || null
-  const emin = item.itemEstMin != null && item.itemEstMin !== '' ? Number(item.itemEstMin) : null
-  const emax = item.itemEstMax != null && item.itemEstMax !== '' ? Number(item.itemEstMax) : null
-  return { desc, size, brand, qty, cost, remarks, emin: Number.isFinite(emin) ? emin : null, emax: Number.isFinite(emax) ? emax : null }
+  return { desc, size, brand, qty, cost, remarks }
 }
 
 export async function insertRequisitionItem(reqId, item) {
   const r = rowParamsFromItem(item)
-  try {
-    return await executeQuery(
-      `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks, item_est_min, item_est_max)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [reqId, r.desc, r.size, r.brand, r.qty, r.cost, r.remarks, r.emin, r.emax]
-    )
-  } catch (e) {
-    if (e.code === '42703') {
-      return executeQuery(
-        `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [reqId, r.desc, r.size, r.brand, r.qty, r.cost, r.remarks]
-      )
-    }
-    throw e
-  }
+  return executeQuery(
+    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [reqId, r.desc, r.size, r.brand, r.qty, r.cost, r.remarks]
+  )
 }
 
 /** Batch insert requisition items (one round-trip). */
@@ -131,35 +118,16 @@ export async function insertRequisitionItemsBatch(reqId, items) {
   let i = 0
   for (const item of items) {
     const r = rowParamsFromItem(item)
-    const base = i * 9
-    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`)
-    params.push(reqId, r.desc, r.size, r.brand, r.qty, r.cost, r.remarks, r.emin, r.emax)
+    const base = i * 7
+    values.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`)
+    params.push(reqId, r.desc, r.size, r.brand, r.qty, r.cost, r.remarks)
     i++
   }
-  try {
-    await executeQuery(
-      `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks, item_est_min, item_est_max)
-       VALUES ${values.join(', ')}`,
-      params
-    )
-  } catch (e) {
-    if (e.code !== '42703') throw e
-    const values7 = []
-    const params7 = []
-    let j = 0
-    for (const item of items) {
-      const r = rowParamsFromItem(item)
-      const b = j * 7
-      values7.push(`($${b + 1}, $${b + 2}, $${b + 3}, $${b + 4}, $${b + 5}, $${b + 6}, $${b + 7})`)
-      params7.push(reqId, r.desc, r.size, r.brand, r.qty, r.cost, r.remarks)
-      j++
-    }
-    await executeQuery(
-      `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
-       VALUES ${values7.join(', ')}`,
-      params7
-    )
-  }
+  await executeQuery(
+    `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+     VALUES ${values.join(', ')}`,
+    params
+  )
 }
 
 export async function getCreatorDepartment(employeeId) {
@@ -536,35 +504,13 @@ export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost)
 
 /** Update a single requisition item (description, size, brand, qty, est_cost, remarks). Only for items belonging to reqId. */
 export async function updateRequisitionItem(itemId, reqId, payload) {
-  const { item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks, item_est_min, item_est_max } = payload
-  try {
-    return await executeQuery(
-      `UPDATE requisition_items SET
-         item_desc = $1, item_size = $2, item_brand = $3, item_qty = $4, item_est_cost = $5, item_remarks = $6,
-         item_est_min = $7, item_est_max = $8
-       WHERE item_id = $9 AND req_id = $10`,
-      [
-        item_desc ?? null,
-        item_size ?? null,
-        item_brand ?? null,
-        item_qty ?? null,
-        item_est_cost ?? null,
-        item_remarks ?? null,
-        item_est_min ?? null,
-        item_est_max ?? null,
-        itemId,
-        reqId
-      ]
-    )
-  } catch (e) {
-    if (e.code !== '42703') throw e
-    return executeQuery(
-      `UPDATE requisition_items SET
-         item_desc = $1, item_size = $2, item_brand = $3, item_qty = $4, item_est_cost = $5, item_remarks = $6
-       WHERE item_id = $7 AND req_id = $8`,
-      [item_desc ?? null, item_size ?? null, item_brand ?? null, item_qty ?? null, item_est_cost ?? null, item_remarks ?? null, itemId, reqId]
-    )
-  }
+  const { item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks } = payload
+  return executeQuery(
+    `UPDATE requisition_items SET
+       item_desc = $1, item_size = $2, item_brand = $3, item_qty = $4, item_est_cost = $5, item_remarks = $6
+     WHERE item_id = $7 AND req_id = $8`,
+    [item_desc ?? null, item_size ?? null, item_brand ?? null, item_qty ?? null, item_est_cost ?? null, item_remarks ?? null, itemId, reqId]
+  )
 }
 
 export async function approveHod(requisitionId) {

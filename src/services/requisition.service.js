@@ -13,12 +13,7 @@ import {
   computeCommitteeApprovedLineTotalPKR,
   REQUISITION_CEO_MIN_AMOUNT_PKR
 } from '../utils/requisition.utils.js'
-import {
-  parseTokenToPkr,
-  parseFlexibleAmountInput,
-  parseCostFieldToUnitPkr,
-  getEffectiveUnitPricePkrFromItem
-} from '../utils/requisitionAmountParse.js'
+import { parseCostFieldToUnitPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 
@@ -259,58 +254,19 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
   return { data, pagination: { page, limit, total, totalPages } }
 }
 
-/** Normalize item amounts (5k, ranges) and optional min/max columns before DB insert. */
+/** Normalize item unit price to numeric string before DB insert. */
 function normalizeRequisitionItemForCreate(item) {
-  const mode = item.amountMode === 'range' ? 'range' : 'single'
-  let itemEstMin
-  let itemEstMax
-  let itemEstCost
-
-  if (mode === 'range') {
-    const minS = String(item.itemEstMin ?? '').trim()
-    const maxS = String(item.itemEstMax ?? '').trim()
-    if (!minS && !maxS) {
-      return { ...item, itemEstCost: item.itemEstCost != null && String(item.itemEstCost).trim() !== '' ? String(item.itemEstCost).trim() : null, itemEstMin: undefined, itemEstMax: undefined }
-    }
-    const minN = parseTokenToPkr(item.itemEstMin)
-    const maxN = parseTokenToPkr(item.itemEstMax)
-    if (minN == null || maxN == null) {
-      const e = new Error('Enter both minimum and maximum PKR for the price range (e.g. 1700 and 2000, or 1.7k and 2k).')
-      e.status = 400
-      throw e
-    }
-    let lo = minN
-    let hi = maxN
-    if (lo > hi) [lo, hi] = [hi, lo]
-    itemEstMin = Math.round(lo * 100) / 100
-    itemEstMax = Math.round(hi * 100) / 100
-    itemEstCost = String(Math.round((itemEstMin + itemEstMax) / 2))
-  } else {
-    const raw = String(item.itemEstCost ?? '').trim()
-    if (!raw) {
-      return { ...item, itemEstCost: null, itemEstMin: undefined, itemEstMax: undefined }
-    }
-    const p = parseFlexibleAmountInput(raw)
-    if (!p) {
-      const e = new Error('Invalid price per piece (PKR). Use digits or shorthand like 5k, 1.1k — or choose “Price range” for min/max.')
-      e.status = 400
-      throw e
-    }
-    if (p.kind === 'range') {
-      itemEstMin = Math.round(p.min * 100) / 100
-      itemEstMax = Math.round(p.max * 100) / 100
-      itemEstCost = String(Math.round((p.min + p.max) / 2))
-    } else {
-      itemEstCost = String(Math.round(p.value))
-    }
+  const raw = String(item.itemEstCost ?? '').trim()
+  if (!raw) {
+    return { ...item, itemEstCost: null }
   }
-
-  return {
-    ...item,
-    itemEstCost,
-    itemEstMin: itemEstMin != null ? itemEstMin : undefined,
-    itemEstMax: itemEstMax != null ? itemEstMax : undefined
+  const n = parseFloat(raw.replace(/,/g, ''))
+  if (Number.isNaN(n) || n < 0) {
+    const e = new Error('Invalid price per piece (PKR). Enter numbers only.')
+    e.status = 400
+    throw e
   }
+  return { ...item, itemEstCost: String(Math.round(n * 100) / 100) }
 }
 
 export async function createRequisition(body) {

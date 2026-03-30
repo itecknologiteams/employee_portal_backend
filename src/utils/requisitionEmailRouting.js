@@ -10,23 +10,10 @@ import { computeCommitteeApprovedLineTotalPKR, REQUISITION_CEO_MIN_AMOUNT_PKR } 
  * Pass into getRequisitionBucket when available so emails/reminders target Procurement instead of CEO under threshold.
  */
 export async function fetchLineTotalPkrForCeoRule(reqId) {
-  let rows
-  try {
-    rows = await executeQuery(
-      `SELECT committee_approved_qty, item_est_cost, hod_item_est_cost, item_est_min, item_est_max
-       FROM requisition_items WHERE req_id = $1`,
-      [reqId]
-    )
-  } catch (e) {
-    if (e.code === '42703') {
-      rows = await executeQuery(
-        `SELECT committee_approved_qty, item_est_cost, hod_item_est_cost FROM requisition_items WHERE req_id = $1`,
-        [reqId]
-      )
-    } else {
-      throw e
-    }
-  }
+  const rows = await executeQuery(
+    `SELECT committee_approved_qty, item_est_cost, hod_item_est_cost FROM requisition_items WHERE req_id = $1`,
+    [reqId]
+  )
   return computeCommitteeApprovedLineTotalPKR(rows || [])
 }
 

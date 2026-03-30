@@ -8,7 +8,6 @@ export const REQUISITION_CEO_MIN_AMOUNT_PKR = parseInt(process.env.REQUISITION_C
 
 /**
  * Sum of (committee_approved_qty × unit price) for all items — same formula as Committee approve → CEO skip rule.
- * Unit price supports informal amounts (5k), ranges, and item_est_min / item_est_max.
  */
 export function computeCommitteeApprovedLineTotalPKR(items) {
   if (!items || !items.length) return 0
