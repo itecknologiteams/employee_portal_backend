@@ -41,7 +41,7 @@ router.put('/designation-allowances', payrollController.saveDesignationAllowance
 
 // ---------- Salary structures ----------
 router.get('/salary-structures', payrollController.listSalaryStructures)
-router.get('/salary-structures/:employeeId', payrollController.getSalaryStructureByEmployee)
+router.get('/salary-structures/:employeeCode', payrollController.getSalaryStructureByEmployee)
 router.post('/salary-structures', payrollController.saveSalaryStructure)
 
 export default router

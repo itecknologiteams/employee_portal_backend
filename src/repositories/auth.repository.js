@@ -3,7 +3,7 @@ import { executeQuery } from '../../config/database.js'
 export async function findUserByUsername(loginId) {
   return executeQuery(
     `SELECT u.user_id, u.username, u.password, u.hashed_password, u.force_password_change, u.user_type, u.emp_id,
-        e.employee_id, e.first_name, e.last_name, e.email, e.is_active,
+        e.employee_id, e.employee_code, e.first_name, e.last_name, e.email, e.is_active,
         d.department_name
      FROM users u
      JOIN employees e ON u.emp_id = e.employee_id
@@ -15,7 +15,7 @@ export async function findUserByUsername(loginId) {
 
 export async function findEmployeeByEmail(loginId) {
   return executeQuery(
-    `SELECT e.employee_id, e.first_name, e.last_name, e.email, e.department_id,
+    `SELECT e.employee_id, e.employee_code, e.first_name, e.last_name, e.email, e.department_id,
         d.department_name, e.position, e.password_hash, e.password, e.is_active
      FROM employees e
      LEFT JOIN departments d ON e.department_id = d.department_id
@@ -27,7 +27,7 @@ export async function findEmployeeByEmail(loginId) {
 /** Find portal employee by employee_code (e.g. CRM HR_Emp_ID) for CRM login match. */
 export async function findEmployeeByEmployeeCode(employeeCode) {
   return executeQuery(
-    `SELECT e.employee_id, e.first_name, e.last_name, e.email, e.department_id,
+    `SELECT e.employee_id, e.employee_code, e.first_name, e.last_name, e.email, e.department_id,
         d.department_name, e.position, e.is_active
      FROM employees e
      LEFT JOIN departments d ON e.department_id = d.department_id
@@ -39,13 +39,23 @@ export async function findEmployeeByEmployeeCode(employeeCode) {
 /** Same row shape as findEmployeeByEmployeeCode, keyed by portal employee_id (CRM SSO). */
 export async function findEmployeeByEmployeeId(employeeId) {
   return executeQuery(
-    `SELECT e.employee_id, e.first_name, e.last_name, e.email, e.department_id,
+    `SELECT e.employee_id, e.employee_code, e.first_name, e.last_name, e.email, e.department_id,
         d.department_name, e.position, e.is_active
      FROM employees e
      LEFT JOIN departments d ON e.department_id = d.department_id
      WHERE e.employee_id = $1`,
     [employeeId]
   )
+}
+
+/** Resolve employee_code string → numeric employee_id. Returns null if not found. */
+export async function getEmployeeIdByCode(employeeCode) {
+  if (!employeeCode || String(employeeCode).trim() === '') return null
+  const rows = await executeQuery(
+    'SELECT employee_id FROM employees WHERE employee_code = $1',
+    [String(employeeCode).trim()]
+  )
+  return rows[0]?.employee_id ?? null
 }
 
 /** Get user_type and force_password_change for an employee (from users table). */

@@ -1,4 +1,5 @@
 import * as feedbackService from '../services/feedback.service.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 export async function getAllFeedback(req, res) {
   try {
@@ -12,7 +13,9 @@ export async function getAllFeedback(req, res) {
 
 export async function getFeedbackHistory(req, res) {
   try {
-    const employeeId = req.params.employeeId ?? req.params.employee_id
+    const employeeCode = req.params.employeeCode
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const history = await feedbackService.getFeedbackHistory(employeeId)
     if (history?.error) {
       return res.status(history.status).json({ error: history.error })

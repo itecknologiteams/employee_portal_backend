@@ -1,5 +1,6 @@
 import * as requisitionService from '../services/requisition.service.js'
 import * as requisitionEmailDiagnosticsService from '../services/requisitionEmailDiagnostics.service.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 function sendResult(result, res, fallbackMessage) {
   if (result && result.error != null && result.status != null) {
@@ -13,7 +14,9 @@ function sendResult(result, res, fallbackMessage) {
 
 export async function getHistory(req, res) {
   try {
-    const result = await requisitionService.getHistory(req.params.employeeId, req.query)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getHistory(employeeId, req.query)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {
@@ -54,7 +57,9 @@ export async function getTrackRecords(req, res) {
 
 export async function getTrackRecordsByEmployee(req, res) {
   try {
-    const result = await requisitionService.getTrackRecordsByEmployee(req.params.employeeId, req.query)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getTrackRecordsByEmployee(employeeId, req.query)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {
@@ -65,7 +70,13 @@ export async function getTrackRecordsByEmployee(req, res) {
 
 export async function createRequisition(req, res) {
   try {
-    const result = await requisitionService.createRequisition(req.body)
+    const body = { ...req.body }
+    if (body.employeeCode && !body.employeeId) {
+      const resolvedId = await getEmployeeIdByCode(body.employeeCode)
+      if (!resolvedId) return res.status(404).json({ error: 'Employee not found' })
+      body.employeeId = resolvedId
+    }
+    const result = await requisitionService.createRequisition(body)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {
@@ -119,7 +130,9 @@ export async function testEmail(req, res) {
 
 export async function getDebug(req, res) {
   try {
-    const result = await requisitionService.getDebug(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getDebug(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (err) {
@@ -156,7 +169,9 @@ export async function getEmailDiagnostics(req, res) {
 
 export async function getReportAll(req, res) {
   try {
-    const result = await requisitionService.getReportAll(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getReportAll(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -167,7 +182,9 @@ export async function getReportAll(req, res) {
 
 export async function getPendingCount(req, res) {
   try {
-    const result = await requisitionService.getPendingCount(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingCount(employeeId)
     res.json(result)
   } catch (error) {
     console.error('Pending count error:', error)
@@ -177,7 +194,9 @@ export async function getPendingCount(req, res) {
 
 export async function getPendingHod(req, res) {
   try {
-    const result = await requisitionService.getPendingHod(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingHod(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -188,7 +207,9 @@ export async function getPendingHod(req, res) {
 
 export async function getApprovedByHod(req, res) {
   try {
-    const result = await requisitionService.getApprovedByHod(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getApprovedByHod(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -210,7 +231,9 @@ export async function approveHod(req, res) {
 
 export async function getPendingHR(req, res) {
   try {
-    const result = await requisitionService.getPendingHR(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingHR(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -232,7 +255,9 @@ export async function approveHR(req, res) {
 
 export async function getPendingAdmin(req, res) {
   try {
-    const result = await requisitionService.getPendingAdmin(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingAdmin(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -254,7 +279,9 @@ export async function approveAdmin(req, res) {
 
 export async function getPendingCommittee(req, res) {
   try {
-    const result = await requisitionService.getPendingCommittee(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingCommittee(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -276,7 +303,9 @@ export async function approveCommittee(req, res) {
 
 export async function getPendingCeo(req, res) {
   try {
-    const result = await requisitionService.getPendingCeo(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingCeo(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -298,7 +327,9 @@ export async function approveCeo(req, res) {
 
 export async function getPendingProcurement(req, res) {
   try {
-    const result = await requisitionService.getPendingProcurement(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingProcurement(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -387,7 +418,9 @@ export async function completePurchase(req, res) {
 
 export async function getPendingAdminExecution(req, res) {
   try {
-    const result = await requisitionService.getPendingAdminExecution(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingAdminExecution(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -398,7 +431,9 @@ export async function getPendingAdminExecution(req, res) {
 
 export async function getPendingHodAcknowledge(req, res) {
   try {
-    const result = await requisitionService.getPendingHodAcknowledge(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingHodAcknowledge(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -422,7 +457,9 @@ export async function acknowledgeReceipt(req, res) {
 
 export async function getPendingCreatorAcknowledge(req, res) {
   try {
-    const result = await requisitionService.getPendingCreatorAcknowledge(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingCreatorAcknowledge(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -455,7 +492,9 @@ export async function handoverFinance(req, res) {
 
 export async function getPendingFinance(req, res) {
   try {
-    const result = await requisitionService.getPendingFinance(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingFinance(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {

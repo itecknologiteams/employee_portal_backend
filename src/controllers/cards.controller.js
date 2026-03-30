@@ -27,11 +27,11 @@ export async function listTechnicians(req, res) {
   }
 }
 
-/** GET /api/cards/:idOrCode – single technician card (for QR scan; public). Resolves by id or employee_code. */
+/** GET /api/cards/:employeeCode – single technician card (for QR scan; public). Resolves by employee_code or id. */
 export async function getTechnicianCard(req, res) {
   try {
-    const { employeeId: idOrCode } = req.params
-    const row = await cardsRepo.getTechnicianByIdOrCode(idOrCode)
+    const { employeeCode } = req.params
+    const row = await cardsRepo.getTechnicianByIdOrCode(employeeCode)
     if (!row) {
       return res.status(404).json({ error: 'Technician not found' })
     }
@@ -87,11 +87,11 @@ export async function createEmployee(req, res) {
   }
 }
 
-/** PUT /api/cards/:employeeId – update employee. */
+/** PUT /api/cards/:employeeCode – update employee. */
 export async function updateEmployee(req, res) {
   try {
-    const { employeeId } = req.params
-    const row = await cardsRepo.updateEmployee(employeeId, req.body || {})
+    const { employeeCode } = req.params
+    const row = await cardsRepo.updateEmployee(employeeCode, req.body || {})
     if (!row) return res.status(404).json({ error: 'Employee not found' })
     res.json(mapRowToCard(row))
   } catch (err) {

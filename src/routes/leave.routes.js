@@ -3,11 +3,11 @@ import * as leaveController from '../controllers/leave.controller.js'
 
 const router = express.Router()
 
-router.get('/balance/:employeeId', leaveController.getLeaveBalance)
-router.get('/requests/:employeeId', leaveController.getLeaveRequests)
-router.get('/pending/hod/:employeeId', leaveController.getPendingHod)
-router.get('/hr/list/:employeeId', leaveController.getHrList)
-router.get('/hr/pending/:employeeId', leaveController.getPendingHr)
+router.get('/balance/:employeeCode', leaveController.getLeaveBalance)
+router.get('/requests/:employeeCode', leaveController.getLeaveRequests)
+router.get('/pending/hod/:employeeCode', leaveController.getPendingHod)
+router.get('/hr/list/:employeeCode', leaveController.getHrList)
+router.get('/hr/pending/:employeeCode', leaveController.getPendingHr)
 router.post('/request', leaveController.createLeaveRequest)
 router.put('/request/:leaveRequestId/status', leaveController.updateLeaveStatus)
 

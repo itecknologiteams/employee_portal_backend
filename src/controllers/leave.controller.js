@@ -1,8 +1,11 @@
 import * as leaveService from '../services/leave.service.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 export async function getLeaveBalance(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const balance = await leaveService.getLeaveBalance(employeeId)
     res.json(balance)
   } catch (error) {
@@ -13,7 +16,9 @@ export async function getLeaveBalance(req, res) {
 
 export async function getLeaveRequests(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const requests = await leaveService.getLeaveRequests(employeeId)
     res.json(requests)
   } catch (error) {
@@ -24,7 +29,10 @@ export async function getLeaveRequests(req, res) {
 
 export async function createLeaveRequest(req, res) {
   try {
-    const { employeeId, leaveType, startDate, endDate, reason } = req.body
+    const { employeeCode, leaveType, startDate, endDate, reason } = req.body
+    if (!employeeCode) return res.status(400).json({ error: 'employeeCode is required' })
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await leaveService.createLeaveRequest({
       employeeId, leaveType, startDate, endDate, reason
     })
@@ -37,7 +45,10 @@ export async function createLeaveRequest(req, res) {
 
 export async function getPendingHod(req, res) {
   try {
-    const result = await leaveService.getPendingHod(req.params.employeeId)
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await leaveService.getPendingHod(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {
@@ -48,7 +59,10 @@ export async function getPendingHod(req, res) {
 
 export async function getHrList(req, res) {
   try {
-    const result = await leaveService.getHrList(req.params.employeeId, req.query)
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await leaveService.getHrList(employeeId, req.query)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {
@@ -59,7 +73,10 @@ export async function getHrList(req, res) {
 
 export async function getPendingHr(req, res) {
   try {
-    const result = await leaveService.getPendingHr(req.params.employeeId)
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await leaveService.getPendingHr(employeeId)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(Array.isArray(result) ? result : [])
   } catch (error) {

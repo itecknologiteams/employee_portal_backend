@@ -6,13 +6,13 @@ const router = express.Router()
 
 // Public – list & single card (QR scan)
 router.get('/technicians', cardsController.listTechnicians)
-router.get('/:employeeId', cardsController.getTechnicianCard)
+router.get('/:employeeCode', cardsController.getTechnicianCard)
 
 // Upload profile image (before :id routes so /upload-profile is literal)
 router.post('/upload-profile', cardsProfileUpload.single('profileImage'), cardsController.uploadProfileImage)
 
 // CRUD – create & update (order matters: specific before :id)
 router.post('/', cardsController.createEmployee)
-router.put('/:employeeId', cardsController.updateEmployee)
+router.put('/:employeeCode', cardsController.updateEmployee)
 
 export default router

@@ -1,5 +1,6 @@
 import * as payrollService from '../services/payroll.service.js'
 import * as repo from '../repositories/payroll.repository.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 const VALID_STATUSES = ['draft', 'processing', 'processed', 'closed']
 
@@ -20,10 +21,12 @@ export async function searchEmployees(req, res) {
 // ---------- Gross salaries ----------
 export async function addGrossSalary(req, res) {
   try {
-    const { employeeId, grossSalary } = req.body
-    if (employeeId == null || grossSalary == null) {
-      return res.status(400).json({ error: 'employeeId and grossSalary are required' })
+    const { employeeCode, grossSalary } = req.body
+    if (employeeCode == null || grossSalary == null) {
+      return res.status(400).json({ error: 'employeeCode and grossSalary are required' })
     }
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await payrollService.addGrossSalary(employeeId, grossSalary)
     res.status(201).json(result)
   } catch (err) {
@@ -389,7 +392,9 @@ export async function listSalaryStructures(req, res) {
 
 export async function getSalaryStructureByEmployee(req, res) {
   try {
-    const result = await payrollService.getSalaryStructureByEmployee(req.params.employeeId)
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await payrollService.getSalaryStructureByEmployee(employeeId)
     if (!result) return res.json(null)
     res.json(result)
   } catch (err) {
@@ -400,10 +405,13 @@ export async function getSalaryStructureByEmployee(req, res) {
 
 export async function saveSalaryStructure(req, res) {
   try {
-    if (!req.body.employeeId) {
-      return res.status(400).json({ error: 'employeeId is required' })
+    const { employeeCode, ...rest } = req.body
+    if (!employeeCode) {
+      return res.status(400).json({ error: 'employeeCode is required' })
     }
-    const result = await payrollService.saveSalaryStructure(req.body)
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await payrollService.saveSalaryStructure({ ...rest, employeeId })
     res.status(201).json(result)
   } catch (err) {
     if (err.code === '42P01') return res.status(500).json({ error: 'Payroll tables not found. Run database/schema.sql.' })

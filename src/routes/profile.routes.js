@@ -8,8 +8,8 @@ router.get('/change-requests', profileController.getChangeRequests)
 router.post('/change-requests/approve', profileController.approveChangeRequest)
 router.post('/change-requests/reject', profileController.rejectChangeRequest)
 
-router.get('/:employeeId', profileController.getProfile)
-router.put('/:employeeId', profileController.updateProfile)
-router.get('/:employeeId/pending', profileController.getMyPendingProfileRequest)
+router.get('/:employeeCode', profileController.getProfile)
+router.put('/:employeeCode', profileController.updateProfile)
+router.get('/:employeeCode/pending', profileController.getMyPendingProfileRequest)
 
 export default router

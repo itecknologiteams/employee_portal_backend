@@ -1,8 +1,11 @@
 import * as profileService from '../services/profile.service.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 export async function getProfile(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const profile = await profileService.getProfile(employeeId)
     if (!profile) {
       return res.status(404).json({ error: 'Employee not found' })
@@ -16,7 +19,9 @@ export async function getProfile(req, res) {
 
 export async function updateProfile(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const data = req.body || {}
     const result = await profileService.updateProfile(employeeId, data)
     res.json(result)
@@ -26,10 +31,12 @@ export async function updateProfile(req, res) {
   }
 }
 
-/** GET /profile/:employeeId/pending – employee's own pending request */
+/** GET /profile/:employeeCode/pending – employee's own pending request */
 export async function getMyPendingProfileRequest(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const pending = await profileService.getMyPendingRequest(employeeId)
     if (!pending) return res.status(404).json({ message: 'No pending profile change request' })
     res.json(pending)

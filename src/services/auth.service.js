@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import * as authRepo from '../repositories/auth.repository.js'
 import { checkCrmLogin, getCrmEmployeeIdByUsername } from '../../config/crmDatabase.js'
+import { isSsoEnrolledAndRevoked } from '../../config/crmSso.js'
 
 const ALL_PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
@@ -106,12 +107,16 @@ async function loginWithPortalCredentials(loginId, password) {
       }
       const valid = await bcrypt.compare(password, hashToCheck)
       if (valid) {
+        if (await isSsoEnrolledAndRevoked(row.emp_id)) {
+          return { error: 'Access suspended by CRM. Please sign in through CRM.', status: 403 }
+        }
         const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
         const permissions = await getEffectivePermissions(row.emp_id, role)
         const isTechnician = role === 'Technician'
         const forcePasswordChange = isTechnician && (row.force_password_change === true)
         return {
           employeeId: row.emp_id,
+          employeeCode: row.employee_code || '',
           name: `${row.first_name || ''} ${row.last_name || ''}`.trim(),
           email: row.email,
           department: row.department_name || '',
@@ -142,6 +147,9 @@ async function loginWithPortalCredentials(loginId, password) {
   if (!isValidPassword) {
     return { error: 'Invalid username/email or password', status: 401 }
   }
+  if (await isSsoEnrolledAndRevoked(employee.employee_id)) {
+    return { error: 'Access suspended by CRM. Please sign in through CRM.', status: 403 }
+  }
   const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
   const role = await resolveRoleForPermissions(employee.employee_id, userType)
   const permissions = await getEffectivePermissions(employee.employee_id, role)
@@ -149,6 +157,7 @@ async function loginWithPortalCredentials(loginId, password) {
   const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
   return {
     employeeId: employee.employee_id,
+    employeeCode: employee.employee_code || '',
     name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
     email: employee.email,
     department: employee.department_name || employee.department_id,
@@ -176,6 +185,7 @@ export async function sessionLoginPayloadFromEmployeeRow(employee) {
   const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
   return {
     employeeId: employee.employee_id,
+    employeeCode: employee.employee_code || '',
     name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
     email: employee.email || '',
     department: employee.department_name || employee.department_id || '',
@@ -228,6 +238,7 @@ export async function login(loginId, password) {
           const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
           return {
             employeeId: employee.employee_id,
+            employeeCode: employee.employee_code || '',
             name: `${employee.first_name || ''} ${employee.last_name || ''}`.trim(),
             email: employee.email || '',
             department: employee.department_name || employee.department_id || '',

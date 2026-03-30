@@ -6,8 +6,11 @@ import {
   consumeSsoToken,
   revokeSsoSessionsForEmployee,
   getSsoTokenTtlSec,
-  clearSsoRevocationForEmployee
+  clearSsoRevocationForEmployee,
+  setSsoActiveForEmployee,
+  getSsoStatus
 } from '../../config/crmSso.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 const REMEMBER_ME_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000 // 7 days
 
@@ -69,6 +72,7 @@ export async function login(req, res) {
     }
     req.session.user = {
       employeeId: result.employeeId,
+      employeeCode: result.employeeCode || '',
       name: result.name,
       email: result.email,
       department: result.department,
@@ -77,7 +81,6 @@ export async function login(req, res) {
       permissions: result.permissions || [],
       forcePasswordChange: result.forcePasswordChange === true
     }
-    await clearSsoRevocationForEmployee(result.employeeId)
     const streamToken = await issueNotificationStreamToken(result.employeeId)
     if (streamToken) req.session.notificationStreamToken = streamToken
     const payload = { ...result }
@@ -113,14 +116,19 @@ export async function logout(req, res) {
 
 export async function changePassword(req, res) {
   try {
-    const { employeeId, currentPassword, newPassword } = req.body
-    if (!employeeId || !currentPassword || !newPassword) {
+    const { employeeCode, employeeId: legacyEmployeeId, currentPassword, newPassword } = req.body
+    if ((!employeeCode && !legacyEmployeeId) || !currentPassword || !newPassword) {
       return res.status(400).json({ error: 'All fields are required' })
     }
     if (newPassword.length < 8) {
       return res.status(400).json({ error: 'Password must be at least 8 characters long' })
     }
-    const result = await authService.changePassword(employeeId, currentPassword, newPassword)
+    let resolvedId = legacyEmployeeId
+    if (employeeCode) {
+      resolvedId = await getEmployeeIdByCode(employeeCode)
+      if (!resolvedId) return res.status(404).json({ error: 'Employee not found' })
+    }
+    const result = await authService.changePassword(resolvedId, currentPassword, newPassword)
     if (result.error) {
       return res.status(result.status || 400).json({ error: result.error })
     }
@@ -209,6 +217,7 @@ export async function ssoConsume(req, res) {
     }
     req.session.user = {
       employeeId: result.employeeId,
+      employeeCode: result.employeeCode || '',
       name: result.name,
       email: result.email,
       department: result.department,
@@ -217,6 +226,8 @@ export async function ssoConsume(req, res) {
       permissions: result.permissions || [],
       forcePasswordChange: result.forcePasswordChange === true
     }
+    await setSsoActiveForEmployee(result.employeeId)
+    await clearSsoRevocationForEmployee(result.employeeId)
     const streamToken = await issueNotificationStreamToken(result.employeeId)
     if (streamToken) req.session.notificationStreamToken = streamToken
 
@@ -249,9 +260,102 @@ export async function ssoInvalidate(req, res) {
       return res.status(400).json({ error: 'employeeId or employeeCode is required' })
     }
     await revokeSsoSessionsForEmployee(eid)
-    res.json({ ok: true, employeeId: eid })
+    res.json({ ok: true, employeeId: eid, ssoStatus: 'revoked' })
   } catch (error) {
     console.error('ssoInvalidate error:', error)
     res.status(500).json({ error: 'SSO invalidate failed' })
+  }
+}
+
+/**
+ * POST /api/auth/sso/session — Unified CRM endpoint.
+ * Body: { employeeCode: string, isActive: boolean }
+ *   isActive: true  → login  (issues SSO token + consumeUrl for browser redirect)
+ *   isActive: false → logout (revokes session; portal login blocked until re-auth)
+ */
+export async function ssoSession(req, res) {
+  try {
+    if (!requireCrmSsoConfigured(req, res)) return
+
+    const { employeeCode, isActive } = req.body || {}
+
+    if (!employeeCode || String(employeeCode).trim() === '') {
+      return res.status(400).json({ error: 'employeeCode is required' })
+    }
+    if (typeof isActive !== 'boolean') {
+      return res.status(400).json({ error: 'isActive must be true or false' })
+    }
+
+    const employee = await authService.resolveEmployeeForCrmSso({ employeeCode: String(employeeCode).trim() })
+    if (!employee) {
+      return res.status(404).json({ error: 'No portal account for this employee' })
+    }
+
+    // ── isActive: false → LOGOUT ──────────────────────────────────────────────
+    if (!isActive) {
+      await revokeSsoSessionsForEmployee(employee.employee_id)
+      return res.json({
+        ok: true,
+        employeeCode: String(employeeCode).trim(),
+        isActive: false,
+        ssoStatus: 'revoked',
+        message: 'Session revoked. Portal login blocked until CRM re-authenticates.'
+      })
+    }
+
+    // ── isActive: true → LOGIN ────────────────────────────────────────────────
+    const result = await authService.sessionLoginPayloadFromEmployeeRow(employee)
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error })
+    }
+
+    const token = await issueSsoConsumeToken(result.employeeId)
+    if (!token) {
+      return res.status(500).json({ error: 'Could not issue SSO token' })
+    }
+
+    const base = portalPublicBase(req)
+    const consumeUrl = `${base}/api/auth/sso/consume?token=${encodeURIComponent(token)}`
+
+    return res.json({
+      ok: true,
+      employeeCode: String(employeeCode).trim(),
+      isActive: true,
+      ssoStatus: 'pending',
+      token,
+      expiresInSec: getSsoTokenTtlSec(),
+      consumeUrl,
+      message: 'Redirect browser to consumeUrl to complete login.'
+    })
+  } catch (error) {
+    console.error('ssoSession error:', error)
+    res.status(500).json({ error: 'SSO session operation failed' })
+  }
+}
+
+/**
+ * GET /api/auth/sso/status?employeeCode=10001 — CRM backend: check current SSO status for an employee.
+ * Returns: { employeeCode, status: "active" | "revoked" | "unknown" }
+ */
+export async function ssoStatus(req, res) {
+  try {
+    if (!requireCrmSsoConfigured(req, res)) return
+    const rawCode = req.query.employeeCode
+    if (!rawCode || String(rawCode).trim() === '') {
+      return res.status(400).json({ error: 'employeeCode query param is required' })
+    }
+    const employee = await authService.resolveEmployeeForCrmSso({ employeeCode: String(rawCode).trim() })
+    if (!employee) {
+      return res.status(404).json({ error: 'No portal account for this employee' })
+    }
+    const status = await getSsoStatus(employee.employee_id)
+    res.json({
+      employeeCode: rawCode.trim(),
+      employeeId: employee.employee_id,
+      status
+    })
+  } catch (error) {
+    console.error('ssoStatus error:', error)
+    res.status(500).json({ error: 'SSO status check failed' })
   }
 }

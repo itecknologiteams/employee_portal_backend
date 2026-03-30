@@ -1,9 +1,12 @@
 import * as salaryService from '../services/salary.service.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 /** List salary slips for employee (payroll + old + legacy). Id format: "p-123", "o-456", "s-789". */
 export async function listSlips(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.listSlips(employeeId)
     res.json(result)
   } catch (error) {
@@ -15,7 +18,9 @@ export async function listSlips(req, res) {
 /** List only old (imported) salary slips for the "Old salary slips" tab. */
 export async function listOldSlips(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.listOldSlipsOnly(employeeId)
     res.json(result)
   } catch (error) {
@@ -24,14 +29,16 @@ export async function listOldSlips(req, res) {
   }
 }
 
-/** Get one old slip by numeric id. Query: employeeId required. For GET /old-slip/:id. */
+/** Get one old slip by numeric id. Query: employeeCode required. For GET /old-slip/:id. */
 export async function getOldSlip(req, res) {
   try {
     const { id } = req.params
-    const employeeId = req.query.employeeId
-    if (!employeeId) {
-      return res.status(400).json({ error: 'employeeId required' })
+    const employeeCode = req.query.employeeCode
+    if (!employeeCode) {
+      return res.status(400).json({ error: 'employeeCode required' })
     }
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.getOldSlipById(id, employeeId)
     if (!result) return res.status(404).json({ error: 'Slip not found' })
     res.json(result)
@@ -41,14 +48,16 @@ export async function getOldSlip(req, res) {
   }
 }
 
-/** Get one salary slip by id ("p-123", "o-456", or "s-789"). Query: employeeId required. */
+/** Get one salary slip by id ("p-123", "o-456", or "s-789"). Query: employeeCode required. */
 export async function getSlip(req, res) {
   try {
     const rawId = req.params.id
-    const employeeId = req.query.employeeId
-    if (!employeeId) {
-      return res.status(400).json({ error: 'employeeId required' })
+    const employeeCode = req.query.employeeCode
+    if (!employeeCode) {
+      return res.status(400).json({ error: 'employeeCode required' })
     }
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.getSlipById(rawId, employeeId)
     if (!result) return res.status(404).json({ error: 'Salary slip not found' })
     res.json(result)
@@ -61,7 +70,9 @@ export async function getSlip(req, res) {
 /** Legacy: current month salary (latest slip for employee via hr_emp_id). */
 export async function getCurrentSalary(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const salary = await salaryService.getCurrentSalary(employeeId)
     res.json(salary)
   } catch (error) {
@@ -73,7 +84,9 @@ export async function getCurrentSalary(req, res) {
 /** Legacy: history (same as slips but different response shape). */
 export async function getSalaryHistory(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const limit = parseInt(req.query.limit, 10) || 12
     const history = await salaryService.getSalaryHistory(employeeId, limit)
     res.json(history)
@@ -83,12 +96,14 @@ export async function getSalaryHistory(req, res) {
   }
 }
 
-/** Download: return slip data. Params: salarySlipId ("p-123", "o-456", or "s-789"). Query: employeeId required. */
+/** Download: return slip data. Params: salarySlipId ("p-123", "o-456", or "s-789"). Query: employeeCode required. */
 export async function downloadSalarySlip(req, res) {
   try {
     const rawId = req.params.salarySlipId
-    const employeeId = req.query.employeeId
-    if (!employeeId) return res.status(400).json({ error: 'employeeId required' })
+    const employeeCode = req.query.employeeCode
+    if (!employeeCode) return res.status(400).json({ error: 'employeeCode required' })
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.getSalarySlipForDownload(rawId, employeeId)
     if (!result) return res.status(404).json({ error: 'Salary slip not found' })
     res.json(result)
@@ -114,10 +129,12 @@ export async function createOldSlips(req, res) {
   }
 }
 
-/** GET /fpin/status/:employeeId – has the employee set a FPIN? */
+/** GET /fpin/status/:employeeCode – has the employee set a FPIN? */
 export async function getFpinStatus(req, res) {
   try {
-    const { employeeId } = req.params
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.getFpinStatus(employeeId)
     res.json(result)
   } catch (error) {
@@ -126,11 +143,13 @@ export async function getFpinStatus(req, res) {
   }
 }
 
-/** POST /fpin/set – body: { employeeId, pin }. Set or update FPIN (4–8 digits). */
+/** POST /fpin/set – body: { employeeCode, pin }. Set or update FPIN (4–8 digits). */
 export async function setFpin(req, res) {
   try {
-    const { employeeId, pin } = req.body
-    if (!employeeId) return res.status(400).json({ error: 'employeeId is required' })
+    const { employeeCode, pin } = req.body
+    if (!employeeCode) return res.status(400).json({ error: 'employeeCode is required' })
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.setFpin(employeeId, pin)
     if (result.error) return res.status(result.status || 400).json({ error: result.error })
     res.json(result)
@@ -140,11 +159,13 @@ export async function setFpin(req, res) {
   }
 }
 
-/** POST /fpin/verify – body: { employeeId, pin }. Verify FPIN for viewing salary. */
+/** POST /fpin/verify – body: { employeeCode, pin }. Verify FPIN for viewing salary. */
 export async function verifyFpin(req, res) {
   try {
-    const { employeeId, pin } = req.body
-    if (!employeeId) return res.status(400).json({ error: 'employeeId is required' })
+    const { employeeCode, pin } = req.body
+    if (!employeeCode) return res.status(400).json({ error: 'employeeCode is required' })
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await salaryService.verifyFpin(employeeId, pin)
     if (result.error) return res.status(result.status || 401).json({ error: result.error })
     res.json(result)
