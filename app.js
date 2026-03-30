@@ -52,6 +52,10 @@ const allowedOrigins = [
   `http://${NETWORK_IP}:4173`,
   'https://emp.itecknologi.com',
   'http://rfm.itecknologi.internal',
+  'http://192.168.20.244',
+  'http://192.168.20.244/',
+  'https://iot.itecknologi.com',
+  'https://iot.itecknologi.com/',
   ...envCorsOrigins
 ]
 
@@ -60,7 +64,7 @@ const app = express()
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true)
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes(NETWORK_IP)) {
+    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes(NETWORK_IP) || origin.includes('192.168.20.244')) {
       callback(null, true)
     } else {
       callback(new Error(`CORS: origin '${origin}' is not allowed`))
