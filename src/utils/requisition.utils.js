@@ -95,46 +95,148 @@ export function parseEmployeeId(employeeId) {
   return Number.isNaN(n) ? null : n
 }
 
-export function getTATFromRequisition(row) {
+function hoursBetweenTat(start, end) {
   const now = new Date()
   const toTs = (d) => (d ? new Date(d) : null)
-  const hoursBetween = (start, end) => {
-    if (!start) return null
-    const s = toTs(start).getTime()
-    const e = end ? toTs(end).getTime() : now.getTime()
-    return (e - s) / (1000 * 60 * 60)
-  }
-  /** If committee approved but approval_date missing in DB, infer exit from CEO stamp (same moment when CEO skipped). */
-  const committeeExit =
-    row.req_committee_approval_date ||
-    (Number(row.req_committee_approval) === 1 ? row.req_ceo_approval_date || null : null)
-  const committeeStart = (row.req_hr_approval_date || row.req_hod_approval_date) || null
-  /** CEO stage begins when Committee finishes (same timestamp as committee exit). */
-  const ceoStageStart = committeeExit
+  if (!start) return null
+  const s = toTs(start).getTime()
+  const e = end ? toTs(end).getTime() : now.getTime()
+  return (e - s) / (1000 * 60 * 60)
+}
 
-  const buckets = [
-    { name: 'HOD', start: row.req_created_at, end: row.req_hod_approval_date || null },
-    ...(row.req_hr_approval_date != null ? [{ name: 'HR', start: row.req_hod_approval_date || null, end: row.req_hr_approval_date || null }] : []),
-    { name: 'Committee', start: committeeStart, end: committeeExit },
-    { name: 'CEO', start: ceoStageStart, end: row.req_ceo_approval_date || null },
-    { name: 'Procurement', start: row.req_ceo_approval_date || null, end: row.req_handed_to_finance_date || null },
-    { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null },
-    { name: 'Procurement (complete)', start: row.req_finance_approval_date || null, end: row.req_purchase_completed_date || null },
-    { name: 'HOD Acknowledge', start: row.req_purchase_completed_date || null, end: row.req_hod_acknowledged_date || null },
-    { name: 'Creator Acknowledge', start: (row.req_purchase_completed_date || row.req_admin_approval_date || row.req_finance_approval_date) || null, end: row.req_creator_acknowledged_date || null }
-  ]
+function mapBucketsToDuration(buckets) {
   const withDuration = buckets.map((b) => {
-    const hours = hoursBetween(b.start, b.end)
+    const hours = hoursBetweenTat(b.start, b.end)
     return {
       name: b.name,
       start: b.start || null,
       end: b.end || null,
+      assignee: b.assignee != null ? b.assignee : '—',
       hours: hours != null ? Math.round(hours * 100) / 100 : null,
       days: hours != null ? Math.round((hours / 24) * 100) / 100 : null
     }
   })
   const totalHours = withDuration.reduce((sum, b) => sum + (b.hours != null ? b.hours : 0), 0)
   return { buckets: withDuration, totalHours: Math.round(totalHours * 100) / 100 }
+}
+
+/** Legacy static pipeline (when DB flow / category map unavailable). */
+export function getTATFromRequisition(row) {
+  /** If committee approved but approval_date missing in DB, infer exit from CEO stamp (same moment when CEO skipped). */
+  const committeeExit =
+    row.req_committee_approval_date ||
+    (Number(row.req_committee_approval) === 1 ? row.req_ceo_approval_date || null : null)
+  const committeeStart = (row.req_hr_approval_date || row.req_hod_approval_date) || null
+  const ceoStageStart = committeeExit
+
+  const buckets = [
+    { name: 'HOD', start: row.req_created_at, end: row.req_hod_approval_date || null, assignee: '—' },
+    ...(row.req_hr_approval_date != null ? [{ name: 'HR', start: row.req_hod_approval_date || null, end: row.req_hr_approval_date || null, assignee: '—' }] : []),
+    { name: 'Committee', start: committeeStart, end: committeeExit, assignee: '—' },
+    { name: 'CEO', start: ceoStageStart, end: row.req_ceo_approval_date || null, assignee: '—' },
+    { name: 'Procurement', start: row.req_ceo_approval_date || null, end: row.req_handed_to_finance_date || null, assignee: '—' },
+    { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null, assignee: '—' },
+    { name: 'Procurement (complete)', start: row.req_finance_approval_date || null, end: row.req_purchase_completed_date || null, assignee: '—' },
+    { name: 'HOD Acknowledge', start: row.req_purchase_completed_date || null, end: row.req_hod_acknowledged_date || null, assignee: '—' },
+    { name: 'Creator Acknowledge', start: (row.req_purchase_completed_date || row.req_admin_approval_date || row.req_finance_approval_date) || null, end: row.req_creator_acknowledged_date || null, assignee: '—' }
+  ]
+  return mapBucketsToDuration(buckets)
+}
+
+/** Stages in category flow that are not skipped (same order as requisition_flow_stage). */
+function getActiveFlowStages(flowStages, behaviorMap) {
+  if (!Array.isArray(flowStages) || !flowStages.length || !behaviorMap || typeof behaviorMap !== 'object') {
+    return []
+  }
+  return flowStages.filter((s) => {
+    const b = behaviorMap[s.stage_key]
+    return b && b !== 'skip'
+  })
+}
+
+/** When this stage finished (exit timestamp), or null if not yet. */
+function getStageCompletionTimestamp(row, stageKey) {
+  const k = String(stageKey || '').toLowerCase()
+  switch (k) {
+    case 'hod':
+      return row.req_hod_approval_date || null
+    case 'hr':
+      return row.req_hr_approval_date || null
+    case 'committee':
+      return (
+        row.req_committee_approval_date ||
+        (Number(row.req_committee_approval) === 1 ? row.req_ceo_approval_date || null : null) ||
+        null
+      )
+    case 'ceo':
+      return row.req_ceo_approval_date || null
+    case 'procurement':
+      return row.req_handed_to_finance_date || null
+    case 'finance':
+      return row.req_finance_approval_date || null
+    case 'admin':
+      return row.req_admin_approval_date || null
+    default:
+      return null
+  }
+}
+
+function buildPostFlowTailBuckets(row) {
+  return [
+    {
+      name: 'Procurement (complete)',
+      start: row.req_finance_approval_date || null,
+      end: row.req_purchase_completed_date || null,
+      assignee: '—'
+    },
+    {
+      name: 'HOD Acknowledge',
+      start: row.req_purchase_completed_date || null,
+      end: row.req_hod_acknowledged_date || null,
+      assignee: '—'
+    },
+    {
+      name: 'Creator Acknowledge',
+      start: (row.req_purchase_completed_date || row.req_admin_approval_date || row.req_finance_approval_date) || null,
+      end: row.req_creator_acknowledged_date || null,
+      assignee: '—'
+    }
+  ]
+}
+
+/**
+ * TAT buckets from DB-driven category flow: only non-skipped stages, in order.
+ * Next stage does not appear until the previous stage has an exit timestamp — so HR pending shows HR, not Committee.
+ */
+export function buildTatFromRequisition(row, flowStages, behaviorMap) {
+  if (!row) return { buckets: [], totalHours: 0 }
+  const active = getActiveFlowStages(flowStages, behaviorMap)
+  if (!active.length) return getTATFromRequisition(row)
+
+  const raw = []
+  for (let i = 0; i < active.length; i++) {
+    const stage = active[i]
+    const key = stage.stage_key
+    const label = stage.stage_label || key
+    const assignee = stage.employee_type_name || stage.designation_name || '—'
+
+    let start = null
+    const end = getStageCompletionTimestamp(row, key)
+
+    if (i === 0) {
+      start = row.req_created_at
+    } else {
+      const prevKey = active[i - 1].stage_key
+      const prevEnd = getStageCompletionTimestamp(row, prevKey)
+      if (prevEnd == null) break
+      start = prevEnd
+    }
+
+    raw.push({ name: label, start, end, assignee })
+  }
+
+  const buckets = [...raw, ...buildPostFlowTailBuckets(row)]
+  return mapBucketsToDuration(buckets)
 }
 
 export function formatTotalTime(totalHours) {

@@ -8,6 +8,7 @@ import {
   getPendingAt,
   parseEmployeeId,
   getTATFromRequisition,
+  buildTatFromRequisition,
   formatTotalTime,
   tatReportStatusCondition,
   computeCommitteeApprovedLineTotalPKR,
@@ -1598,8 +1599,20 @@ export async function getTatReport(query) {
     if (err.code === '42703') rows = await reqRepo.getTatReportDataFallback(whereClause, params, limit, offset)
     else throw err
   }
+  const stages = await reqRepo.getFlowStages()
+  const categories = [...new Set(rows.map((r) => r.req_category).filter(Boolean))]
+  const behaviorByCategory = new Map()
+  for (const cat of categories) {
+    const m = await reqRepo.getCategoryStageBehaviorMap(cat)
+    if (m) behaviorByCategory.set(String(cat).trim().toLowerCase(), m)
+  }
+
   const data = rows.map((row) => {
-    const { totalHours } = getTATFromRequisition(row)
+    const bm = row.req_category ? behaviorByCategory.get(String(row.req_category).trim().toLowerCase()) : null
+    const { totalHours } =
+      stages?.length && bm
+        ? buildTatFromRequisition(row, stages, bm)
+        : getTATFromRequisition(row)
     const creatorNameVal = `${row.first_name || ''} ${row.last_name || ''}`.trim() || '—'
     return {
       requisitionId: row.req_id,
@@ -1624,7 +1637,12 @@ export async function getTat(reqId) {
   }
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
-  const { buckets, totalHours } = getTATFromRequisition(row)
+  const stages = await reqRepo.getFlowStages()
+  const behaviorMap = row.req_category ? await reqRepo.getCategoryStageBehaviorMap(row.req_category) : null
+  const { buckets, totalHours } =
+    stages?.length && behaviorMap
+      ? buildTatFromRequisition(row, stages, behaviorMap)
+      : getTATFromRequisition(row)
   return {
     requisitionId: row.req_id,
     referenceNo: row.req_reference_no,

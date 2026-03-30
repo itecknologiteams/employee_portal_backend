@@ -1140,7 +1140,7 @@ export async function isEmployeeTypeForStage(employeeId, stageKey) {
 
 export async function getRequisitionRowForTat(reqId) {
   return executeQuery(
-    `SELECT req_id, req_reference_no, req_created_at, req_hod_approval, req_hod_approval_date,
+    `SELECT req_id, req_reference_no, req_category, req_created_at, req_hod_approval, req_hod_approval_date,
       req_hr_approval, req_hr_approval_date, req_admin_approval, req_admin_approval_date,
       req_committee_approval, req_committee_approval_date, req_ceo_approval, req_ceo_approval_date,
       req_procurement_ack, req_handed_to_finance, req_handed_to_finance_date,
@@ -1468,7 +1468,7 @@ export async function getTatReportCount(whereClause, params) {
 
 export async function getTatReportData(whereClause, params, limit, offset) {
   return executeQuery(
-    `SELECT r.req_id, r.req_reference_no, r.req_created_at,
+    `SELECT r.req_id, r.req_reference_no, r.req_category, r.req_created_at,
        r.req_hod_approval, r.req_hod_approval_date, r.req_hr_approval, r.req_hr_approval_date, r.req_current_stage_key,
        r.req_committee_approval, r.req_committee_approval_date,
        r.req_ceo_approval, r.req_ceo_approval_date, r.req_procurement_ack, r.req_handed_to_finance,
