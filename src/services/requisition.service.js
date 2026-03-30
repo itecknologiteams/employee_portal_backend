@@ -1,3 +1,4 @@
+import { executeQuery } from '../../config/database.js'
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
 import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
@@ -8,8 +9,16 @@ import {
   parseEmployeeId,
   getTATFromRequisition,
   formatTotalTime,
-  tatReportStatusCondition
+  tatReportStatusCondition,
+  computeCommitteeApprovedLineTotalPKR,
+  REQUISITION_CEO_MIN_AMOUNT_PKR
 } from '../utils/requisition.utils.js'
+import {
+  parseTokenToPkr,
+  parseFlexibleAmountInput,
+  parseCostFieldToUnitPkr,
+  getEffectiveUnitPricePkrFromItem
+} from '../utils/requisitionAmountParse.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 
@@ -250,6 +259,60 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
   return { data, pagination: { page, limit, total, totalPages } }
 }
 
+/** Normalize item amounts (5k, ranges) and optional min/max columns before DB insert. */
+function normalizeRequisitionItemForCreate(item) {
+  const mode = item.amountMode === 'range' ? 'range' : 'single'
+  let itemEstMin
+  let itemEstMax
+  let itemEstCost
+
+  if (mode === 'range') {
+    const minS = String(item.itemEstMin ?? '').trim()
+    const maxS = String(item.itemEstMax ?? '').trim()
+    if (!minS && !maxS) {
+      return { ...item, itemEstCost: item.itemEstCost != null && String(item.itemEstCost).trim() !== '' ? String(item.itemEstCost).trim() : null, itemEstMin: undefined, itemEstMax: undefined }
+    }
+    const minN = parseTokenToPkr(item.itemEstMin)
+    const maxN = parseTokenToPkr(item.itemEstMax)
+    if (minN == null || maxN == null) {
+      const e = new Error('Enter both minimum and maximum PKR for the price range (e.g. 1700 and 2000, or 1.7k and 2k).')
+      e.status = 400
+      throw e
+    }
+    let lo = minN
+    let hi = maxN
+    if (lo > hi) [lo, hi] = [hi, lo]
+    itemEstMin = Math.round(lo * 100) / 100
+    itemEstMax = Math.round(hi * 100) / 100
+    itemEstCost = String(Math.round((itemEstMin + itemEstMax) / 2))
+  } else {
+    const raw = String(item.itemEstCost ?? '').trim()
+    if (!raw) {
+      return { ...item, itemEstCost: null, itemEstMin: undefined, itemEstMax: undefined }
+    }
+    const p = parseFlexibleAmountInput(raw)
+    if (!p) {
+      const e = new Error('Invalid price per piece (PKR). Use digits or shorthand like 5k, 1.1k — or choose “Price range” for min/max.')
+      e.status = 400
+      throw e
+    }
+    if (p.kind === 'range') {
+      itemEstMin = Math.round(p.min * 100) / 100
+      itemEstMax = Math.round(p.max * 100) / 100
+      itemEstCost = String(Math.round((p.min + p.max) / 2))
+    } else {
+      itemEstCost = String(Math.round(p.value))
+    }
+  }
+
+  return {
+    ...item,
+    itemEstCost,
+    itemEstMin: itemEstMin != null ? itemEstMin : undefined,
+    itemEstMax: itemEstMax != null ? itemEstMax : undefined
+  }
+}
+
 export async function createRequisition(body) {
   const { employeeId, location, material, requiredByDate, business, items, category } = body
   if (!employeeId) {
@@ -327,7 +390,13 @@ export async function createRequisition(body) {
   const refNo = created.req_reference_no
 
   if (validItems.length > 0) {
-    await reqRepo.insertRequisitionItemsBatch(reqId, validItems)
+    let normalizedItems
+    try {
+      normalizedItems = validItems.map((it) => normalizeRequisitionItemForCreate(it))
+    } catch (normErr) {
+      return { error: normErr.message || 'Invalid item amount', status: normErr.status || 400 }
+    }
+    await reqRepo.insertRequisitionItemsBatch(reqId, normalizedItems)
   }
 
   // Category-based flow: if category has HOD "For Info" only (no approval), auto-advance past HOD to next real stage (1.csv)
@@ -661,12 +730,8 @@ export async function approveHod(body) {
   const items = await reqRepo.getRequisitionItems(requisitionId)
   if (!items.length) return { error: 'Requisition has no items', status: 400 }
 
-  const LIMIT_50K = 50000
-  const LIMIT_100K = 100000
-  let totalAmount = 0
-
   if (boqItems.length > 0) {
-    // Route purely from request BOQ: total = sum(quantity * price per piece) from payload only.
+    // Validate BOQ from request payload only.
     const boqByItemId = new Map()
     for (const row of boqItems) {
       const itemId = (row.itemId ?? row.item_id) != null ? parseInt(row.itemId ?? row.item_id, 10) : null
@@ -675,15 +740,14 @@ export async function approveHod(body) {
       const qty = (qtyRaw != null && qtyRaw !== '') ? parseInt(qtyRaw, 10) : 0
       const costVal = row.estCost ?? row.est_cost ?? ''
       const costStr = costVal != null ? String(costVal).trim() : ''
-      const pricePerPiece = costStr !== '' ? parseFloat(String(costStr).replace(/,/g, '')) : NaN
-      if (Number.isNaN(pricePerPiece) || pricePerPiece < 0) {
+      const pricePerPiece = costStr !== '' ? parseCostFieldToUnitPkr(costStr) : null
+      if (pricePerPiece == null || pricePerPiece < 0) {
         return { error: 'Every item must have a price per piece (PKR). Please fill price per piece for all items in the BOQ.', status: 400 }
       }
       if (Number.isNaN(qty) || qty < 0) {
         return { error: 'Every item must have a valid quantity.', status: 400 }
       }
       boqByItemId.set(itemId, { qty, pricePerPiece })
-      totalAmount += qty * pricePerPiece
     }
     const covered = items.every(it => {
       const id = it.item_id ?? it.itemId
@@ -692,32 +756,17 @@ export async function approveHod(body) {
     if (!covered || boqByItemId.size === 0) {
       return { error: 'BOQ (quantity and price per piece) is required for every item. Please fill all items and submit again.', status: 400 }
     }
-    totalAmount = Math.round(Number(totalAmount))
   } else {
-    const boqByItemId = new Map()
     for (const it of items) {
-      const itemId = it.item_id ?? it.itemId
       const qty = (it.item_qty != null && !Number.isNaN(Number(it.item_qty))) ? Number(it.item_qty) : (it.hod_item_qty != null ? Number(it.hod_item_qty) : 0)
-      const costRaw = it.item_est_cost ?? it.hod_item_est_cost ?? ''
-      const pricePerPiece = (costRaw != null && String(costRaw).trim() !== '')
-        ? parseFloat(String(costRaw).replace(/,/g, '').trim()) : NaN
-      if (Number.isNaN(pricePerPiece) || pricePerPiece < 0) {
+      const pricePerPiece = getEffectiveUnitPricePkrFromItem(it)
+      if (pricePerPiece == null || pricePerPiece < 0) {
         return { error: 'Every item must have a price per piece (PKR). Please fill price per piece for all items in the BOQ.', status: 400 }
       }
       if (qty < 0 || Number.isNaN(qty)) {
         return { error: 'Every item must have a valid quantity.', status: 400 }
       }
-      totalAmount += qty * pricePerPiece
     }
-    totalAmount = Math.round(Number(totalAmount))
-  }
-
-  if (totalAmount < LIMIT_50K) {
-    await reqRepo.approveHodDirectToProcurement(requisitionId)
-    await setCurrentStageIfFlowEnabled(requisitionId, 'procurement')
-    await notifyBucketChanged(requisitionId, 'procurement')
-    notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, 'procurement', deptIdForReq))
-    return { message: 'HOD approval recorded; forwarded to Procurement (total under 50K)', status: 'Forwarded to Procurement' }
   }
 
   await reqRepo.approveHod(requisitionId)
@@ -726,7 +775,7 @@ export async function approveHod(body) {
   const bucket = nextKey === 'hr' ? 'hr' : 'committee'
   await notifyBucketChanged(requisitionId, bucket)
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
-  return { message: 'HOD approval recorded', status: nextKey === 'hr' ? 'Pending HR' : (totalAmount < LIMIT_100K ? 'Pending Committee' : 'Pending Committee (then CEO if ≥100K)') }
+  return { message: 'HOD approval recorded', status: nextKey === 'hr' ? 'Pending HR' : 'Pending Committee' }
 }
 
 export async function getPendingHR(employeeId) {
@@ -895,25 +944,15 @@ export async function approveCommittee(body) {
     return { message: 'Committee approval recorded', status: statusLabel }
   }
 
-  // When next stage is CEO (or no flow): apply 100K rule — total <= 100K skip CEO and forward to Procurement.
-  const LIMIT_100K = 100000
+  // When next stage is CEO (or no flow): line total strictly under REQUISITION_CEO_MIN_AMOUNT_PKR → skip CEO, forward to Procurement.
   const itemsAfter = await reqRepo.getRequisitionItems(reqId)
-  let totalAfterCommittee = 0
-  for (const it of itemsAfter) {
-    const qtyRaw = it.committee_approved_qty ?? it.committeeApprovedQty
-    const qty = (qtyRaw != null && !Number.isNaN(Number(qtyRaw))) ? Number(qtyRaw) : 0
-    const costRaw = it.item_est_cost ?? it.hod_item_est_cost ?? it.itemEstCost ?? ''
-    const pricePerPiece = (costRaw != null && String(costRaw).trim() !== '')
-      ? parseFloat(String(costRaw).replace(/,/g, '').trim()) : NaN
-    if (!Number.isNaN(pricePerPiece) && pricePerPiece >= 0) totalAfterCommittee += qty * pricePerPiece
-  }
-  totalAfterCommittee = Math.round(totalAfterCommittee)
-  if (totalAfterCommittee <= LIMIT_100K) {
+  const totalAfterCommittee = computeCommitteeApprovedLineTotalPKR(itemsAfter)
+  if (totalAfterCommittee < REQUISITION_CEO_MIN_AMOUNT_PKR) {
     await reqRepo.approveCeo(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
-    return { message: 'Committee approval recorded; forwarded to Procurement (total 100K or under)', status: 'Forwarded to Procurement' }
+    return { message: `Committee approval recorded; forwarded to Procurement (line total under ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR — CEO stage skipped)`, status: 'Forwarded to Procurement' }
   }
 
   const nextKey = nextKeyFromFlow || 'ceo'
@@ -923,19 +962,73 @@ export async function approveCommittee(body) {
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
+/** Auto-approve CEO and move to Procurement when line total is under threshold (same rule as Committee approve). */
+async function applyCeoSkipToProcurementIfUnderThreshold(reqId) {
+  const lineItems = await reqRepo.getRequisitionItems(reqId)
+  const lineTotal = computeCommitteeApprovedLineTotalPKR(lineItems)
+  if (lineTotal >= REQUISITION_CEO_MIN_AMOUNT_PKR) return false
+  await reqRepo.approveCeo(reqId)
+  await setCurrentStageIfFlowEnabled(reqId, 'procurement')
+  await notifyBucketChanged(reqId, 'procurement')
+  const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptRow[0]?.department_id))
+  return true
+}
+
+/**
+ * Fix stuck rows: DB stage CEO but committee line total is below CEO threshold (e.g. after raising REQUISITION_CEO_MIN_AMOUNT_PKR).
+ * Safe to call from diagnostics lookup or CEO pending list.
+ */
+export async function repairCeoBucketIfUnderThreshold(reqId) {
+  const rows = await executeQuery(
+    `SELECT r.req_id, r.req_hod_approval, r.req_committee_approval, r.req_ceo_approval,
+            r.req_is_rejected, r.req_purchase_completed, r.req_hod_acknowledged, r.req_creator_role
+     FROM requisition r WHERE r.req_id = $1`,
+    [reqId]
+  )
+  const row = rows[0]
+  if (!row || Number(row.req_is_rejected) === 1) return { repaired: false }
+  const hodOk = Number(row.req_hod_approval) === 1
+  const committeeOk = Number(row.req_committee_approval) === 1
+  const ceoPending = row.req_ceo_approval == null || Number(row.req_ceo_approval) === 0
+  const ceoAckPurchaseRow =
+    Number(row.req_purchase_completed) === 1 &&
+    (row.req_hod_acknowledged == null || Number(row.req_hod_acknowledged) === 0) &&
+    String(row.req_creator_role || '') === 'CEO'
+  if (!hodOk || !committeeOk || !ceoPending || ceoAckPurchaseRow) return { repaired: false }
+  const repaired = await applyCeoSkipToProcurementIfUnderThreshold(reqId)
+  return { repaired }
+}
+
 export async function getPendingCeo(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'ceo') : await reqRepo.isCeoMember(eid)
   if (!ok) return []
-  const rows = useFlow
+  let rows = useFlow
     ? await reqRepo.getPendingRequisitionsByCurrentStage('ceo')
     : await reqRepo.getPendingCeoRequisitions()
-  const reqIds = rows.map(r => r.req_id)
+  const repaired = []
+  for (const r of rows) {
+    const hodOk = Number(r.req_hod_approval) === 1
+    const committeeOk = Number(r.req_committee_approval) === 1
+    const ceoPending = r.req_ceo_approval == null || Number(r.req_ceo_approval) === 0
+    const normalCeoApprovalPending = hodOk && committeeOk && ceoPending
+    const ceoAckPurchaseRow =
+      Number(r.req_purchase_completed) === 1 &&
+      (r.req_hod_acknowledged == null || Number(r.req_hod_acknowledged) === 0) &&
+      String(r.req_creator_role || '') === 'CEO'
+    if (normalCeoApprovalPending && !ceoAckPurchaseRow) {
+      const skipped = await applyCeoSkipToProcurementIfUnderThreshold(r.req_id)
+      if (skipped) continue
+    }
+    repaired.push(r)
+  }
+  rows = repaired
+  const reqIds = rows.map((r) => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  const list = rows.map(req => ({ ...req, status: 'Pending CEO', items: items.filter(i => i.req_id === req.req_id) }))
-  return list
+  return rows.map((req) => ({ ...req, status: 'Pending CEO', items: items.filter((i) => i.req_id === req.req_id) }))
 }
 
 export async function approveCeo(body) {

@@ -12,6 +12,7 @@ router.post('/trigger-reminder-check', requisitionController.triggerReminderChec
 router.get('/trigger-reminder-check', requisitionController.triggerReminderCheck)
 router.post('/cancel-delayed-jobs', requisitionController.cancelDelayedJobs)
 router.get('/test-email', requisitionController.testEmail)
+router.get('/email-diagnostics', requisitionController.getEmailDiagnostics)
 
 router.get('/history/:employeeId', requisitionController.getHistory)
 router.get('/track-records', requisitionController.getTrackRecords)

@@ -1,91 +1,17 @@
 import { executeQuery } from '../config/database.js'
-import { resolveEmailsPreferCrmForCodes } from '../src/utils/requisitionEmailRecipients.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
 import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, buildRequisitionBucketChangedPlainText, getPortalUrl } from '../config/requisition-email-template.js'
+import {
+  getRequisitionBucket,
+  getEmailsForBucket,
+  BUCKET_LABELS,
+  fetchLineTotalPkrForCeoRule
+} from '../src/utils/requisitionEmailRouting.js'
 
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000  // 3 days left → email every 4 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
 const ONE_HOUR_MS = 60 * 60 * 1000        // 1 day / due today → email every 1 hr
-
-function getRequisitionBucket(row) {
-  if (row.req_is_rejected === 1) return null
-  
-  // If purchase completed, route to appropriate bucket based on creator role
-  if (row.req_purchase_completed === 1 && row.req_hod_acknowledged !== 1) {
-    const creatorRole = row.req_creator_role
-    if (creatorRole === 'CEO') return 'ceo'
-    if (creatorRole === 'Committee') return 'committee'
-    return 'hod' // Default to HOD for regular employees or HOD-created requisitions
-  }
-  
-  if (row.req_finance_approval === 1) return null
-  if (row.req_handed_to_finance === 1) return 'finance'
-  if (row.req_procurement_ack === 1) return 'procurement'
-  if (row.req_ceo_approval === 1) return 'procurement'
-  if (row.req_committee_approval === 1) return 'ceo'
-  if (row.req_hod_approval === 1) return 'committee'
-  return 'hod'
-}
-
-async function getHodEmployeeCodesForDepartment(departmentId) {
-  if (departmentId == null) return []
-  try {
-    const q = `
-      SELECT e.employee_code FROM employees e
-      LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
-      LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
-      WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''
-        AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
-      LIMIT 5
-    `
-    const rows = await executeQuery(q, [departmentId])
-    return (rows || []).map((r) => r.employee_code).filter(Boolean)
-  } catch (err) {
-    if (err.code === '42P01') return []
-    throw err
-  }
-  try {
-    const rows = await executeQuery(
-      `SELECT e.employee_code FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
-       WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL LIMIT 5`,
-      [departmentId]
-    )
-    return (rows || []).map((r) => r.employee_code).filter(Boolean)
-  } catch (err) {
-    if (err.code === '42P01') return []
-    return []
-  }
-}
-
-async function getEmployeeCodesByRole(roleName) {
-  try {
-    const q = `
-      SELECT DISTINCT e.employee_code FROM employees e
-      LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = $1
-      LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = $1
-      WHERE e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''
-        AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
-    `
-    const rows = await executeQuery(q, [roleName])
-    return (rows || []).map((r) => r.employee_code).filter(Boolean)
-  } catch (err) {
-    if (err.code === '42P01') return []
-    throw err
-  }
-}
-
-async function getEmailsForBucket(bucket, departmentId) {
-  let codes = []
-  if (bucket === 'hod') codes = await getHodEmployeeCodesForDepartment(departmentId)
-  else if (bucket === 'hr') codes = await getEmployeeCodesByRole('HR')
-  else if (bucket === 'committee') codes = await getEmployeeCodesByRole('Committee')
-  else if (bucket === 'ceo') codes = await getEmployeeCodesByRole('CEO')
-  else if (bucket === 'procurement') codes = await getEmployeeCodesByRole('Procurement')
-  else if (bucket === 'finance') codes = await getEmployeeCodesByRole('Finance')
-  if (codes.length === 0) return []
-  return resolveEmailsPreferCrmForCodes(codes)
-}
 
 /** HOD recipients for legacy requisition-created job (same resolution as bucket HOD). */
 async function getHodEmailForDepartment(departmentId) {
@@ -216,7 +142,8 @@ export async function processRequisitionReminders() {
       'SELECT req_hod_approval, req_committee_approval, req_ceo_approval, req_procurement_ack, req_handed_to_finance, req_finance_approval, req_is_rejected FROM requisition WHERE req_id = $1',
       [reqId]
     ).then((r) => r[0])
-    const bucket = reqRow ? getRequisitionBucket(reqRow) : 'hod'
+    const lineTotal = await fetchLineTotalPkrForCeoRule(reqId)
+    const bucket = reqRow ? getRequisitionBucket(reqRow, lineTotal) : 'hod'
     let toEmails = bucket ? await getEmailsForBucket(bucket, row.department_id) : []
     if (!toEmails.length) {
       const testEmail = (process.env.TEST_REMINDER_EMAIL || '').trim()
@@ -333,15 +260,6 @@ export async function handleRequisitionCreated(data) {
   await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'requisition_created', ref: refNo } })
 }
 
-const BUCKET_LABELS = {
-  hod: 'Pending HOD',
-  hr: 'Pending HR',
-  committee: 'Pending Committee',
-  ceo: 'Pending CEO',
-  procurement: 'Procurement',
-  finance: 'Pending Finance'
-}
-
 /**
  * When a requisition moves to a new bucket (HOD / HR / Committee / CEO / Procurement / Finance), notify that bucket's recipients.
  * Sends immediately when the workflow advances — no filter on required_by_date (unlike processRequisitionReminders, which is date-driven).
@@ -441,7 +359,8 @@ export async function handleRequisitionReminder3DayTest(data) {
     return
   }
 
-  const bucket = getRequisitionBucket(row)
+  const lineTotal = await fetchLineTotalPkrForCeoRule(reqId)
+  const bucket = getRequisitionBucket(row, lineTotal)
   if (!bucket) return
 
   const toEmails = await getEmailsForBucket(bucket, data.departmentId)

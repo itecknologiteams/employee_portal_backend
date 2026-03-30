@@ -1,4 +1,5 @@
 import * as requisitionService from '../services/requisition.service.js'
+import * as requisitionEmailDiagnosticsService from '../services/requisitionEmailDiagnostics.service.js'
 
 function sendResult(result, res, fallbackMessage) {
   if (result && result.error != null && result.status != null) {
@@ -124,6 +125,32 @@ export async function getDebug(req, res) {
   } catch (err) {
     console.error('Debug requisition error:', err)
     res.status(500).json({ error: err.message })
+  }
+}
+
+/** GET /email-diagnostics?req=123 | ?ref=REF — SuperAdmin or requisition_email_diagnostics permission */
+export async function getEmailDiagnostics(req, res) {
+  try {
+    const user = req.session?.user
+    if (!user) return res.status(401).json({ error: 'Not authenticated' })
+    const allowed =
+      user.userType === 'SuperAdmin' ||
+      (Array.isArray(user.permissions) && user.permissions.includes('requisition_email_diagnostics'))
+    if (!allowed) return res.status(403).json({ error: 'Forbidden' })
+    const idParam = req.query.req ?? req.query.reqId ?? req.query.id
+    const ref = req.query.ref ?? req.query.referenceNo
+    const raw = idParam != null && String(idParam).trim() !== '' ? idParam : ref
+    if (raw == null || String(raw).trim() === '') {
+      return res.status(400).json({ error: 'Provide req (requisition id) or ref (reference number)' })
+    }
+    const reqId = await requisitionEmailDiagnosticsService.resolveRequisitionId(String(raw).trim())
+    if (!reqId) return res.status(404).json({ error: 'Requisition not found' })
+    const result = await requisitionEmailDiagnosticsService.getRequisitionEmailDiagnostics(reqId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (err) {
+    console.error('getEmailDiagnostics error:', err)
+    res.status(500).json({ error: 'Failed to load email diagnostics' })
   }
 }
 

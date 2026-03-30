@@ -1,10 +1,35 @@
+import { getEffectiveUnitPricePkrFromItem } from './requisitionAmountParse.js'
+
+/**
+ * CEO stage applies when committee-approved line total (qty × unit price) is >= this (PKR).
+ * Below this, workflow skips CEO to Procurement. Default 100000.
+ */
+export const REQUISITION_CEO_MIN_AMOUNT_PKR = parseInt(process.env.REQUISITION_CEO_MIN_AMOUNT_PKR || '100000', 10)
+
+/**
+ * Sum of (committee_approved_qty × unit price) for all items — same formula as Committee approve → CEO skip rule.
+ * Unit price supports informal amounts (5k), ranges, and item_est_min / item_est_max.
+ */
+export function computeCommitteeApprovedLineTotalPKR(items) {
+  if (!items || !items.length) return 0
+  let total = 0
+  for (const it of items) {
+    const qtyRaw = it.committee_approved_qty ?? it.committeeApprovedQty
+    const qty = (qtyRaw != null && !Number.isNaN(Number(qtyRaw))) ? Number(qtyRaw) : 0
+    const pricePerPiece = getEffectiveUnitPricePkrFromItem(it)
+    if (pricePerPiece == null || Number.isNaN(pricePerPiece) || pricePerPiece < 0) continue
+    total += qty * pricePerPiece
+  }
+  return Math.round(total)
+}
+
 function isExecutionDone(row) {
   return row.req_admin_approval === 1 ||
     row.req_purchase_completed === 1 ||
     (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)))
 }
 
-export function getRequisitionStatus(row) {
+export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   if (row.req_is_rejected === 1) return 'Rejected'
   if (row.req_creator_acknowledged === 1) return 'Closed'
   if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Pending your acknowledgment'
@@ -35,7 +60,13 @@ export function getRequisitionStatus(row) {
   if (row.req_current_stage_key === 'hr') return 'Pending HR'
   if (row.req_current_stage_key === 'admin') return 'Pending Admin'
   if (row.req_ceo_approval === 1) return 'Forwarded to Procurement'
-  if (row.req_committee_approval === 1) return 'Pending CEO'
+  if (row.req_committee_approval === 1) {
+    const line = itemsLineTotalPkrOptional != null ? Number(itemsLineTotalPkrOptional) : null
+    if (line != null && !Number.isNaN(line) && line < REQUISITION_CEO_MIN_AMOUNT_PKR) {
+      return 'Forwarded to Procurement'
+    }
+    return 'Pending CEO'
+  }
   if (row.req_hod_approval === 1) return 'Pending Committee'
   return 'Pending HOD'
 }

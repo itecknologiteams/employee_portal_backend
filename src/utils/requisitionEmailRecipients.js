@@ -56,3 +56,24 @@ export async function resolveEmailsPreferCrmForCodes(employeeCodes) {
   }
   return out
 }
+
+/**
+ * Per employee_code: CRM email, portal email, chosen address, and source (crm | portal | none).
+ * Used by admin diagnostics UI to see why someone might not receive mail.
+ */
+export async function resolveEmailDetailsForCodes(employeeCodes) {
+  const unique = [...new Set((employeeCodes || []).map((c) => String(c).trim()).filter(Boolean))]
+  if (unique.length === 0) return []
+  const crmMap = await getCrmEmailMapByEmployeeCodes(unique)
+  const portalMap = await getPortalEmailMapByEmployeeCodes(unique)
+  return unique.map((code) => {
+    const key = String(code).trim().toLowerCase()
+    const crmRaw = crmMap.get(key)
+    const portalRaw = portalMap.get(key)
+    const crmEmail = crmRaw && String(crmRaw).trim() ? String(crmRaw).trim() : null
+    const portalEmail = portalRaw && String(portalRaw).trim() ? String(portalRaw).trim() : null
+    const chosenEmail = crmEmail || portalEmail || null
+    const source = crmEmail ? 'crm' : portalEmail ? 'portal' : 'none'
+    return { employeeCode: code, crmEmail, portalEmail, chosenEmail, source }
+  })
+}

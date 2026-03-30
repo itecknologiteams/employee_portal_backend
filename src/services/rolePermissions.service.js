@@ -18,6 +18,7 @@ const PERMISSION_KEYS = [
   'requisition_pending',
   'requisition_approved',
   'requisition_reports',
+  'requisition_email_diagnostics',
   'tat_report',
   'help_support',
   'extensions',
