@@ -13,7 +13,7 @@ import {
   computeCommitteeApprovedLineTotalPKR,
   REQUISITION_CEO_MIN_AMOUNT_PKR
 } from '../utils/requisition.utils.js'
-import { parseCostFieldToUnitPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
+import { parseNumericCostPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 
@@ -254,19 +254,19 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
   return { data, pagination: { page, limit, total, totalPages } }
 }
 
-/** Normalize item unit price to numeric string before DB insert. */
+/** Normalize item cost: digits only (optional decimal) before DB insert. */
 function normalizeRequisitionItemForCreate(item) {
   const raw = String(item.itemEstCost ?? '').trim()
   if (!raw) {
     return { ...item, itemEstCost: null }
   }
-  const n = parseFloat(raw.replace(/,/g, ''))
-  if (Number.isNaN(n) || n < 0) {
-    const e = new Error('Invalid price per piece (PKR). Enter numbers only.')
+  const n = parseNumericCostPkr(raw)
+  if (n == null) {
+    const e = new Error('Price per piece (PKR) must use numbers only (optional decimal, e.g. 5000 or 1500.50).')
     e.status = 400
     throw e
   }
-  return { ...item, itemEstCost: String(Math.round(n * 100) / 100) }
+  return { ...item, itemEstCost: String(n) }
 }
 
 export async function createRequisition(body) {
@@ -696,9 +696,9 @@ export async function approveHod(body) {
       const qty = (qtyRaw != null && qtyRaw !== '') ? parseInt(qtyRaw, 10) : 0
       const costVal = row.estCost ?? row.est_cost ?? ''
       const costStr = costVal != null ? String(costVal).trim() : ''
-      const pricePerPiece = costStr !== '' ? parseCostFieldToUnitPkr(costStr) : null
+      const pricePerPiece = costStr !== '' ? parseNumericCostPkr(costStr) : null
       if (pricePerPiece == null || pricePerPiece < 0) {
-        return { error: 'Every item must have a price per piece (PKR). Please fill price per piece for all items in the BOQ.', status: 400 }
+        return { error: 'Every item must have a valid price per piece (PKR): numbers only, optional decimal.', status: 400 }
       }
       if (Number.isNaN(qty) || qty < 0) {
         return { error: 'Every item must have a valid quantity.', status: 400 }
@@ -717,7 +717,7 @@ export async function approveHod(body) {
       const qty = (it.item_qty != null && !Number.isNaN(Number(it.item_qty))) ? Number(it.item_qty) : (it.hod_item_qty != null ? Number(it.hod_item_qty) : 0)
       const pricePerPiece = getEffectiveUnitPricePkrFromItem(it)
       if (pricePerPiece == null || pricePerPiece < 0) {
-        return { error: 'Every item must have a price per piece (PKR). Please fill price per piece for all items in the BOQ.', status: 400 }
+        return { error: 'Every item must have a valid price per piece (PKR): numbers only, optional decimal.', status: 400 }
       }
       if (qty < 0 || Number.isNaN(qty)) {
         return { error: 'Every item must have a valid quantity.', status: 400 }
@@ -1182,7 +1182,14 @@ export async function updateItemsByHod(reqId, body) {
     const item_size = it.itemSize != null ? String(it.itemSize).trim() || null : undefined
     const item_brand = it.itemBrand != null ? String(it.itemBrand).trim() || null : undefined
     const item_qty = it.itemQty != null ? parseInt(it.itemQty, 10) : undefined
-    const item_est_cost = it.itemEstCost != null ? String(it.itemEstCost).trim() || null : undefined
+    let item_est_cost = it.itemEstCost != null ? String(it.itemEstCost).trim() || null : undefined
+    if (item_est_cost != null && item_est_cost !== '') {
+      const n = parseNumericCostPkr(item_est_cost)
+      if (n == null) {
+        return { error: 'Estimated cost must be numeric (optional decimal) for each item.', status: 400 }
+      }
+      item_est_cost = String(n)
+    }
     const item_remarks = it.itemRemarks != null ? String(it.itemRemarks).trim() || null : undefined
     await reqRepo.updateRequisitionItem(itemId, reqIdNum, {
       item_desc,

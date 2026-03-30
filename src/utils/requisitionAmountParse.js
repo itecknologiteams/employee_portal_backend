@@ -1,22 +1,18 @@
 /**
- * Parse unit price from PKR fields (digits and optional decimal; commas allowed).
+ * Strict numeric PKR amounts for requisition line costs (digits and optional decimal only).
  */
 
-export function parseNumericUnitPricePkr(raw) {
-  if (raw == null) return null
-  const s = String(raw).trim().replace(/,/g, '')
+export function parseNumericCostPkr(raw) {
+  const s = String(raw ?? '').trim().replace(/,/g, '')
   if (!s) return null
+  if (!/^\d+(\.\d{0,2})?$/.test(s)) return null
   const n = parseFloat(s)
   if (Number.isNaN(n) || n < 0) return null
   return n
 }
 
+/** Unit price from a requisition_items row (HOD BOQ cost when present). */
 export function getEffectiveUnitPricePkrFromItem(it) {
-  const raw = it.item_est_cost ?? it.hod_item_est_cost ?? it.itemEstCost ?? ''
-  return parseNumericUnitPricePkr(raw)
-}
-
-/** BOQ cost string → unit price (same numeric rules). */
-export function parseCostFieldToUnitPkr(raw) {
-  return parseNumericUnitPricePkr(raw)
+  const raw = it.hod_item_est_cost ?? it.item_est_cost ?? it.itemEstCost ?? ''
+  return parseNumericCostPkr(String(raw))
 }
