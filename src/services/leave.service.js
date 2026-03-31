@@ -2,17 +2,57 @@ import * as leaveRepo from '../repositories/leave.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
-const defaultBalance = { annual: 15, sick: 10, personal: 5 }
+const defaultBalance = { annual: 14, casual: 10, sick: 6 }
 
 const LEAVE_EMAIL_SICK_CASUAL = process.env.LEAVE_EMAIL_SICK_CASUAL || 'anas.ahmed@itecknologi.com'
 const LEAVE_EMAIL_ANNUAL = process.env.LEAVE_EMAIL_ANNUAL || 'hr@itecknologi.com'
 
-function getLeaveNotificationEmail(leaveType) {
-  const t = (leaveType && String(leaveType).trim().toLowerCase()) || ''
-  if (t.includes('sick') || t.includes('casual')) return LEAVE_EMAIL_SICK_CASUAL
+function getLeaveNotificationEmail() {
   return LEAVE_EMAIL_ANNUAL
+}
+
+function isAnnualLeaveRequestType(leaveType) {
+  const t = (leaveType && String(leaveType).trim().toLowerCase()) || ''
+  return t.includes('annual')
+}
+
+function leaveRequestCalendarDays(leave) {
+  if (!leave?.start_date || !leave?.end_date) return 0
+  const s = new Date(leave.start_date)
+  const e = new Date(leave.end_date)
+  if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return 0
+  const diff = Math.floor((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1
+  return Math.max(0, diff)
+}
+
+/**
+ * On Approved: deduct annual days first, then update status; refund if status update fails.
+ */
+async function approveWithAnnualDeduction(leave, reqId, requiredCurrent, newStatus) {
+  const eid = parseInt(leave.employee_id, 10)
+  let toRefund = 0
+  if (newStatus === 'Approved' && isAnnualLeaveRequestType(leave.leave_type)) {
+    const already = Number(leave.annual_days_deducted) || 0
+    if (already === 0) {
+      const days = leaveRequestCalendarDays(leave)
+      if (days > 0) {
+        if (Number.isNaN(eid)) return { error: 'Invalid employee on leave request', status: 400 }
+        const rows = await leaveRepo.deductAnnualLeave(eid, days)
+        if (!rows.length) return { error: 'Insufficient annual leave balance', status: 400 }
+        toRefund = days
+      }
+    }
+  }
+  const result = await leaveRepo.updateLeaveRequestStatus(reqId, newStatus, requiredCurrent)
+  if (!result || result.length === 0) {
+    if (toRefund > 0) await leaveRepo.refundAnnualLeave(eid, toRefund)
+    return { error: 'Could not update status', status: 400 }
+  }
+  if (toRefund > 0) await leaveRepo.setAnnualDaysDeducted(reqId, toRefund)
+  return { ok: true }
 }
 
 function parseEmployeeId(employeeId) {
@@ -26,9 +66,40 @@ export async function getLeaveBalance(employeeId) {
   if (result.length === 0) return defaultBalance
   const b = result[0]
   return {
-    annual: parseInt(b.annual_leave || 0),
-    sick: parseInt(b.sick_leave || 0),
-    personal: parseInt(b.personal_leave || 0)
+    annual: parseInt(b.annual_leave || 0, 10),
+    casual: parseInt(b.casual_leave ?? 0, 10),
+    sick: parseInt(b.sick_leave || 0, 10)
+  }
+}
+
+/** HR only: replace employee leave quotas (annual, casual, sick days). */
+export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can update leave quotas', status: 403 }
+
+  const code = targetEmployeeCode != null ? String(targetEmployeeCode).trim() : ''
+  if (!code) return { error: 'Employee code is required', status: 400 }
+
+  const tid = await getEmployeeIdByCode(code)
+  if (!tid) return { error: 'Employee not found', status: 404 }
+
+  const annual = Math.max(0, Math.floor(Number(body?.annual)))
+  const casual = Math.max(0, Math.floor(Number(body?.casual)))
+  const sick = Math.max(0, Math.floor(Number(body?.sick)))
+  if (![annual, casual, sick].every((n) => Number.isFinite(n))) {
+    return { error: 'annual, casual, and sick must be non-negative numbers', status: 400 }
+  }
+
+  const rows = await leaveRepo.setLeaveBalanceTotals(tid, annual, casual, sick)
+  if (!rows.length) return { error: 'Could not update leave balance', status: 400 }
+  const b = rows[0]
+  return {
+    employeeCode: code,
+    annual: parseInt(b.annual_leave || 0, 10),
+    casual: parseInt(b.casual_leave ?? 0, 10),
+    sick: parseInt(b.sick_leave || 0, 10)
   }
 }
 
@@ -68,7 +139,7 @@ export async function createLeaveRequest(data) {
     const transport = getEmailTransport()
     if (transport) {
       try {
-        const to = getLeaveNotificationEmail(leaveType)
+        const to = getLeaveNotificationEmail()
         const subject = `New Leave Request – ${(leaveType && String(leaveType).trim()) || 'Leave'}`
         const body = [
           `Leave Request ID: ${leaveRequestId}`,
@@ -147,8 +218,13 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     if (normalizedStatus === 'Approved' || normalizedStatus === 'Rejected') {
       const isHr = await reqRepo.isHrMember(eid)
       if (!isHr) return { error: 'Only HR can approve or reject at this stage', status: 403 }
-      const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
-      if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+      if (normalizedStatus === 'Approved') {
+        const ar = await approveWithAnnualDeduction(leave, reqId, 'Pending', 'Approved')
+        if (ar.error) return ar
+      } else {
+        const rej = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
+        if (!rej || rej.length === 0) return { error: 'Could not update status', status: 400 }
+      }
       const applicantId = parseInt(leave.employee_id, 10)
       if (!Number.isNaN(applicantId)) {
         notifSvc.notifySafe(notifSvc.notify({
@@ -177,7 +253,7 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       const transport = getEmailTransport()
       if (transport) {
         try {
-          const to = getLeaveNotificationEmail(leave.leave_type)
+          const to = getLeaveNotificationEmail()
           const subject = `Leave request forwarded to HR – pending your approval (ID: ${reqId})`
           const body = [
             'A leave request has been forwarded by HOD and is now in your HR bucket.',
@@ -232,8 +308,15 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     }
     const isHr = await reqRepo.isHrMember(eid)
     if (!isHr) return { error: 'Only HR can approve or reject at this stage', status: 403 }
-    const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending HR')
-    if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+    let result
+    if (normalizedStatus === 'Approved') {
+      const ar = await approveWithAnnualDeduction(leave, reqId, 'Pending HR', 'Approved')
+      if (ar.error) return ar
+      result = [{ leave_request_id: reqId }]
+    } else {
+      result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending HR')
+      if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+    }
     const applicantIdHr = parseInt(leave.employee_id, 10)
     if (!Number.isNaN(applicantIdHr)) {
       notifSvc.notifySafe(notifSvc.notify({

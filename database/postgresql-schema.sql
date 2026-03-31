@@ -57,9 +57,10 @@ CREATE TABLE IF NOT EXISTS salary_slips (
 -- Create Leave Balance Table
 CREATE TABLE IF NOT EXISTS leave_balance (
     employee_id INTEGER PRIMARY KEY,
-    annual_leave INTEGER DEFAULT 15,
-    sick_leave INTEGER DEFAULT 10,
-    personal_leave INTEGER DEFAULT 5,
+    annual_leave INTEGER DEFAULT 14,
+    casual_leave INTEGER DEFAULT 10,
+    sick_leave INTEGER DEFAULT 6,
+    personal_leave INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE
 );

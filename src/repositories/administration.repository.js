@@ -417,7 +417,7 @@ export async function getEmployeeByEmail(email) {
 
 export async function initLeaveBalanceForEmployee(employeeId) {
   return executeQuery(
-    'INSERT INTO leave_balance (employee_id, annual_leave, sick_leave, personal_leave) VALUES ($1, 15, 10, 5)',
+    'INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave) VALUES ($1, 14, 10, 6, 0)',
     [employeeId]
   ).catch(() => {})
 }

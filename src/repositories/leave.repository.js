@@ -1,9 +1,72 @@
 import { executeQuery } from '../../config/database.js'
 
+/** Default entitlements when inserting a new balance row. */
+export const DEFAULT_ANNUAL = 14
+export const DEFAULT_CASUAL = 10
+export const DEFAULT_SICK = 6
+
+export async function ensureLeaveBalanceRow(employeeId) {
+  await executeQuery(
+    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave)
+     VALUES ($1, $2, $3, $4, 0)
+     ON CONFLICT (employee_id) DO NOTHING`,
+    [employeeId, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK]
+  )
+}
+
 export async function getLeaveBalance(employeeId) {
+  await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
-    'SELECT lb.annual_leave, lb.sick_leave, lb.personal_leave FROM leave_balance lb WHERE lb.employee_id = $1',
+    `SELECT lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave
+     FROM leave_balance lb WHERE lb.employee_id = $1`,
     [employeeId]
+  )
+}
+
+/** Deduct annual days if balance sufficient. Returns updated row or []. */
+export async function deductAnnualLeave(employeeId, days) {
+  const d = Math.max(0, Math.floor(Number(days) || 0))
+  if (d === 0) return []
+  await ensureLeaveBalanceRow(employeeId)
+  return executeQuery(
+    `UPDATE leave_balance SET annual_leave = annual_leave - $2, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1 AND annual_leave >= $2
+     RETURNING annual_leave, casual_leave, sick_leave`,
+    [employeeId, d]
+  )
+}
+
+/** Add back annual days (rollback). */
+export async function refundAnnualLeave(employeeId, days) {
+  const d = Math.max(0, Math.floor(Number(days) || 0))
+  if (d === 0) return []
+  return executeQuery(
+    `UPDATE leave_balance SET annual_leave = annual_leave + $2, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1 RETURNING annual_leave`,
+    [employeeId, d]
+  )
+}
+
+/** HR: set full annual / casual / sick totals (non-negative integers). personal_leave stays 0. */
+export async function setLeaveBalanceTotals(employeeId, annual, casual, sick) {
+  await ensureLeaveBalanceRow(employeeId)
+  return executeQuery(
+    `UPDATE leave_balance SET
+       annual_leave = $2,
+       casual_leave = $3,
+       sick_leave = $4,
+       personal_leave = 0,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1
+     RETURNING annual_leave, casual_leave, sick_leave`,
+    [employeeId, annual, casual, sick]
+  )
+}
+
+export async function setAnnualDaysDeducted(leaveRequestId, days) {
+  return executeQuery(
+    `UPDATE leave_requests SET annual_days_deducted = $2 WHERE leave_request_id = $1`,
+    [leaveRequestId, Math.max(0, Math.floor(Number(days) || 0))]
   )
 }
 
@@ -30,6 +93,7 @@ export async function getLeaveRequestById(leaveRequestId) {
   const rows = await executeQuery(
     `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+        COALESCE(lr.annual_days_deducted, 0) AS annual_days_deducted,
         e.department_id
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id

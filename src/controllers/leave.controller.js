@@ -10,7 +10,7 @@ export async function getLeaveBalance(req, res) {
     res.json(balance)
   } catch (error) {
     console.error('Leave balance error:', error)
-    res.json({ annual: 15, sick: 10, personal: 5 })
+    res.json({ annual: 14, casual: 10, sick: 6 })
   }
 }
 
@@ -36,6 +36,7 @@ export async function createLeaveRequest(req, res) {
     const result = await leaveService.createLeaveRequest({
       employeeId, leaveType, startDate, endDate, reason
     })
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
     res.json(result)
   } catch (error) {
     console.error('Create leave request error:', error)
@@ -93,5 +94,18 @@ export async function updateLeaveStatus(req, res) {
   } catch (error) {
     console.error('Update leave status error:', error)
     res.status(500).json({ error: 'Failed to update leave status' })
+  }
+}
+
+/** HR: PUT body { hrEmployeeId, annual, casual, sick } */
+export async function hrPutLeaveBalance(req, res) {
+  try {
+    const { employeeCode: targetCode } = req.params
+    const result = await leaveService.hrSetLeaveBalance(req.body?.hrEmployeeId, targetCode, req.body)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('HR leave balance update error:', error)
+    res.status(500).json({ error: 'Failed to update leave balance' })
   }
 }
