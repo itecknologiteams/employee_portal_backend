@@ -78,6 +78,21 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE
 );
 
+-- HR manual leave deduction audit log
+CREATE TABLE IF NOT EXISTS leave_deduction_log (
+    deduction_id SERIAL PRIMARY KEY,
+    employee_id INTEGER NOT NULL,
+    leave_type VARCHAR(20) NOT NULL CHECK (leave_type IN ('annual', 'casual', 'sick')),
+    days_deducted INTEGER NOT NULL CHECK (days_deducted > 0),
+    reason TEXT NOT NULL,
+    deducted_by_employee_id INTEGER NOT NULL,
+    balance_before INTEGER NOT NULL CHECK (balance_before >= 0),
+    balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (deducted_by_employee_id) REFERENCES employees(employee_id) ON DELETE RESTRICT
+);
+
 -- Create Feedback Table
 CREATE TABLE IF NOT EXISTS feedback (
     feedback_id SERIAL PRIMARY KEY,
@@ -113,6 +128,9 @@ CREATE INDEX IF NOT EXISTS idx_salary_slips_employee ON salary_slips(employee_id
 CREATE INDEX IF NOT EXISTS idx_salary_slips_month ON salary_slips(month_year);
 CREATE INDEX IF NOT EXISTS idx_leave_requests_employee ON leave_requests(employee_id);
 CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(status);
+CREATE INDEX IF NOT EXISTS idx_leave_deduction_log_employee ON leave_deduction_log(employee_id);
+CREATE INDEX IF NOT EXISTS idx_leave_deduction_log_hr ON leave_deduction_log(deducted_by_employee_id);
+CREATE INDEX IF NOT EXISTS idx_leave_deduction_log_created_at ON leave_deduction_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_feedback_employee ON feedback(employee_id);
 CREATE INDEX IF NOT EXISTS idx_requisitions_employee ON requisitions(employee_id);
 

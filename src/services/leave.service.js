@@ -61,6 +61,65 @@ function parseEmployeeId(employeeId) {
   return Number.isNaN(n) ? null : n
 }
 
+/** Human-readable reference (aligned with typical HRMS leave registers). */
+export function formatLeaveReference(leaveRequestId, createdAt) {
+  const id = parseInt(leaveRequestId, 10)
+  if (Number.isNaN(id)) return null
+  const y = createdAt ? new Date(createdAt).getFullYear() : new Date().getFullYear()
+  return `LV-${y}-${String(id).padStart(5, '0')}`
+}
+
+function parseYmdLocal(value) {
+  if (value == null || String(value).trim() === '') return null
+  const s = String(value).trim()
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s)
+  if (!m) return null
+  const y = parseInt(m[1], 10)
+  const mo = parseInt(m[2], 10) - 1
+  const d = parseInt(m[3], 10)
+  const dt = new Date(y, mo, d)
+  if (dt.getFullYear() !== y || dt.getMonth() !== mo || dt.getDate() !== d) return null
+  return dt
+}
+
+function startOfLocalDay(d) {
+  const x = new Date(d)
+  x.setHours(0, 0, 0, 0)
+  return x
+}
+
+/** Validates ISO date strings; returns calendar days inclusive (industry standard: calendar days unless policy defines working days). */
+function validateLeaveDateRange(startDate, endDate) {
+  const start = parseYmdLocal(startDate)
+  const end = parseYmdLocal(endDate)
+  if (!start || !end) {
+    return { error: 'Valid start and end dates (YYYY-MM-DD) are required', status: 400 }
+  }
+  if (end < start) {
+    return { error: 'End date must be on or after the start date', status: 400 }
+  }
+  const days = Math.floor((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1
+  if (days < 1 || days > 366) {
+    return { error: 'Leave duration must be between 1 and 366 calendar days', status: 400 }
+  }
+  const today = startOfLocalDay(new Date())
+  if (startOfLocalDay(start) < today) {
+    return { error: 'Start date cannot be in the past', status: 400 }
+  }
+  return { days, start, end }
+}
+
+async function resolveApproverEmployeeId(body) {
+  if (body?.approvedByEmployeeId != null && String(body.approvedByEmployeeId).trim() !== '') {
+    const eid = parseEmployeeId(String(body.approvedByEmployeeId))
+    if (eid != null) return eid
+  }
+  if (body?.approvedByEmployeeCode != null && String(body.approvedByEmployeeCode).trim() !== '') {
+    return await getEmployeeIdByCode(String(body.approvedByEmployeeCode).trim())
+  }
+  return null
+}
+
 export async function getLeaveBalance(employeeId) {
   const result = await leaveRepo.getLeaveBalance(employeeId)
   if (result.length === 0) return defaultBalance
@@ -107,6 +166,7 @@ export async function getLeaveRequests(employeeId) {
   const result = await leaveRepo.getLeaveRequests(employeeId)
   return result.map(r => ({
     id: r.leave_request_id,
+    reference: formatLeaveReference(r.leave_request_id, r.created_at),
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
     endDate: r.end_date,
@@ -117,9 +177,177 @@ export async function getLeaveRequests(employeeId) {
   }))
 }
 
+/** HR manual leave deduction with mandatory reason + full audit trail. */
+export async function hrDeductLeaveBalance(body) {
+  let hid = parseEmployeeId(body?.hrEmployeeId != null ? String(body.hrEmployeeId) : null)
+  if (hid == null && body?.hrEmployeeCode != null && String(body.hrEmployeeCode).trim() !== '') {
+    hid = await getEmployeeIdByCode(String(body.hrEmployeeCode).trim())
+  }
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can deduct leave', status: 403 }
+
+  const targetCode = body?.employeeCode != null ? String(body.employeeCode).trim() : ''
+  if (!targetCode) return { error: 'employeeCode is required', status: 400 }
+  const targetEmployeeId = await getEmployeeIdByCode(targetCode)
+  if (!targetEmployeeId) return { error: 'Employee not found', status: 404 }
+
+  const leaveType = String(body?.leaveType || '').trim().toLowerCase()
+  if (!['annual', 'casual', 'sick'].includes(leaveType)) {
+    return { error: 'leaveType must be one of: annual, casual, sick', status: 400 }
+  }
+  const days = Math.floor(Number(body?.days) || 0)
+  if (days <= 0) return { error: 'days must be a positive integer', status: 400 }
+  const reason = body?.reason != null ? String(body.reason).trim() : ''
+  if (!reason) return { error: 'reason is required', status: 400 }
+  if (reason.length > 1000) return { error: 'reason must be 1000 characters or less', status: 400 }
+
+  let rows
+  try {
+    rows = await leaveRepo.createManualDeduction(targetEmployeeId, leaveType, days, reason, hid)
+  } catch (err) {
+    const msg = String(err?.message || '')
+    if (msg.includes('leave_deduction_log')) {
+      return {
+        error:
+          'Deduction log table is missing. Please run migration: database/migrations/leave_deduction_log_pg.sql',
+        status: 500
+      }
+    }
+    throw err
+  }
+  if (!rows.length) return { error: 'Insufficient leave balance for this deduction', status: 400 }
+  const r = rows[0]
+  return {
+    deductionId: r.deduction_id,
+    employeeCode: targetCode,
+    leaveType: r.leave_type,
+    days: parseInt(r.days_deducted || 0, 10),
+    reason: r.reason || '',
+    balanceBefore: parseInt(r.balance_before || 0, 10),
+    balanceAfter: parseInt(r.balance_after || 0, 10),
+    createdAt: r.created_at,
+    balances: {
+      annual: parseInt(r.annual_leave || 0, 10),
+      casual: parseInt(r.casual_leave || 0, 10),
+      sick: parseInt(r.sick_leave || 0, 10)
+    }
+  }
+}
+
+/** HR list of manual leave deductions (optionally filtered by employee code). */
+export async function getManualDeductionLog(query = {}) {
+  let hid = parseEmployeeId(query?.hrEmployeeId != null ? String(query.hrEmployeeId) : null)
+  if (hid == null && query?.hrEmployeeCode != null && String(query.hrEmployeeCode).trim() !== '') {
+    hid = await getEmployeeIdByCode(String(query.hrEmployeeCode).trim())
+  }
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can view deduction log', status: 403 }
+
+  const employeeCode = query?.employeeCode != null ? String(query.employeeCode).trim() : ''
+  const page = Math.max(1, parseInt(query.page, 10) || 1)
+  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
+  const offset = (page - 1) * limit
+  const [total, rows] = await Promise.all([
+    leaveRepo.countManualDeductions(employeeCode),
+    leaveRepo.listManualDeductions(limit, offset, employeeCode)
+  ])
+
+  return {
+    data: rows.map((r) => ({
+      deductionId: r.deduction_id,
+      employeeId: r.employee_id,
+      employeeCode: r.employee_code,
+      employeeName: [r.first_name, r.last_name].filter(Boolean).join(' ').trim() || null,
+      leaveType: r.leave_type,
+      days: parseInt(r.days_deducted || 0, 10),
+      reason: r.reason || '',
+      balanceBefore: parseInt(r.balance_before || 0, 10),
+      balanceAfter: parseInt(r.balance_after || 0, 10),
+      createdAt: r.created_at,
+      deductedByEmployeeId: r.deducted_by_employee_id,
+      deductedByEmployeeCode: r.deducted_by_employee_code,
+      deductedByName: [r.deducted_by_first_name, r.deducted_by_last_name].filter(Boolean).join(' ').trim() || null
+    })),
+    total,
+    page,
+    limit,
+    totalPages: Math.ceil(total / limit) || 1
+  }
+}
+
+/** HR can edit a previous manual deduction entry and balances are re-adjusted accordingly. */
+export async function hrEditDeduction(deductionId, body) {
+  let hid = parseEmployeeId(body?.hrEmployeeId != null ? String(body.hrEmployeeId) : null)
+  if (hid == null && body?.hrEmployeeCode != null && String(body.hrEmployeeCode).trim() !== '') {
+    hid = await getEmployeeIdByCode(String(body.hrEmployeeCode).trim())
+  }
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can edit deduction records', status: 403 }
+
+  const id = parseInt(deductionId, 10)
+  if (Number.isNaN(id)) return { error: 'Valid deductionId is required', status: 400 }
+  const existing = await leaveRepo.getManualDeductionById(id)
+  if (!existing) return { error: 'Deduction record not found', status: 404 }
+
+  const leaveType = String(body?.leaveType || '').trim().toLowerCase()
+  if (!['annual', 'casual', 'sick'].includes(leaveType)) {
+    return { error: 'leaveType must be one of: annual, casual, sick', status: 400 }
+  }
+  const days = Math.floor(Number(body?.days) || 0)
+  if (days <= 0) return { error: 'days must be a positive integer', status: 400 }
+  const reason = body?.reason != null ? String(body.reason).trim() : ''
+  if (!reason) return { error: 'reason is required', status: 400 }
+  if (reason.length > 1000) return { error: 'reason must be 1000 characters or less', status: 400 }
+
+  const rows = await leaveRepo.updateManualDeduction(id, leaveType, days, reason)
+  if (!rows.length) {
+    return { error: 'Cannot apply edit: resulting leave balance would be negative', status: 400 }
+  }
+  const r = rows[0]
+  return {
+    deductionId: r.deduction_id,
+    employeeId: r.employee_id,
+    leaveType: r.leave_type,
+    days: parseInt(r.days_deducted || 0, 10),
+    reason: r.reason || '',
+    balanceBefore: parseInt(r.balance_before || 0, 10),
+    balanceAfter: parseInt(r.balance_after || 0, 10),
+    createdAt: r.created_at,
+    balances: {
+      annual: parseInt(r.annual_leave || 0, 10),
+      casual: parseInt(r.casual_leave || 0, 10),
+      sick: parseInt(r.sick_leave || 0, 10)
+    }
+  }
+}
+
 export async function createLeaveRequest(data) {
   const { employeeId, leaveType, startDate, endDate, reason } = data
+  if (!isAnnualLeaveRequestType(leaveType)) {
+    return {
+      error:
+        'Only annual leave can be requested in this portal. Casual and sick leave are managed through the Attendance system.',
+      status: 400
+    }
+  }
+  const range = validateLeaveDateRange(startDate, endDate)
+  if (range.error) return { error: range.error, status: range.status }
+  const { days } = range
+
   const eid = parseEmployeeId(employeeId)
+  if (eid != null) {
+    const bal = await getLeaveBalance(eid)
+    if (days > bal.annual) {
+      return {
+        error: `Insufficient annual leave balance. You have ${bal.annual} day(s) available; this request needs ${days} calendar day(s).`,
+        status: 400
+      }
+    }
+  }
+
   let initialStatus = 'Pending'
   if (eid != null) {
     const emp = await reqRepo.getEmployeeDept(employeeId)
@@ -201,11 +429,13 @@ export async function createLeaveRequest(data) {
 
 /** Update leave request status. HR can approve/reject from Pending or Pending HR. HOD can set Pending -> Pending HR or Rejected. */
 export async function updateLeaveStatus(leaveRequestId, body) {
-  const { status, approvedByEmployeeId } = body || {}
+  const { status } = body || {}
   const reqId = parseInt(leaveRequestId, 10)
   if (Number.isNaN(reqId)) return { error: 'Valid leave request ID is required', status: 400 }
-  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
-  if (eid == null) return { error: 'Valid approvedByEmployeeId is required', status: 400 }
+  const eid = await resolveApproverEmployeeId(body || {})
+  if (eid == null) {
+    return { error: 'Valid approvedByEmployeeId or approvedByEmployeeCode is required', status: 400 }
+  }
 
   const normalizedStatus = (status && String(status).trim()) || ''
   const leave = await leaveRepo.getLeaveRequestById(reqId)
@@ -353,6 +583,7 @@ export async function getHrList(employeeId, query = {}) {
 
   const data = rows.map(r => ({
     id: r.leave_request_id,
+    reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
@@ -386,6 +617,7 @@ export async function getPendingHr(employeeId) {
   const rows = await leaveRepo.getPendingHrLeaves()
   return rows.map(r => ({
     id: r.leave_request_id,
+    reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
@@ -416,6 +648,7 @@ export async function getPendingHod(employeeId) {
   const rows = await leaveRepo.getPendingHodLeaves(deptId, deptName, eid)
   return rows.map(r => ({
     id: r.leave_request_id,
+    reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,

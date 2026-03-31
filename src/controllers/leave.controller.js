@@ -109,3 +109,42 @@ export async function hrPutLeaveBalance(req, res) {
     res.status(500).json({ error: 'Failed to update leave balance' })
   }
 }
+
+/** HR: POST body { hrEmployeeId, employeeCode, leaveType, days, reason } */
+export async function hrDeductLeave(req, res) {
+  try {
+    const result = await leaveService.hrDeductLeaveBalance(req.body || {})
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('HR leave deduction error:', error)
+    const message = error?.message ? String(error.message) : 'Failed to deduct leave balance'
+    res.status(500).json({ error: message })
+  }
+}
+
+/** HR: GET /hr/deductions?hrEmployeeId=&employeeCode=&page=&limit= */
+export async function getHrDeductionLog(req, res) {
+  try {
+    const result = await leaveService.getManualDeductionLog(req.query || {})
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('HR leave deduction log error:', error)
+    const message = error?.message ? String(error.message) : 'Failed to fetch leave deduction log'
+    res.status(500).json({ error: message })
+  }
+}
+
+/** HR: PUT /hr/deduction/:deductionId body { hrEmployeeId/hrEmployeeCode, leaveType, days, reason } */
+export async function hrEditDeduction(req, res) {
+  try {
+    const result = await leaveService.hrEditDeduction(req.params.deductionId, req.body || {})
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('HR leave deduction edit error:', error)
+    const message = error?.message ? String(error.message) : 'Failed to edit leave deduction'
+    res.status(500).json({ error: message })
+  }
+}

@@ -63,6 +63,185 @@ export async function setLeaveBalanceTotals(employeeId, annual, casual, sick) {
   )
 }
 
+/**
+ * HR manual deduction with audit logging.
+ * leaveType must be one of: annual, casual, sick.
+ * Returns [] when balance is insufficient.
+ */
+export async function createManualDeduction(employeeId, leaveType, days, reason, deductedByEmployeeId) {
+  const d = Math.max(0, Math.floor(Number(days) || 0))
+  if (d === 0) return []
+  const type = String(leaveType || '').trim().toLowerCase()
+  if (type !== 'annual' && type !== 'casual' && type !== 'sick') {
+    throw new Error('Invalid leave type')
+  }
+  await ensureLeaveBalanceRow(employeeId)
+  const column = type === 'annual' ? 'annual_leave' : type === 'casual' ? 'casual_leave' : 'sick_leave'
+  const rows = await executeQuery(
+    `WITH updated AS (
+       UPDATE leave_balance
+       SET ${column} = ${column} - $2, updated_at = CURRENT_TIMESTAMP
+       WHERE employee_id = $1 AND ${column} >= $2
+       RETURNING annual_leave, casual_leave, sick_leave
+     ),
+     logged AS (
+       INSERT INTO leave_deduction_log (
+         employee_id, leave_type, days_deducted, reason,
+         deducted_by_employee_id, balance_before, balance_after, created_at
+       )
+       SELECT
+         $1, $3::text, $2, $4::text, $5,
+         CASE
+           WHEN $3::text = 'annual' THEN u.annual_leave + $2
+           WHEN $3::text = 'casual' THEN u.casual_leave + $2
+           ELSE u.sick_leave + $2
+         END,
+         CASE
+           WHEN $3::text = 'annual' THEN u.annual_leave
+           WHEN $3::text = 'casual' THEN u.casual_leave
+           ELSE u.sick_leave
+         END,
+         CURRENT_TIMESTAMP
+       FROM updated u
+       RETURNING deduction_id, leave_type, days_deducted, reason, balance_before, balance_after, created_at
+     )
+     SELECT
+       l.deduction_id, l.leave_type, l.days_deducted, l.reason, l.balance_before, l.balance_after, l.created_at,
+       u.annual_leave, u.casual_leave, u.sick_leave
+     FROM logged l
+     CROSS JOIN updated u`,
+    [employeeId, d, type, reason, deductedByEmployeeId]
+  )
+  return rows
+}
+
+/** HR audit trail for manual leave deductions. */
+export async function listManualDeductions(limit, offset, employeeCode = '') {
+  const hasEmployeeFilter = String(employeeCode || '').trim() !== ''
+  const params = hasEmployeeFilter ? [String(employeeCode).trim(), limit, offset] : [limit, offset]
+  return executeQuery(
+    `SELECT
+       l.deduction_id,
+       l.employee_id,
+       e.employee_code,
+       e.first_name,
+       e.last_name,
+       l.leave_type,
+       l.days_deducted,
+       l.reason,
+       l.balance_before,
+       l.balance_after,
+       l.created_at,
+       l.deducted_by_employee_id,
+       hr.employee_code AS deducted_by_employee_code,
+       hr.first_name AS deducted_by_first_name,
+       hr.last_name AS deducted_by_last_name
+     FROM leave_deduction_log l
+     JOIN employees e ON e.employee_id = l.employee_id
+     LEFT JOIN employees hr ON hr.employee_id = l.deducted_by_employee_id
+     WHERE ($1::text IS NULL OR e.employee_code = $1::text)
+     ORDER BY l.created_at DESC
+     LIMIT $2 OFFSET $3`,
+    hasEmployeeFilter ? params : [null, limit, offset]
+  )
+}
+
+export async function countManualDeductions(employeeCode = '') {
+  const hasEmployeeFilter = String(employeeCode || '').trim() !== ''
+  const rows = await executeQuery(
+    `SELECT COUNT(*)::int AS total
+     FROM leave_deduction_log l
+     JOIN employees e ON e.employee_id = l.employee_id
+     WHERE ($1::text IS NULL OR e.employee_code = $1::text)`,
+    [hasEmployeeFilter ? String(employeeCode).trim() : null]
+  )
+  return rows[0]?.total ?? 0
+}
+
+export async function getManualDeductionById(deductionId) {
+  const rows = await executeQuery(
+    `SELECT deduction_id, employee_id, leave_type, days_deducted, reason, deducted_by_employee_id, created_at
+     FROM leave_deduction_log
+     WHERE deduction_id = $1`,
+    [deductionId]
+  )
+  return rows[0] || null
+}
+
+/**
+ * HR edit manual deduction: updates leave type/days/reason and re-adjusts balances atomically.
+ * Returns [] when record missing or updated values would make balances negative.
+ */
+export async function updateManualDeduction(deductionId, leaveType, days, reason) {
+  const d = Math.max(0, Math.floor(Number(days) || 0))
+  if (d === 0) return []
+  const type = String(leaveType || '').trim().toLowerCase()
+  if (type !== 'annual' && type !== 'casual' && type !== 'sick') {
+    throw new Error('Invalid leave type')
+  }
+  const rows = await executeQuery(
+    `WITH existing AS (
+       SELECT deduction_id, employee_id, leave_type, days_deducted
+       FROM leave_deduction_log
+       WHERE deduction_id = $1
+     ),
+     updated_balance AS (
+       UPDATE leave_balance lb
+       SET
+         annual_leave = lb.annual_leave
+           + CASE WHEN e.leave_type = 'annual' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'annual' THEN $3::int ELSE 0 END,
+         casual_leave = lb.casual_leave
+           + CASE WHEN e.leave_type = 'casual' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'casual' THEN $3::int ELSE 0 END,
+         sick_leave = lb.sick_leave
+           + CASE WHEN e.leave_type = 'sick' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'sick' THEN $3::int ELSE 0 END,
+         updated_at = CURRENT_TIMESTAMP
+       FROM existing e
+       WHERE lb.employee_id = e.employee_id
+         AND lb.annual_leave
+           + CASE WHEN e.leave_type = 'annual' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'annual' THEN $3::int ELSE 0 END >= 0
+         AND lb.casual_leave
+           + CASE WHEN e.leave_type = 'casual' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'casual' THEN $3::int ELSE 0 END >= 0
+         AND lb.sick_leave
+           + CASE WHEN e.leave_type = 'sick' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'sick' THEN $3::int ELSE 0 END >= 0
+       RETURNING lb.employee_id, lb.annual_leave, lb.casual_leave, lb.sick_leave
+     ),
+     updated_log AS (
+       UPDATE leave_deduction_log l
+       SET
+         leave_type = $2::text,
+         days_deducted = $3::int,
+         reason = $4::text,
+         balance_before = CASE
+           WHEN $2::text = 'annual' THEN ub.annual_leave + $3::int
+           WHEN $2::text = 'casual' THEN ub.casual_leave + $3::int
+           ELSE ub.sick_leave + $3::int
+         END,
+         balance_after = CASE
+           WHEN $2::text = 'annual' THEN ub.annual_leave
+           WHEN $2::text = 'casual' THEN ub.casual_leave
+           ELSE ub.sick_leave
+         END
+       FROM updated_balance ub
+       WHERE l.deduction_id = $1
+       RETURNING l.deduction_id, l.employee_id, l.leave_type, l.days_deducted, l.reason, l.balance_before, l.balance_after, l.created_at, l.deducted_by_employee_id
+     )
+     SELECT
+       ul.deduction_id, ul.employee_id, ul.leave_type, ul.days_deducted, ul.reason,
+       ul.balance_before, ul.balance_after, ul.created_at, ul.deducted_by_employee_id,
+       ub.annual_leave, ub.casual_leave, ub.sick_leave
+     FROM updated_log ul
+     JOIN updated_balance ub ON ub.employee_id = ul.employee_id`,
+    [deductionId, type, d, reason]
+  )
+  return rows
+}
+
 export async function setAnnualDaysDeducted(leaveRequestId, days) {
   return executeQuery(
     `UPDATE leave_requests SET annual_days_deducted = $2 WHERE leave_request_id = $1`,
