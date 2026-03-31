@@ -623,45 +623,52 @@ export async function upsertUserPermission(empId, permissionKey, allowed) {
 }
 
 // Employee HOD departments (one employee can be HOD of multiple departments)
+async function ensureEmployeeHodDepartmentsTable() {
+  await executeQuery(
+    `CREATE TABLE IF NOT EXISTS employee_hod_departments (
+       employee_id INTEGER NOT NULL REFERENCES employees(employee_id) ON DELETE CASCADE,
+       department_id INTEGER NOT NULL REFERENCES departments(department_id) ON DELETE CASCADE,
+       PRIMARY KEY (employee_id, department_id)
+     )`,
+    []
+  )
+  await executeQuery(
+    'CREATE INDEX IF NOT EXISTS idx_employee_hod_departments_department ON employee_hod_departments(department_id)',
+    []
+  )
+  await executeQuery(
+    'CREATE INDEX IF NOT EXISTS idx_employee_hod_departments_employee ON employee_hod_departments(employee_id)',
+    []
+  )
+}
+
 export async function getHodDepartmentIds(employeeId) {
-  try {
-    const rows = await executeQuery(
-      'SELECT department_id FROM employee_hod_departments WHERE employee_id = $1 ORDER BY department_id',
-      [employeeId]
-    )
-    return rows.map((r) => r.department_id)
-  } catch (err) {
-    if (err.code === '42P01') return []
-    throw err
-  }
+  await ensureEmployeeHodDepartmentsTable()
+  const rows = await executeQuery(
+    'SELECT department_id FROM employee_hod_departments WHERE employee_id = $1 ORDER BY department_id',
+    [employeeId]
+  )
+  return rows.map((r) => r.department_id)
 }
 
 export async function getHodDepartmentIdsByEmployeeIds(employeeIds) {
   if (!Array.isArray(employeeIds) || employeeIds.length === 0) return []
-  try {
-    const rows = await executeQuery(
-      'SELECT employee_id, department_id FROM employee_hod_departments WHERE employee_id = ANY($1::int[])',
-      [employeeIds]
-    )
-    return rows
-  } catch (err) {
-    if (err.code === '42P01') return []
-    throw err
-  }
+  await ensureEmployeeHodDepartmentsTable()
+  const rows = await executeQuery(
+    'SELECT employee_id, department_id FROM employee_hod_departments WHERE employee_id = ANY($1::int[])',
+    [employeeIds]
+  )
+  return rows
 }
 
 export async function setHodDepartments(employeeId, departmentIds) {
-  try {
-    await executeQuery('DELETE FROM employee_hod_departments WHERE employee_id = $1', [employeeId])
-    const ids = Array.isArray(departmentIds) ? departmentIds.filter((id) => id != null && Number.isInteger(Number(id))) : []
-    for (const deptId of ids) {
-      await executeQuery(
-        'INSERT INTO employee_hod_departments (employee_id, department_id) VALUES ($1, $2) ON CONFLICT (employee_id, department_id) DO NOTHING',
-        [employeeId, deptId]
-      )
-    }
-  } catch (err) {
-    if (err.code === '42P01') return
-    throw err
+  await ensureEmployeeHodDepartmentsTable()
+  await executeQuery('DELETE FROM employee_hod_departments WHERE employee_id = $1', [employeeId])
+  const ids = Array.isArray(departmentIds) ? departmentIds.filter((id) => id != null && Number.isInteger(Number(id))) : []
+  for (const deptId of ids) {
+    await executeQuery(
+      'INSERT INTO employee_hod_departments (employee_id, department_id) VALUES ($1, $2) ON CONFLICT (employee_id, department_id) DO NOTHING',
+      [employeeId, deptId]
+    )
   }
 }

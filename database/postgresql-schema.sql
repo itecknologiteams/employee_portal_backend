@@ -93,6 +93,15 @@ CREATE TABLE IF NOT EXISTS leave_deduction_log (
     FOREIGN KEY (deducted_by_employee_id) REFERENCES employees(employee_id) ON DELETE RESTRICT
 );
 
+-- Employee can be HOD of multiple departments
+CREATE TABLE IF NOT EXISTS employee_hod_departments (
+    employee_id INTEGER NOT NULL,
+    department_id INTEGER NOT NULL,
+    PRIMARY KEY (employee_id, department_id),
+    FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE,
+    FOREIGN KEY (department_id) REFERENCES departments(department_id) ON DELETE CASCADE
+);
+
 -- Create Feedback Table
 CREATE TABLE IF NOT EXISTS feedback (
     feedback_id SERIAL PRIMARY KEY,
@@ -131,6 +140,8 @@ CREATE INDEX IF NOT EXISTS idx_leave_requests_status ON leave_requests(status);
 CREATE INDEX IF NOT EXISTS idx_leave_deduction_log_employee ON leave_deduction_log(employee_id);
 CREATE INDEX IF NOT EXISTS idx_leave_deduction_log_hr ON leave_deduction_log(deducted_by_employee_id);
 CREATE INDEX IF NOT EXISTS idx_leave_deduction_log_created_at ON leave_deduction_log(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_employee_hod_departments_department ON employee_hod_departments(department_id);
+CREATE INDEX IF NOT EXISTS idx_employee_hod_departments_employee ON employee_hod_departments(employee_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_employee ON feedback(employee_id);
 CREATE INDEX IF NOT EXISTS idx_requisitions_employee ON requisitions(employee_id);
 
