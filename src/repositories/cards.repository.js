@@ -19,7 +19,7 @@ const LIST_QUERY = `
     e.designation AS designation_name,
     e.website,
     e.address,
-    e.profile_image AS profile_picture
+    NULL::text AS profile_picture
   FROM employees e
   ORDER BY e.name
 `
