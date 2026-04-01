@@ -53,7 +53,7 @@ export async function issueSsoConsumeToken(employeeId) {
   }
 }
 
-/** Validates and deletes token; returns employeeId or null. */
+/** Validates token (reusable within TTL window); returns employeeId or null. */
 export async function consumeSsoToken(token) {
   if (!token || typeof token !== 'string') return null
   const t = token.trim()
@@ -62,7 +62,6 @@ export async function consumeSsoToken(token) {
     const key = `${CONSUME_PREFIX}${t}`
     const v = await redis.get(key)
     if (v) {
-      await redis.del(key)
       const n = parseInt(v, 10)
       return Number.isNaN(n) ? null : n
     }
@@ -70,7 +69,6 @@ export async function consumeSsoToken(token) {
   pruneMemoryConsume()
   const entry = memoryConsume.get(t)
   if (entry && entry.exp > Date.now()) {
-    memoryConsume.delete(t)
     return entry.employeeId
   }
   return null
