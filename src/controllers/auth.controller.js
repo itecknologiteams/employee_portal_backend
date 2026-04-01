@@ -231,6 +231,8 @@ export async function ssoConsume(req, res) {
     const streamToken = await issueNotificationStreamToken(result.employeeId)
     if (streamToken) req.session.notificationStreamToken = streamToken
 
+    await new Promise((resolve, reject) => req.session.save((err) => err ? reject(err) : resolve()))
+
     const base = portalPublicBase(req)
     const target = safeRedirectPath(base, req.query.redirect)
     res.redirect(302, target)
