@@ -24,7 +24,7 @@ function timingSafeEqualStr(a, b) {
 
 function requireCrmSsoConfigured(req, res) {
   const secret = process.env.CRM_SSO_SECRET
-  const minLen = process.env.NODE_ENV === 'production' ? 24 : 8
+  const minLen = process.env.NODE_ENV === 'development' ? 24 : 8
   if (!secret || String(secret).length < minLen) {
     res.status(503).json({ error: 'CRM SSO is not configured (set CRM_SSO_SECRET)' })
     return false

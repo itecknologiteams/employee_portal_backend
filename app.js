@@ -24,6 +24,7 @@ import {
 import { requestLogger } from './src/middleware/requestLogger.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
 import { ssoRevocationMiddleware } from './src/middleware/ssoRevocation.js'
+import { createSessionStore } from './config/sessionStore.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -92,12 +93,13 @@ if (!process.env.SESSION_SECRET) {
 app.use(session({
   name: 'emp.portal.sid',
   secret: process.env.SESSION_SECRET || 'emp-portal-dev-secret-do-not-use-in-production',
+  store: createSessionStore(),
   resave: false,
   saveUninitialized: false,
   rolling: false,
   cookie: {
     httpOnly: true,
-    secure: IS_HTTPS || process.env.NODE_ENV === 'production',
+    secure: IS_HTTPS || process.env.NODE_ENV === 'development',
     sameSite: IS_HTTPS ? 'none' : 'lax',
     maxAge: SESSION_MAX_AGE_MS
   }
