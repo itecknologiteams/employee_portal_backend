@@ -63,6 +63,11 @@ const allowedOrigins = [
 
 const app = express()
 
+// Trust the first proxy (nginx). Without this, Express sees the internal HTTP
+// connection and refuses to set the `secure` cookie → browser never gets the
+// session cookie → every /api/auth/me returns 401 after page refresh.
+app.set('trust proxy', 1)
+
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true)
@@ -99,7 +104,7 @@ app.use(session({
   rolling: false,
   cookie: {
     httpOnly: true,
-    secure: IS_HTTPS || process.env.NODE_ENV === 'development',
+    secure: IS_HTTPS || process.env.NODE_ENV === 'production',
     sameSite: IS_HTTPS ? 'none' : 'lax',
     maxAge: SESSION_MAX_AGE_MS
   }
