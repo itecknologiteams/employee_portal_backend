@@ -1,5 +1,13 @@
 import multer from 'multer'
 
+/** Max upload size for payroll Excel/CSV (MB). Env PAYROLL_UPLOAD_MAX_MB — default 50 (was 15; large sheets + images trigger 413). */
+const payrollMaxMb = (() => {
+  const n = parseInt(process.env.PAYROLL_UPLOAD_MAX_MB || '50', 10)
+  if (Number.isFinite(n) && n >= 1 && n <= 500) return n
+  return 50
+})()
+const payrollMaxBytes = payrollMaxMb * 1024 * 1024
+
 export function fileToDataUrl(file) {
   if (!file || !file.buffer) return null
   const base64 = file.buffer.toString('base64')
@@ -19,7 +27,7 @@ export const quotationUpload = multer({
 /** Excel/CSV upload for payroll (gross salaries, payroll sheet, overrides) - .xlsx, .xls, .csv */
 export const payrollExcelUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 15 * 1024 * 1024 },
+  limits: { fileSize: payrollMaxBytes },
   fileFilter: (_req, file, cb) => {
     const mimetypeOk = file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
       file.mimetype === 'application/vnd.ms-excel' ||
