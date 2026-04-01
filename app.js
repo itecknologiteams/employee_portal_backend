@@ -89,9 +89,6 @@ if (!process.env.SESSION_SECRET) {
     console.warn('WARNING: SESSION_SECRET is not set. Using an insecure default — set SESSION_SECRET in .env before deploying.')
   }
 }
-console.log('IS_HTTPS', IS_HTTPS)
-console.log('process.env.NODE_ENV', process.env.NODE_ENV)
-
 app.use(session({
   name: 'emp.portal.sid',
   secret: process.env.SESSION_SECRET || 'emp-portal-dev-secret-do-not-use-in-production',
@@ -100,10 +97,10 @@ app.use(session({
   rolling: false,
   cookie: {
     httpOnly: true,
-    secure: IS_HTTPS || process.env.NODE_ENV === 'development',
+    secure: IS_HTTPS || process.env.NODE_ENV === 'production',
     sameSite: IS_HTTPS ? 'none' : 'lax',
     maxAge: SESSION_MAX_AGE_MS
-  } 
+  }
 }))
 app.use(ssoRevocationMiddleware)
 app.use(requestLogger)
