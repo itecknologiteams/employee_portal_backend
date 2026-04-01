@@ -217,13 +217,38 @@ export async function ssoConsume(req, res) {
     const alreadyTopLevel = req.query._tl === '1'
 
     if (isIframe && isCrossSite && !alreadyTopLevel) {
+      // Chrome blocks programmatic window.top navigation without a user gesture.
+      // Render a visible link with target="_top" — clicking it IS a user gesture
+      // and Chrome allows the cross-origin top-level navigation.
       const base = portalPublicBase(req)
       const topUrl = new URL(`/api/auth/sso/consume`, base)
       if (req.query.token) topUrl.searchParams.set('token', req.query.token)
       if (req.query.redirect) topUrl.searchParams.set('redirect', req.query.redirect)
       topUrl.searchParams.set('_tl', '1')
-      const safeTopUrl = JSON.stringify(topUrl.toString())
-      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><script>try{window.top.location.href=${safeTopUrl}}catch(e){window.location.href=${safeTopUrl}}</script></body></html>`)
+      const safeTopUrl = topUrl.toString().replace(/"/g, '&quot;')
+      return res.send(`<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{display:flex;align-items:center;justify-content:center;min-height:100vh;background:#f0f4f8;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
+    .card{background:#fff;border-radius:12px;padding:32px 40px;text-align:center;box-shadow:0 4px 20px rgba(0,0,0,.1);max-width:320px;width:100%}
+    .logo{font-size:22px;font-weight:700;color:#1e40af;margin-bottom:8px}
+    .sub{font-size:13px;color:#6b7280;margin-bottom:24px}
+    .btn{display:inline-block;padding:11px 28px;background:#2563eb;color:#fff;border-radius:8px;text-decoration:none;font-size:15px;font-weight:600;transition:background .2s}
+    .btn:hover{background:#1d4ed8}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">Employee Portal</div>
+    <div class="sub">Click below to sign in with your CRM account</div>
+    <a class="btn" href="${safeTopUrl}" target="_top">Sign In</a>
+  </div>
+</body>
+</html>`)
     }
 
     // ── Normal consume (top-level request) ───────────────────────────────────
