@@ -1,41 +1,48 @@
 /**
- * Redis-backed session store using connect-redis + ioredis.
- * Sessions survive server restarts and are shared across processes.
+ * PostgreSQL-backed session store using connect-pg-simple.
+ *
+ * Why PostgreSQL instead of Redis:
+ *   - The app already depends on PostgreSQL — no new service required.
+ *   - Sessions are guaranteed to persist across server restarts.
+ *   - Eliminates the "401 on page refresh" issue caused by Redis being
+ *     unavailable or MemoryStore being wiped on PM2 reload.
  */
-import { RedisStore } from 'connect-redis'
-import IORedis from 'ioredis'
+import connectPgSimple from 'connect-pg-simple'
+import { Pool } from 'pg'
+import session from 'express-session'
 
-let redisClient = null
+const PgStore = connectPgSimple(session)
 
-function getSessionRedisClient() {
-  if (redisClient) return redisClient
-  redisClient = new IORedis({
-    host: process.env.REDIS_HOST || 'localhost',
-    port: parseInt(process.env.REDIS_PORT || '6379', 10),
-    password: process.env.REDIS_PASSWORD || undefined,
-    // Reconnect on failure — important for session continuity
-    retryStrategy: (times) => Math.min(times * 200, 5000),
-    enableOfflineQueue: false
+let pgPool = null
+
+function getSessionPool() {
+  if (pgPool) return pgPool
+  pgPool = new Pool({
+    host: process.env.DB_HOST,
+    database: process.env.DB_DATABASE,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    port: parseInt(process.env.DB_PORT || '5432', 10),
+    max: 5,
+    idleTimeoutMillis: 30000,
+    connectionTimeoutMillis: 10000
   })
-
-  redisClient.on('error', (err) => {
-    console.error('Session Redis error:', err.message)
+  pgPool.on('error', (err) => {
+    console.error('Session DB pool error:', err.message)
   })
-  redisClient.on('connect', () => {
-    console.log('Session Redis connected')
-  })
-
-  return redisClient
+  return pgPool
 }
 
 /**
- * Returns a connect-redis RedisStore instance for express-session.
+ * Returns a connect-pg-simple PgStore for express-session.
+ * The sessions table is created automatically on first use (createTableIfMissing: true).
  */
 export function createSessionStore() {
-  const client = getSessionRedisClient()
-  return new RedisStore({
-    client,
-    prefix: 'sess:',
+  const pool = getSessionPool()
+  return new PgStore({
+    pool,
+    tableName: 'user_sessions',
+    createTableIfMissing: true,
     ttl: parseInt(process.env.SESSION_MAX_AGE_MS || String(24 * 60 * 60 * 1000), 10) / 1000
   })
 }
