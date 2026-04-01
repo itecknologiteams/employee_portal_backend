@@ -280,7 +280,15 @@ export async function listSlips(req, res) {
     const search = (req.query.search || '').trim().replace(/%/g, '\\%')
     const page = Math.max(1, parseInt(req.query.page, 10) || 1)
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 10))
-    const result = await payrollService.listSlips(req.params.id, search, page, limit)
+    const sh = req.query.slipOnHold
+    let slipOnHold
+    if (sh === 'true' || sh === '1') slipOnHold = true
+    else if (sh === 'false' || sh === '0') slipOnHold = false
+    const status = (req.query.status || '').trim() || undefined
+    const result = await payrollService.listSlips(req.params.id, search, page, limit, {
+      ...(slipOnHold !== undefined && { slipOnHold }),
+      ...(status && { status })
+    })
     res.json(result)
   } catch (err) {
     if (err.code === '42P01') return res.json({ data: [], total: 0, page: 1, limit: 10, totalPages: 0 })

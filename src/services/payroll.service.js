@@ -1062,11 +1062,15 @@ export async function closePeriod(id) {
 }
 
 // ---------- Slips ----------
-export async function listSlips(periodId, search, page, limit) {
+export async function listSlips(periodId, search, page, limit, options = {}) {
   const searchParam = search ? `%${search}%` : null
+  let slipOnHold = null
+  if (options.slipOnHold === true || options.slipOnHold === false) slipOnHold = options.slipOnHold
+  const status = options.status && String(options.status).trim() ? String(options.status).trim() : null
+  const filters = { searchParam, slipOnHold, status }
   const offset = (page - 1) * limit
-  const total = await repo.countSlips(periodId, searchParam)
-  const rows = await repo.listSlips(periodId, searchParam, limit, offset)
+  const total = await repo.countSlips(periodId, filters)
+  const rows = await repo.listSlips(periodId, filters, limit, offset)
   return {
     data: rows.map((r) => ({
       id: r.id,

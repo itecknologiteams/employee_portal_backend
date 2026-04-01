@@ -533,27 +533,61 @@ export async function updatePayrollSlipDeductions(slipId, updates) {
   }
 }
 
-export async function countSlips(periodId, searchParam) {
-  const searchCondition = searchParam
-    ? `AND (e.first_name ILIKE $2 OR e.last_name ILIKE $2 OR e.employee_code::text ILIKE $2 OR CONCAT(e.first_name, ' ', e.last_name) ILIKE $2)`
-    : ''
-  const params = searchParam ? [periodId, searchParam] : [periodId]
-  const result = await executeQuery(
-    `SELECT COUNT(*) AS total
-     FROM payroll_slip s
-     JOIN employees e ON e.employee_id = s.employee_id
-     WHERE s.payroll_period_id = $1 ${searchCondition}`,
-    params
-  )
-  return parseInt(result[0]?.total || 0, 10)
+/**
+ * @param {number} periodId
+ * @param {{ searchParam?: string|null, slipOnHold?: boolean|null, status?: string|null }} filters
+ */
+function buildSlipListWhere(periodId, filters) {
+  const parts = ['s.payroll_period_id = $1']
+  const params = [periodId]
+  let n = 2
+  const { searchParam, slipOnHold, status } = filters
+  if (searchParam) {
+    parts.push(
+      `(e.first_name ILIKE $${n} OR e.last_name ILIKE $${n} OR e.employee_code::text ILIKE $${n} OR CONCAT(e.first_name, ' ', e.last_name) ILIKE $${n})`
+    )
+    params.push(searchParam)
+    n++
+  }
+  if (slipOnHold === true || slipOnHold === false) {
+    parts.push(`COALESCE(s.slip_on_hold, false) = $${n}`)
+    params.push(slipOnHold)
+    n++
+  }
+  if (status && String(status).trim()) {
+    parts.push(`s.status = $${n}`)
+    params.push(String(status).trim())
+    n++
+  }
+  return { whereClause: parts.join(' AND '), params, nextIndex: n }
 }
 
-export async function listSlips(periodId, searchParam, limit, offset) {
-  const searchCondition = searchParam
-    ? `AND (e.first_name ILIKE $2 OR e.last_name ILIKE $2 OR e.employee_code::text ILIKE $2 OR CONCAT(e.first_name, ' ', e.last_name) ILIKE $2)`
-    : ''
-  const params = searchParam ? [periodId, searchParam, limit, offset] : [periodId, limit, offset]
-  const listQuery = `
+export async function countSlips(periodId, filters) {
+  try {
+    const { whereClause, params } = buildSlipListWhere(periodId, filters)
+    const result = await executeQuery(
+      `SELECT COUNT(*) AS total
+       FROM payroll_slip s
+       JOIN employees e ON e.employee_id = s.employee_id
+       WHERE ${whereClause}`,
+      params
+    )
+    return parseInt(result[0]?.total || 0, 10)
+  } catch (e) {
+    if (e.code === '42703' && (filters.slipOnHold === true || filters.slipOnHold === false)) {
+      return countSlips(periodId, { ...filters, slipOnHold: null })
+    }
+    throw e
+  }
+}
+
+export async function listSlips(periodId, filters, limit, offset) {
+  const run = (f) => {
+    const { whereClause, params, nextIndex } = buildSlipListWhere(periodId, f)
+    const listParams = [...params, limit, offset]
+    const lim = nextIndex
+    const off = nextIndex + 1
+    const listQuery = `
     SELECT s.id, s.employee_id, s.working_days, s.paid_days, s.absent_days,
            s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary,
            s.status, s.remarks, COALESCE(s.income_tax, 0) AS income_tax,
@@ -561,21 +595,26 @@ export async function listSlips(periodId, searchParam, limit, offset) {
            e.first_name, e.last_name, e.employee_code
     FROM payroll_slip s
     JOIN employees e ON e.employee_id = s.employee_id
-    WHERE s.payroll_period_id = $1 ${searchCondition}
+    WHERE ${whereClause}
     ORDER BY e.first_name, e.last_name
-    LIMIT ${searchParam ? '$3' : '$2'} OFFSET ${searchParam ? '$4' : '$3'}
+    LIMIT $${lim} OFFSET $${off}
   `
-  return executeQuery(listQuery, params).catch((err) => {
-    if (err.code === '42703') {
-      const fallbackQuery = listQuery
-        .replace(', COALESCE(s.income_tax, 0) AS income_tax', '')
-        .replace(', COALESCE(s.slip_on_hold, false) AS slip_on_hold', '')
-      return executeQuery(fallbackQuery, params).then((rows) =>
-        rows.map((r) => ({ ...r, income_tax: 0, slip_on_hold: false }))
-      )
-    }
-    throw err
-  })
+    return executeQuery(listQuery, listParams).catch((err) => {
+      if (err.code === '42703' && (f.slipOnHold === true || f.slipOnHold === false)) {
+        return run({ ...f, slipOnHold: null })
+      }
+      if (err.code === '42703') {
+        const fallbackQuery = listQuery
+          .replace(', COALESCE(s.income_tax, 0) AS income_tax', '')
+          .replace(', COALESCE(s.slip_on_hold, false) AS slip_on_hold', '')
+        return executeQuery(fallbackQuery, listParams).then((rows) =>
+          rows.map((row) => ({ ...row, income_tax: 0, slip_on_hold: false }))
+        )
+      }
+      throw err
+    })
+  }
+  return run(filters)
 }
 
 /** Toggle whether employee can see this slip on Salary Slip page (per month). */
