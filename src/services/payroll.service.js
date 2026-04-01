@@ -97,23 +97,55 @@ function parseNum(val) {
 }
 
 
-/** Find row index where header contains "Employee ID" (for payroll sheet with title rows) */
+/** Excel/CSV often stores codes as numbers (10531 → "10531.0"); normalize for DB lookup */
+function normalizeEmployeeCell(val) {
+  if (val == null || val === '') return ''
+  if (typeof val === 'number') {
+    if (Number.isInteger(val)) return String(val)
+    const r = Math.round(val)
+    if (Math.abs(val - r) < 1e-9) return String(r)
+    return String(val).trim()
+  }
+  let s = String(val).trim()
+  if (/^[\d,.\s]+$/.test(s)) {
+    const n = parseFloat(s.replace(/,/g, ''))
+    if (Number.isFinite(n) && Math.abs(n - Math.round(n)) < 1e-6) return String(Math.round(n))
+  }
+  return s
+}
+
+/** Find row index where header row lists Employee ID / Emp Code (iTecknologi-style title rows above) */
 function findPayrollHeaderRow(rows) {
-  for (let i = 0; i < Math.min(rows.length, 20); i++) {
+  const headerLike = (cell) => {
+    const t = String(cell || '')
+      .trim()
+      .replace(/\s+/g, ' ')
+    return (
+      /employee\s*(id|code|no\.?)\b/i.test(t) ||
+      /^emp\.?\s*code$/i.test(t) ||
+      /^emp\s*code$/i.test(t) ||
+      /^staff\s*(id|no\.?)$/i.test(t)
+    )
+  }
+  for (let i = 0; i < Math.min(rows.length, 35); i++) {
     const row = rows[i] || []
     for (let j = 0; j < row.length; j++) {
-      const cell = String(row[j] || '').trim()
-      if (/employee\s*id/i.test(cell)) return i
+      if (headerLike(row[j])) return i
     }
   }
   return -1
 }
 
-/** Get column index by header (case-insensitive, partial match) */
-function colIndex(headerRow, patterns) {
-  const norm = (h) => String(h || '').trim().toLowerCase()
+/**
+ * Column index by header (case-insensitive). Optional reject(hNorm) skips misleading columns
+ * (e.g. "Total Deductions" when searching for gross "Total").
+ */
+function colIndex(headerRow, patterns, options = {}) {
+  const { reject } = options
+  const norm = (h) => String(h || '').trim().toLowerCase().replace(/\s+/g, ' ')
   for (let c = 0; c < headerRow.length; c++) {
     const h = norm(headerRow[c])
+    if (reject && reject(h)) continue
     for (const p of patterns) {
       if (typeof p === 'string' && h.includes(p.toLowerCase())) return c
       if (p instanceof RegExp && p.test(h)) return c
@@ -122,31 +154,74 @@ function colIndex(headerRow, patterns) {
   return -1
 }
 
+const REJECT_GROSS_TOTAL_COL = (h) =>
+  /deduction|deduct\b|tax\b|withhold|loan|advance|fine|penalty|eobi\b|provident|pf\b|statutory|nssf|paye\b/i.test(h)
+
+/** Income tax column only — values from sheet; never auto-calculated here. */
+function colIndexIncomeTax(headerRow) {
+  return colIndex(
+    headerRow,
+    [
+      /^income\s*tax$/i,
+      /^withholding\s*tax$/i,
+      /^paye$/i,
+      /^wht$/i,
+      'income tax',
+      'withholding tax',
+      'tax (pkr)',
+      'tax deducted',
+      'i. tax',
+      'itax',
+      'deduction tax'
+    ],
+    {
+      reject: (h) =>
+        /sales|gst|vat\b|advance\s*tax|minimum\s*tax|surcharge|provident|nssf/i.test(h) &&
+        !/income|withhold|paye|wht|deduction\s*tax/i.test(h)
+    }
+  )
+}
+
+/** Load first grid sheet that has Employee ID header (same as salary upload). */
+function readPayrollGridRows(buffer, filename = '') {
+  const isCsv = /\.csv$/i.test(filename)
+  const jsonOpts = { header: 1, defval: '', raw: true, dense: true }
+  if (isCsv) {
+    let str = (buffer.toString && buffer.toString('utf8')) || String(buffer)
+    str = str.replace(/^\uFEFF/, '')
+    const wb = XLSX.read(str, { type: 'string', raw: true })
+    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
+    if (!sheet) throw new Error('CSV file is empty or invalid')
+    return XLSX.utils.sheet_to_json(sheet, jsonOpts)
+  }
+  const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
+  if (!wb.SheetNames?.length) throw new Error('Excel file has no sheets')
+  for (const name of wb.SheetNames) {
+    const sheet = wb.Sheets[name]
+    if (!sheet) continue
+    const candidate = XLSX.utils.sheet_to_json(sheet, jsonOpts)
+    if (findPayrollHeaderRow(candidate) >= 0) return candidate
+  }
+  throw new Error(
+    'Could not find a sheet with Employee ID / Emp Code columns. Use the main payroll grid tab (not only Summary).'
+  )
+}
+
 /**
  * Upload payroll sheet (CSV or Excel) with title rows: "iTecknologi Payroll - February 2026" style.
  * Finds the row containing "Employee ID", then reads Basic Salary, allowances, etc. and upserts
  * salary structure + gross salary per employee.
  */
 export async function uploadPayrollSheetFromFile(buffer, filename = '') {
-  const isCsv = /\.csv$/i.test(filename)
-  let rows
-  if (isCsv) {
-    const str = (buffer.toString && buffer.toString('utf8')) || String(buffer)
-    const wb = XLSX.read(str, { type: 'string', raw: true })
-    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
-    if (!sheet) throw new Error('CSV file is empty or invalid')
-    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
-  } else {
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
-    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
-    if (!sheet) throw new Error('Excel file has no sheets')
-    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
-  }
+  const rows = readPayrollGridRows(buffer, filename)
+
   if (!rows || rows.length < 2) throw new Error('File has no data rows')
 
   const headerRowIndex = findPayrollHeaderRow(rows)
   if (headerRowIndex < 0) {
-    throw new Error('Could not find header row containing "Employee ID". Ensure your payroll sheet has a row with column "Employee ID".')
+    throw new Error(
+      'Could not find header row with "Employee ID" or "Emp Code". Ensure your payroll sheet has a header row with Employee ID / Employee Code.'
+    )
   }
   // Normalise newlines/spaces so "Over\nTime" and "Over Time" both match
   const headerRow = (rows[headerRowIndex] || []).map((h) =>
@@ -155,15 +230,27 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
       .replace(/\s+/g, ' ')
   )
   const getCol = (...patterns) => colIndex(headerRow, patterns)
+  const getColGrossTotal = (...patterns) => colIndex(headerRow, patterns, { reject: REJECT_GROSS_TOTAL_COL })
 
   const idx = {
-    employeeId: getCol('employee id', 'employee id', /employee\s*id/),
-    basic: getCol('basic salary', 'basic'),
-    medical: getCol('medical allowance', 'medical'),
+    employeeId: colIndex(headerRow, [
+      /^employee\s*(id|code|no\.?)$/i,
+      /employee\s*id/,
+      /employee\s*code/,
+      /^emp\.?\s*code$/i,
+      /^emp\s*code$/i,
+      /^staff\s*(id|no\.?)$/i,
+      'employee id',
+      'employee code'
+    ]),
+    basic: colIndex(headerRow, ['basic salary', 'basic pay', 'basic'], {
+      reject: (h) => /deduction|deduct|tax|adjustment/.test(h)
+    }),
+    medical: getCol('medical allowance', 'medical allowance', 'medical'),
     conveyance: getCol('fixed conveyance', 'conveyance'),
     conveyanceLiters: getCol('conveyance in liters', 'conveyance liters'),
     communication: getCol('communication'),
-    houseRent: getCol('house allow', 'house rent', 'hra'),
+    houseRent: getCol('house allow', 'house rent', 'hra', 'house allowance'),
     utilities: getCol('utilities'),
     meal: getCol('meal allowance', 'meal'),
     arrears: getCol('arrears'),
@@ -172,11 +259,28 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
     incentives: getCol('incentives'),
     deviceReimbursement: getCol('device reimbursement'),
     overTime: getCol('overtime', 'over time', /over\s*time/),
-    total: getCol('total'),
+    total: getColGrossTotal(
+      /^gross\s*total$/i,
+      /^total\s*gross$/i,
+      /grand\s*total/i,
+      /monthly\s*gross/i,
+      /^total\s*salary$/i,
+      /^gross\s*salary$/i,
+      /^net\s*(salary|pay)$/i,
+      'gross total',
+      'total gross',
+      'gross',
+      'total'
+    ),
     eobi: getCol('eobi')
   }
   if (idx.employeeId < 0) {
-    throw new Error('Column "Employee ID" not found in header row.')
+    throw new Error('Column "Employee ID" / "Emp Code" not found in header row.')
+  }
+  if (idx.basic < 0) {
+    throw new Error(
+      'Could not find a Basic Salary column (e.g. "Basic Salary", "Basic Pay", or "Basic"). Without it, salary structure cannot be updated. Check header row text and merged cells.'
+    )
   }
 
   const added = []
@@ -186,8 +290,9 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
   for (let i = dataStart; i < rows.length; i++) {
     const row = rows[i] || []
     const rawId = row[idx.employeeId]
-    const codeOrId = rawId != null ? String(rawId).trim() : ''
+    const codeOrId = normalizeEmployeeCell(rawId)
     if (!codeOrId) continue
+    if (/^(total|sub-?total|grand\s*total)$/i.test(codeOrId)) continue
 
     const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
     if (!employeeId) {
@@ -286,32 +391,6 @@ function overlapDays(leaveStart, leaveEnd, periodStart, periodEnd) {
   const e = new Date(Math.min(new Date(leaveEnd), new Date(periodEnd)))
   if (s > e) return 0
   return Math.ceil((e - s) / (24 * 60 * 60 * 1000)) + 1
-}
-
-/**
- * Compute annual income tax from slab table.
- * Slabs: { min_amt, max_amt, taxable_amt, tax_percent } sorted by min_amt.
- * Formula: find bracket where min_amt <= annualIncome <= max_amt;
- * threshold = min_amt === 0 ? 0 : min_amt - 1;
- * amountInBracket = min(annualIncome, max_amt) - threshold;
- * tax = taxable_amt + amountInBracket * tax_percent / 100
- */
-function computeAnnualIncomeTax(annualGross, slabs) {
-  if (!slabs || slabs.length === 0) return 0
-  const income = Math.max(0, parseFloat(annualGross) || 0)
-  const sorted = [...slabs].sort((a, b) => parseFloat(a.min_amt) - parseFloat(b.min_amt))
-  for (const row of sorted) {
-    const minAmt = parseFloat(row.min_amt) || 0
-    const maxAmt = parseFloat(row.max_amt) || 0
-    const taxableAmt = parseFloat(row.taxable_amt) || 0
-    const taxPercent = parseFloat(row.tax_percent) || 0
-    if (income >= minAmt && income <= maxAmt) {
-      const threshold = minAmt === 0 ? 0 : minAmt - 1
-      const amountInBracket = Math.min(income, maxAmt) - threshold
-      return Math.round((taxableAmt + (amountInBracket * taxPercent) / 100) * 100) / 100
-    }
-  }
-  return 0
 }
 
 // ---------- Periods ----------
@@ -561,19 +640,11 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
   const periodRow = await repo.getPeriodById(periodId)
   if (!periodRow) return { error: 'Period not found' }
 
-  const isCsv = /\.csv$/i.test(filename)
   let rows
-  if (isCsv) {
-    const str = (buffer.toString && buffer.toString('utf8')) || String(buffer)
-    const wb = XLSX.read(str, { type: 'string', raw: true })
-    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
-    if (!sheet) return { error: 'CSV file is empty or invalid' }
-    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
-  } else {
-    const wb = XLSX.read(buffer, { type: 'buffer', cellDates: false })
-    const sheet = wb.SheetNames[0] ? wb.Sheets[wb.SheetNames[0]] : null
-    if (!sheet) return { error: 'Excel file has no sheets' }
-    rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' })
+  try {
+    rows = readPayrollGridRows(buffer, filename)
+  } catch (e) {
+    return { error: e.message || 'Invalid payroll file' }
   }
   if (!rows || rows.length < 2) return { error: 'File has no data rows' }
 
@@ -587,9 +658,19 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
       .replace(/\s+/g, ' ')
   )
   const getCol = (...patterns) => colIndex(headerRow, patterns)
+  const getColGrossTotal = (...patterns) => colIndex(headerRow, patterns, { reject: REJECT_GROSS_TOTAL_COL })
 
   const idx = {
-    employeeId: getCol('employee id', 'employee id', /employee\s*id/),
+    employeeId: colIndex(headerRow, [
+      /^employee\s*(id|code|no\.?)$/i,
+      /employee\s*id/,
+      /employee\s*code/,
+      /^emp\.?\s*code$/i,
+      /^emp\s*code$/i,
+      /^staff\s*(id|no\.?)$/i,
+      'employee id',
+      'employee code'
+    ]),
     wd: getCol('wd', 'working days'),
     basic: getCol('basic salary', 'basic'),
     medical: getCol('medical allowance', 'medical'),
@@ -606,9 +687,19 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     deviceReimbursement: getCol('device reimbursement'),
     otherAllowance: getCol('other allowance'),
     overTime: getCol('overtime', 'over time', /over\s*time/),
-    total: getCol('total'),
+    total: getColGrossTotal(
+      /^gross\s*total$/i,
+      /^total\s*gross$/i,
+      /grand\s*total/i,
+      /^total\s*salary$/i,
+      /^gross\s*salary$/i,
+      'gross total',
+      'total gross',
+      'gross',
+      'total'
+    ),
     netSalaryPayable: getCol('net salary payable', 'net salary'),
-    incomeTax: getCol('income tax'),
+    incomeTax: colIndexIncomeTax(headerRow),
     loan: getCol('loan'),
     salaryAdvance: getCol('salary advance'),
     otherDeduction: getCol('other deduction'),
@@ -631,7 +722,7 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
 
   for (let i = dataStart; i < rows.length; i++) {
     const row = rows[i] || []
-    const codeOrId = row[idx.employeeId] != null ? String(row[idx.employeeId]).trim() : ''
+    const codeOrId = normalizeEmployeeCell(row[idx.employeeId])
     if (!codeOrId) continue
 
     const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
@@ -650,7 +741,8 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     const totalAllowancesFromSheet = Number.isFinite(totalFromSheet) ? totalFromSheet : null
 
     const eobiDeduction = idx.eobi >= 0 ? Math.abs(parseNum(row[idx.eobi]) || 0) : (slip?.eobi_deduction ?? 0)
-    const incomeTax = idx.incomeTax >= 0 ? Math.abs(parseNum(row[idx.incomeTax]) || 0) : (slip?.income_tax ?? 0)
+    // Income tax: only from sheet column — no slab auto-calc; if column missing, 0
+    const incomeTax = idx.incomeTax >= 0 ? Math.abs(parseNum(row[idx.incomeTax]) || 0) : 0
     const loan = idx.loan >= 0 ? Math.abs(parseNum(row[idx.loan]) || 0) : 0
     const salaryAdvance = idx.salaryAdvance >= 0 ? Math.abs(parseNum(row[idx.salaryAdvance]) || 0) : 0
     const otherDeductionCol = idx.otherDeduction >= 0 ? Math.abs(parseNum(row[idx.otherDeduction]) || 0) : 0
@@ -766,7 +858,7 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     updated: updated.length,
     totalRows: rows.length - dataStart,
     errors,
-    message: `Sheet applied: ${updated.length} slip(s) created or updated from sheet. Allowance breakdown updated from sheet where present.`
+    message: `Sheet applied: ${updated.length} slip(s) updated. Income Tax and other deductions match the sheet (not auto-calculated).`
   }
 }
 
@@ -782,7 +874,6 @@ export async function runPayroll(periodId) {
 
   await repo.setPeriodProcessing(periodId)
 
-  const taxSlabs = await repo.getActiveTaxSlabs()
   const employees = await repo.getEmployeesForPayroll()
   const designationAllowances = await repo.getDesignationAllowances()
   const desgAllowanceMap = new Map(designationAllowances.map((d) => [d.desg_id, parseFloat(d.fixed_allowance) || 0]))
@@ -841,9 +932,9 @@ export async function runPayroll(periodId) {
     const grossSalary = (basic + totalAllowances) * (paidDays / empWorkingDaysClamped)
     const eobiDeduction = eobiFixed
     const absentDeduction = (basic + (medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance)) * (absentDays / empWorkingDaysClamped)
-    const annualGross = grossSalary * 12
-    const annualTax = computeAnnualIncomeTax(annualGross, taxSlabs)
-    const incomeTaxMonthly = Math.round((annualTax / 12) * 100) / 100
+    // Income tax is not auto-calculated from tax slabs. Slips show 0 until you apply deductions from
+    // the payroll sheet (Income Tax column) or set amounts manually on slips.
+    const incomeTaxMonthly = 0
     const totalDeductions = eobiDeduction + absentDeduction + periodOtherDeduction + periodLoan + periodSalaryAdvance + incomeTaxMonthly
     const netSalary = Math.max(0, grossSalary - totalDeductions)
 
@@ -1043,6 +1134,7 @@ export async function listSalaryStructures(search, page, limit) {
       utilitiesAllowance: num(r.utilities_allowance),
       mealAllowance: num(r.meal_allowance),
       otherAllowance: num(r.other_allowance),
+      overtimeAllowance: num(r.overtime_allowance),
       arrears: num(r.arrears),
       incrementalArrears: num(r.incremental_arrears),
       bikeMaintenanceAllowance: num(r.bike_maintenance_allowance),

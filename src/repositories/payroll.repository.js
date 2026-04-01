@@ -189,13 +189,16 @@ export async function getEmployeeIdByCodeOrId(codeOrId) {
   const asInt = parseInt(str, 10)
   if (Number.isInteger(asInt)) {
     const byId = await executeQuery(
-      'SELECT employee_id FROM employees WHERE is_active = true AND employee_id = $1 LIMIT 1',
+      'SELECT employee_id FROM employees WHERE employee_id = $1 LIMIT 1',
       [asInt]
     )
     if (byId.length) return byId[0].employee_id
   }
   const byCode = await executeQuery(
-    'SELECT employee_id FROM employees WHERE is_active = true AND (employee_code = $1 OR employee_code::text = $1) LIMIT 1',
+    `SELECT employee_id FROM employees
+     WHERE TRIM(LOWER(employee_code::text)) = TRIM(LOWER($1))
+        OR employee_code::text = $1
+     LIMIT 1`,
     [str]
   )
   return byCode.length ? byCode[0].employee_id : null
@@ -613,6 +616,7 @@ export async function listSalaryStructures(searchParam, limit, offset) {
            s.id AS structure_id, s.basic_salary, s.medical_allowance, s.conveyance_allowance,
            s.conveyance_liters_allowance, s.communication_allowance,
            s.house_rent_allowance, s.utilities_allowance, s.meal_allowance, s.other_allowance,
+           COALESCE(s.overtime_allowance, 0) AS overtime_allowance,
            s.arrears, s.incremental_arrears, s.bike_maintenance_allowance, s.incentives, s.device_reimbursement,
            s.eobi_fixed, s.effective_from
     FROM employees e
@@ -627,6 +631,7 @@ export async function listSalaryStructures(searchParam, limit, offset) {
         SELECT e.employee_id, e.first_name, e.last_name, e.employee_code,
                s.id AS structure_id, s.basic_salary, s.medical_allowance, s.conveyance_allowance,
                s.house_rent_allowance, s.utilities_allowance, s.meal_allowance, s.other_allowance,
+               0 AS overtime_allowance,
                s.eobi_fixed, s.effective_from
         FROM employees e
         LEFT JOIN employee_salary_structure s ON s.employee_id = e.employee_id
@@ -710,7 +715,7 @@ export async function upsertSalaryStructure(data) {
     }
     throw err
   })
-  return executeQuery(
+  const outRows = await executeQuery(
     `SELECT id, employee_id, basic_salary, medical_allowance, conveyance_allowance,
             conveyance_liters_allowance, communication_allowance,
             house_rent_allowance, utilities_allowance, meal_allowance, other_allowance,
@@ -730,6 +735,12 @@ export async function upsertSalaryStructure(data) {
     }
     throw err
   })
+  if (!outRows || !outRows.length) {
+    throw new Error(
+      'Salary structure row missing after save. Ensure employee_salary_structure exists and ON CONFLICT(employee_id) is supported.'
+    )
+  }
+  return outRows
 }
 
 // ---------- Income tax slabs (separate table – no mix with payroll) ----------
