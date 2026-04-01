@@ -365,7 +365,8 @@ export async function updateEmployee(id, body) {
     religion: body.religion,
     grade: body.grade,
     region: body.region,
-    bio: body.bio
+    bio: body.bio,
+    ...(typeof body.salarySlipOnHold === 'boolean' ? { salarySlipOnHold: body.salarySlipOnHold } : {})
   })
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {

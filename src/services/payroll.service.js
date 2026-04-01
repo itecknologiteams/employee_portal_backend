@@ -157,6 +157,27 @@ function colIndex(headerRow, patterns, options = {}) {
 const REJECT_GROSS_TOTAL_COL = (h) =>
   /deduction|deduct\b|tax\b|withhold|loan|advance|fine|penalty|eobi\b|provident|pf\b|statutory|nssf|paye\b/i.test(h)
 
+/** Net pay / take-home column (must not match gross). */
+function colIndexNetSalary(headerRow) {
+  return colIndex(
+    headerRow,
+    [
+      /^net\s*salary\s*payable$/i,
+      /^net\s*(salary|pay)$/i,
+      /^total\s*net/i,
+      /^take\s*home$/i,
+      /^take\s*home\s*pay$/i,
+      'net salary',
+      'net payable',
+      'net pay',
+      'salary credited',
+      'payable to employee',
+      'net amount'
+    ],
+    { reject: (h) => /gross\s*(salary|pay|total)|taxable|before\s*tax/i.test(h) }
+  )
+}
+
 /** Income tax column only — values from sheet; never auto-calculated here. */
 function colIndexIncomeTax(headerRow) {
   return colIndex(
@@ -205,6 +226,29 @@ function readPayrollGridRows(buffer, filename = '') {
   throw new Error(
     'Could not find a sheet with Employee ID / Emp Code columns. Use the main payroll grid tab (not only Summary).'
   )
+}
+
+/**
+ * When Basic / allowance columns are missing: derive monthly gross from Total/Gross column,
+ * or from Net + (Income Tax, EOBI, Loan, etc. deduction columns), or Net alone as last resort.
+ */
+function deriveGrossForStructureFromRow(row, idx) {
+  const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
+  if (Number.isFinite(totalFromSheet) && totalFromSheet > 0) return totalFromSheet
+
+  const netVal = idx.netSalary >= 0 ? parseNum(row[idx.netSalary]) : NaN
+  if (!Number.isFinite(netVal) || netVal < 0) return NaN
+
+  let ded = 0
+  if (idx.incomeTaxDed >= 0) ded += Math.abs(parseNum(row[idx.incomeTaxDed]) || 0)
+  if (idx.loanDed >= 0) ded += Math.abs(parseNum(row[idx.loanDed]) || 0)
+  if (idx.salaryAdvanceDed >= 0) ded += Math.abs(parseNum(row[idx.salaryAdvanceDed]) || 0)
+  if (idx.otherDeductionForGross >= 0) ded += Math.abs(parseNum(row[idx.otherDeductionForGross]) || 0)
+  if (idx.eobi >= 0) ded += Math.abs(parseNum(row[idx.eobi]) || 0)
+
+  const sum = netVal + ded
+  if (Number.isFinite(sum) && sum > 0) return sum
+  return netVal > 0 ? netVal : NaN
 }
 
 /**
@@ -266,26 +310,31 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
       /monthly\s*gross/i,
       /^total\s*salary$/i,
       /^gross\s*salary$/i,
-      /^net\s*(salary|pay)$/i,
       'gross total',
       'total gross',
       'gross',
       'total'
     ),
+    netSalary: colIndexNetSalary(headerRow),
+    incomeTaxDed: colIndexIncomeTax(headerRow),
+    loanDed: getCol('loan'),
+    salaryAdvanceDed: getCol('salary advance'),
+    otherDeductionForGross: getCol('other deduction'),
     eobi: getCol('eobi')
   }
   if (idx.employeeId < 0) {
     throw new Error('Column "Employee ID" / "Emp Code" not found in header row.')
   }
-  if (idx.basic < 0) {
+  if (idx.basic < 0 && idx.total < 0 && idx.netSalary < 0) {
     throw new Error(
-      'Could not find a Basic Salary column (e.g. "Basic Salary", "Basic Pay", or "Basic"). Without it, salary structure cannot be updated. Check header row text and merged cells.'
+      'Sheet has no Basic Salary column. Add either a Gross/Total column or a Net Salary column (optionally with Income Tax, EOBI, Loan columns) so gross can be derived from join-date rules.'
     )
   }
 
   const added = []
   const errors = []
   const dataStart = headerRowIndex + 1
+  const deriveMode = idx.basic < 0
 
   for (let i = dataStart; i < rows.length; i++) {
     const row = rows[i] || []
@@ -297,6 +346,31 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
     const employeeId = await repo.getEmployeeIdByCodeOrId(codeOrId)
     if (!employeeId) {
       errors.push({ row: i + 1, message: `Employee not found: ${codeOrId}` })
+      continue
+    }
+
+    if (deriveMode) {
+      const grossSalary = deriveGrossForStructureFromRow(row, idx)
+      if (!Number.isFinite(grossSalary) || grossSalary <= 0) {
+        errors.push({
+          row: i + 1,
+          message: `Could not derive gross for ${codeOrId}` + ' (need Total/Gross, or Net + deductions, or Net only)'
+        })
+        continue
+      }
+      const joinDate = await repo.getEmployeeJoinDate(employeeId)
+      const structure = repo.computeStructureFromGross(grossSalary, joinDate)
+      if (!structure) {
+        errors.push({ row: i + 1, message: `Could not compute salary structure for ${codeOrId}` })
+        continue
+      }
+      try {
+        await repo.upsertGrossSalary(employeeId, grossSalary)
+        await repo.upsertSalaryStructure({ employeeId, ...structure })
+        added.push({ row: i + 1, employeeId, grossSalary })
+      } catch (err) {
+        errors.push({ row: i + 1, message: err.message || 'Failed to save' })
+      }
       continue
     }
 
@@ -1008,13 +1082,30 @@ export async function listSlips(periodId, search, page, limit) {
       netSalary: parseFloat(r.net_salary),
       incomeTax: parseFloat(r.income_tax) || 0,
       status: r.status,
-      remarks: r.remarks
+      remarks: r.remarks,
+      slipOnHold: !!r.slip_on_hold
     })),
     total,
     page,
     limit,
     totalPages: Math.ceil(total / limit) || 1
   }
+}
+
+/** Per slip: hide/show this month on employee Salary Slip page. */
+export async function setSlipHold(periodId, slipId, slipOnHold) {
+  const r = await repo.setPayrollSlipHold(periodId, slipId, slipOnHold)
+  if (r.missingColumn) return { error: 'migration_required' }
+  if (!r.ok) return { error: 'not_found' }
+  return { ok: true }
+}
+
+/** All slips in this period: hold or release for employees’ Salary Slip view. */
+export async function holdAllSlipsInPeriod(periodId, slipOnHold) {
+  const r = await repo.setAllPayrollSlipsHoldForPeriod(periodId, slipOnHold)
+  if (r.missingColumn) return { error: 'migration_required' }
+  if (!r.ok) return { error: 'failed' }
+  return { ok: true }
 }
 
 // ---------- Income tax slabs ----------

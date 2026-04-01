@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS employees (
     password VARCHAR(255), -- For plain text passwords (legacy support)
     profile_picture VARCHAR(500),
     is_active BOOLEAN DEFAULT true,
+    salary_slip_on_hold BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     password_updated_at TIMESTAMP,

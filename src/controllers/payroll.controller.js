@@ -288,6 +288,67 @@ export async function listSlips(req, res) {
   }
 }
 
+/**
+ * GET same URL — browser only sends GET; hold/update requires POST.
+ * Explains why opening the link in the address bar does not change data.
+ */
+export function getSlipHoldInfo(req, res) {
+  const base = `${req.protocol}://${req.get('host')}/api/payroll/periods/${req.params.id}/slips/${req.params.slipId}/hold`
+  res.status(200).json({
+    message:
+      'Yeh endpoint POST se chalta hai. Browser address bar se URL open karne par sirf GET aata hai — isliye update nahi hota. Payroll page par dropdown se use karein, ya neeche curl/Postman se POST bhejein.',
+    requiredMethod: 'POST',
+    contentType: 'application/json',
+    body: { slipOnHold: 'true = hold (employee ko slip nahi dikhegi), false = active' },
+    exampleCurl: `curl -X POST "${base}" -H "Content-Type: application/json" -d "{\\"slipOnHold\\":true}"`
+  })
+}
+
+/** POST body: { slipOnHold: boolean } — hide/show this month’s slip on employee Salary Slip page. */
+export async function postSlipHold(req, res) {
+  try {
+    const periodId = req.params.id
+    const slipId = req.params.slipId
+    const slipOnHold = req.body?.slipOnHold === true
+    const result = await payrollService.setSlipHold(periodId, slipId, slipOnHold)
+    if (result.error === 'migration_required') {
+      return res.status(503).json({
+        error:
+          'Database column slip_on_hold missing. Run migration: database/migrations/payroll_slip_slip_on_hold_pg.sql'
+      })
+    }
+    if (result.error === 'not_found') {
+      return res.status(404).json({ error: 'Slip not found for this period.' })
+    }
+    res.json({ message: slipOnHold ? 'Slip on hold for employees' : 'Slip visible to employees', slipOnHold })
+  } catch (err) {
+    console.error('postSlipHold:', err)
+    res.status(500).json({ error: 'Failed to update slip' })
+  }
+}
+
+/** POST body: { slipOnHold: boolean } — apply to all slips in period. */
+export async function postHoldAllSlips(req, res) {
+  try {
+    const periodId = req.params.id
+    const slipOnHold = req.body?.slipOnHold === true
+    const result = await payrollService.holdAllSlipsInPeriod(periodId, slipOnHold)
+    if (result.error === 'migration_required') {
+      return res.status(503).json({
+        error:
+          'Database column slip_on_hold missing. Run migration: database/migrations/payroll_slip_slip_on_hold_pg.sql'
+      })
+    }
+    if (result.error) {
+      return res.status(500).json({ error: 'Failed to update slips' })
+    }
+    res.json({ message: slipOnHold ? 'All slips on hold for employees' : 'All slips visible to employees', slipOnHold })
+  } catch (err) {
+    console.error('postHoldAllSlips:', err)
+    res.status(500).json({ error: 'Failed to update slips' })
+  }
+}
+
 // ---------- Designation allowances ----------
 export async function listDesignationAllowances(req, res) {
   try {

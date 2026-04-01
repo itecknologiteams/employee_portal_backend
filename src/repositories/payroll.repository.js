@@ -557,6 +557,7 @@ export async function listSlips(periodId, searchParam, limit, offset) {
     SELECT s.id, s.employee_id, s.working_days, s.paid_days, s.absent_days,
            s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary,
            s.status, s.remarks, COALESCE(s.income_tax, 0) AS income_tax,
+           COALESCE(s.slip_on_hold, false) AS slip_on_hold,
            e.first_name, e.last_name, e.employee_code
     FROM payroll_slip s
     JOIN employees e ON e.employee_id = s.employee_id
@@ -566,13 +567,43 @@ export async function listSlips(periodId, searchParam, limit, offset) {
   `
   return executeQuery(listQuery, params).catch((err) => {
     if (err.code === '42703') {
-      return executeQuery(
-        listQuery.replace(', COALESCE(s.income_tax, 0) AS income_tax', ''),
-        params
-      ).then((rows) => rows.map((r) => ({ ...r, income_tax: 0 })))
+      const fallbackQuery = listQuery
+        .replace(', COALESCE(s.income_tax, 0) AS income_tax', '')
+        .replace(', COALESCE(s.slip_on_hold, false) AS slip_on_hold', '')
+      return executeQuery(fallbackQuery, params).then((rows) =>
+        rows.map((r) => ({ ...r, income_tax: 0, slip_on_hold: false }))
+      )
     }
     throw err
   })
+}
+
+/** Toggle whether employee can see this slip on Salary Slip page (per month). */
+export async function setPayrollSlipHold(periodId, slipId, slipOnHold) {
+  try {
+    const rows = await executeQuery(
+      `UPDATE payroll_slip SET slip_on_hold = $1 WHERE id = $2 AND payroll_period_id = $3 RETURNING id`,
+      [!!slipOnHold, slipId, periodId]
+    )
+    return { ok: rows.length > 0 }
+  } catch (e) {
+    if (e.code === '42703') return { ok: false, missingColumn: true }
+    throw e
+  }
+}
+
+/** Set hold flag for every slip in a period (bulk). */
+export async function setAllPayrollSlipsHoldForPeriod(periodId, slipOnHold) {
+  try {
+    await executeQuery(
+      `UPDATE payroll_slip SET slip_on_hold = $1 WHERE payroll_period_id = $2`,
+      [!!slipOnHold, periodId]
+    )
+    return { ok: true }
+  } catch (e) {
+    if (e.code === '42703') return { ok: false, missingColumn: true }
+    throw e
+  }
 }
 
 // ---------- Designation allowances ----------

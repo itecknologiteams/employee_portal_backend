@@ -76,6 +76,7 @@ CREATE TABLE IF NOT EXISTS employees (
     password VARCHAR(255),
     profile_picture VARCHAR(500),
     is_active BOOLEAN DEFAULT true,
+    salary_slip_on_hold BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     password_updated_at TIMESTAMP
@@ -348,6 +349,7 @@ CREATE TABLE IF NOT EXISTS payroll_slip (
     other_allowance DECIMAL(18,2) DEFAULT 0,
     status VARCHAR(50) DEFAULT 'Generated',
     remarks TEXT,
+    slip_on_hold BOOLEAN NOT NULL DEFAULT FALSE,
     UNIQUE(payroll_period_id, employee_id)
 );
 CREATE INDEX IF NOT EXISTS idx_payroll_slip_period ON payroll_slip(payroll_period_id);

@@ -251,7 +251,7 @@ const employeesSelect = `
     e.department_id, d.department_name, e.position, e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
     e.city_id, c.city_name,
-    e.is_active, e.join_date,
+    e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold, e.join_date,
     e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
     e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
     e.religion, e.grade, e.region, e.bio
@@ -307,7 +307,7 @@ export async function listEmployeesSearchPaginated(searchPattern, limit, offset,
       `
       const qMinimal = selectMinimal + where + ` ORDER BY e.first_name, e.last_name LIMIT $${limitIdx} OFFSET $${offsetIdx} `
       const rows = await executeQuery(qMinimal, params)
-      return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null, join_date: null, employee_extension: null, religion: null, grade: null, cnic_issue_date: null, cnic_expiry_date: null, region: null, bio: null }))
+      return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null, join_date: null, employee_extension: null, religion: null, grade: null, cnic_issue_date: null, cnic_expiry_date: null, region: null, bio: null, salary_slip_on_hold: r.salary_slip_on_hold ?? false }))
     }
     throw err
   }
@@ -342,7 +342,7 @@ export async function listEmployees() {
           FROM employees e LEFT JOIN departments d ON e.department_id = d.department_id
           ORDER BY e.first_name, e.last_name
         `)
-        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null, join_date: null, employee_extension: null, religion: null, grade: null, cnic_issue_date: null, cnic_expiry_date: null, region: null, bio: null }))
+        return rows.map(r => ({ ...r, station_id: null, station_name: null, city_id: null, city_name: null, personal_cell_number: null, join_date: null, employee_extension: null, religion: null, grade: null, cnic_issue_date: null, cnic_expiry_date: null, region: null, bio: null, salary_slip_on_hold: r.salary_slip_on_hold ?? false }))
       }
     }
     throw err
@@ -433,7 +433,8 @@ export async function updateEmployee(id, updates) {
   const {
     firstName, lastName, email, phone, departmentId, designationId, employeeTypeId, stationId, cityId, position, employeeCode, isActive, joinDate,
     address, dateOfBirth, fatherName, gender, maritalStatus, cnicNumber, cnicIssueDate, cnicExpiryDate, emergencyContactNumber, personalCellNumber,
-    employeeExtension, religion, grade, region, bio
+    employeeExtension, religion, grade, region, bio,
+    salarySlipOnHold
   } = updates
   let params = [
     firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null,
@@ -466,6 +467,11 @@ export async function updateEmployee(id, updates) {
   if (grade !== undefined) { setClauses.push(`grade = $${idx}`); params.push(grade?.trim() || null); idx++ }
   if (region !== undefined) { setClauses.push(`region = $${idx}`); params.push(region?.trim() || null); idx++ }
   if (bio !== undefined) { setClauses.push(`bio = $${idx}`); params.push(bio?.trim() || null); idx++ }
+  if (typeof salarySlipOnHold === 'boolean') {
+    setClauses.push(`salary_slip_on_hold = $${idx}`)
+    params.push(salarySlipOnHold)
+    idx++
+  }
   params.push(id)
   await executeQuery(
     `UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`,
@@ -513,7 +519,7 @@ export async function getEmployeeById(id) {
         e.employee_type_id, et.emp_type_name AS employee_type_name,
         e.station_id, s.station_name,
         e.city_id, c.city_name,
-        e.is_active, e.join_date,
+        e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold, e.join_date,
         e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
         e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
         e.religion, e.grade, e.region, e.bio
@@ -537,7 +543,7 @@ export async function getEmployeeById(id) {
         LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
         WHERE e.employee_id = $1
       `, [id])
-      if (r.length) Object.assign(r[0], { station_id: null, station_name: null, city_name: null, city_id: null, address: null, date_of_birth: null, father_name: null, gender: null, marital_status: null, cnic_number: null, cnic_issue_date: null, cnic_expiry_date: null, emergency_contact_number: null, employee_extension: null, personal_cell_number: null, religion: null, grade: null, region: null, bio: null, join_date: null })
+      if (r.length) Object.assign(r[0], { station_id: null, station_name: null, city_name: null, city_id: null, address: null, date_of_birth: null, father_name: null, gender: null, marital_status: null, cnic_number: null, cnic_issue_date: null, cnic_expiry_date: null, emergency_contact_number: null, employee_extension: null, personal_cell_number: null, religion: null, grade: null, region: null, bio: null, join_date: null, salary_slip_on_hold: false })
       return r
     }
     throw err

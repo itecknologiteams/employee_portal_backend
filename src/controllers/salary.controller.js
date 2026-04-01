@@ -1,5 +1,13 @@
 import * as salaryService from '../services/salary.service.js'
+import { employeeHasPermission } from '../services/auth.service.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
+import * as salaryRepo from '../repositories/salary.repository.js'
+
+/** True when viewer may see slips even if employee has salary_slip_on_hold (e.g. HR). */
+async function bypassSalarySlipHold(req) {
+  const viewerId = req.session?.user?.employeeId
+  return employeeHasPermission(viewerId, 'view_salary_slips')
+}
 
 /** List salary slips for employee (payroll + old + legacy). Id format: "p-123", "o-456", "s-789". */
 export async function listSlips(req, res) {
@@ -7,7 +15,8 @@ export async function listSlips(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const result = await salaryService.listSlips(employeeId)
+    const bypass = await bypassSalarySlipHold(req)
+    const result = await salaryService.listSlips(employeeId, { bypassHold: bypass })
     res.json(result)
   } catch (error) {
     console.error('Salary slips list error:', error)
@@ -21,7 +30,8 @@ export async function listOldSlips(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const result = await salaryService.listOldSlipsOnly(employeeId)
+    const bypass = await bypassSalarySlipHold(req)
+    const result = await salaryService.listOldSlipsOnly(employeeId, { bypassHold: bypass })
     res.json(result)
   } catch (error) {
     console.error('Old salary slips list error:', error)
@@ -39,8 +49,14 @@ export async function getOldSlip(req, res) {
     }
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const result = await salaryService.getOldSlipById(id, employeeId)
-    if (!result) return res.status(404).json({ error: 'Slip not found' })
+    const bypass = await bypassSalarySlipHold(req)
+    const result = await salaryService.getOldSlipById(id, employeeId, { bypassHold: bypass })
+    if (!result) {
+      if (!bypass && (await salaryRepo.isSalarySlipOnHold(employeeId))) {
+        return res.status(403).json({ error: 'Salary slip access is on hold for this employee.', salarySlipOnHold: true })
+      }
+      return res.status(404).json({ error: 'Slip not found' })
+    }
     res.json(result)
   } catch (error) {
     console.error('Old slip get error:', error)
@@ -58,8 +74,14 @@ export async function getSlip(req, res) {
     }
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const result = await salaryService.getSlipById(rawId, employeeId)
-    if (!result) return res.status(404).json({ error: 'Salary slip not found' })
+    const bypass = await bypassSalarySlipHold(req)
+    const result = await salaryService.getSlipById(rawId, employeeId, { bypassHold: bypass })
+    if (!result) {
+      if (!bypass && (await salaryRepo.isSalarySlipOnHold(employeeId))) {
+        return res.status(403).json({ error: 'Salary slip access is on hold for this employee.', salarySlipOnHold: true })
+      }
+      return res.status(404).json({ error: 'Salary slip not found' })
+    }
     res.json(result)
   } catch (error) {
     console.error('Salary slip get error:', error)
@@ -73,7 +95,8 @@ export async function getCurrentSalary(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const salary = await salaryService.getCurrentSalary(employeeId)
+    const bypass = await bypassSalarySlipHold(req)
+    const salary = await salaryService.getCurrentSalary(employeeId, { bypassHold: bypass })
     res.json(salary)
   } catch (error) {
     console.error('Current salary error:', error)
@@ -104,8 +127,14 @@ export async function downloadSalarySlip(req, res) {
     if (!employeeCode) return res.status(400).json({ error: 'employeeCode required' })
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const result = await salaryService.getSalarySlipForDownload(rawId, employeeId)
-    if (!result) return res.status(404).json({ error: 'Salary slip not found' })
+    const bypass = await bypassSalarySlipHold(req)
+    const result = await salaryService.getSalarySlipForDownload(rawId, employeeId, { bypassHold: bypass })
+    if (!result) {
+      if (!bypass && (await salaryRepo.isSalarySlipOnHold(employeeId))) {
+        return res.status(403).json({ error: 'Salary slip access is on hold for this employee.', salarySlipOnHold: true })
+      }
+      return res.status(404).json({ error: 'Salary slip not found' })
+    }
     res.json(result)
   } catch (error) {
     console.error('Download salary slip error:', error)

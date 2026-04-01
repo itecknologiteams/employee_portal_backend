@@ -54,27 +54,58 @@ export async function getHrEmpIdsForEmployee(employeeId) {
 }
 
 export async function getEmployeeBasicInfo(employeeId) {
-  const rows = await executeQuery(
-    'SELECT first_name, last_name, employee_code, email FROM employees WHERE employee_id = $1',
-    [employeeId]
-  )
-  return rows.length ? rows[0] : null
+  try {
+    const rows = await executeQuery(
+      'SELECT first_name, last_name, employee_code, email, COALESCE(salary_slip_on_hold, false) AS salary_slip_on_hold FROM employees WHERE employee_id = $1',
+      [employeeId]
+    )
+    return rows.length ? rows[0] : null
+  } catch (e) {
+    if (e.code === '42703') {
+      const rows = await executeQuery(
+        'SELECT first_name, last_name, employee_code, email FROM employees WHERE employee_id = $1',
+        [employeeId]
+      )
+      return rows.length ? { ...rows[0], salary_slip_on_hold: false } : null
+    }
+    throw e
+  }
+}
+
+/** When true, employee self-service salary slip APIs should hide slips (unless HR bypass). */
+export async function isSalarySlipOnHold(employeeId) {
+  try {
+    const rows = await executeQuery(
+      'SELECT COALESCE(salary_slip_on_hold, false) AS h FROM employees WHERE employee_id = $1',
+      [employeeId]
+    )
+    return rows.length ? rows[0].h === true : false
+  } catch (e) {
+    if (e.code === '42703') return false
+    throw e
+  }
 }
 
 // ---------- New payroll (payroll_slip + payroll_period) ----------
 // Returns all slips for employee regardless of payroll_period.status (draft/processing/processed/closed) so generated payroll (e.g. February 2026) shows on Salary Slip page.
-export async function listPayrollSlipsForEmployee(employeeId) {
+// excludeHeldSlips: when true, omit rows with slip_on_hold (employee self-service); HR passes false to see all.
+export async function listPayrollSlipsForEmployee(employeeId, options = {}) {
+  const excludeHeld = options.excludeHeldSlips === true
+  const holdSql = excludeHeld ? ' AND COALESCE(s.slip_on_hold, false) = false' : ''
   try {
     return await executeQuery(
       `SELECT s.id, s.payroll_period_id, s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary, s.status, s.remarks,
               p.name AS period_name, p.start_date, p.end_date
        FROM payroll_slip s
        JOIN payroll_period p ON p.id = s.payroll_period_id
-       WHERE s.employee_id = $1
+       WHERE s.employee_id = $1${holdSql}
        ORDER BY p.start_date DESC, s.id DESC`,
       [employeeId]
     )
   } catch (e) {
+    if (e.code === '42703' && excludeHeld) {
+      return listPayrollSlipsForEmployee(employeeId, { excludeHeldSlips: false })
+    }
     if (e.code === '42P01') return []
     throw e
   }

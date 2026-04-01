@@ -6,10 +6,17 @@ function monthLabelFromDate(date) {
 }
 
 /** List all salary slips for employee: payroll_slip, then old_salary_slip, then legacy. Id format: "p-123", "o-456", "s-789". */
-export async function listSlips(employeeId) {
+export async function listSlips(employeeId, options = {}) {
+  const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
+  if (onHold && !options.bypassHold) {
+    return { slips: [], salarySlipOnHold: true }
+  }
+
   const result = []
 
-  const payrollSlips = await salaryRepo.listPayrollSlipsForEmployee(employeeId)
+  const payrollSlips = await salaryRepo.listPayrollSlipsForEmployee(employeeId, {
+    excludeHeldSlips: !options.bypassHold
+  })
   payrollSlips.forEach((row) => {
     const monthLabel = row.period_name || monthLabelFromDate(row.start_date) || 'Payroll'
     result.push({
@@ -69,13 +76,18 @@ export async function listSlips(employeeId) {
     const db = b.payMonth ? new Date(b.payMonth) : new Date(0)
     return db - da
   })
-  return result
+  return { slips: result, salarySlipOnHold: false }
 }
 
 /** List only old (imported) salary slips for an employee. For the "Old salary slips" tab. */
-export async function listOldSlipsOnly(employeeId) {
+export async function listOldSlipsOnly(employeeId, options = {}) {
+  const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
+  if (onHold && !options.bypassHold) {
+    return { slips: [], salarySlipOnHold: true }
+  }
+
   const oldSlips = await salaryRepo.listOldSlipsForEmployee(employeeId)
-  return oldSlips.map((row) => {
+  const slips = oldSlips.map((row) => {
     const monthLabel = row.period_label || monthLabelFromDate(row.pay_month) || 'Old slip'
     return {
       id: row.id,
@@ -92,15 +104,19 @@ export async function listOldSlipsOnly(employeeId) {
       remarks: row.remarks || ''
     }
   })
+  return { slips, salarySlipOnHold: false }
 }
 
 /** Get one old slip by numeric id (for GET /old-slip/:id). Same shape as getSlipById for old slips. */
-export async function getOldSlipById(id, employeeId) {
-  return getSlipById(`o-${id}`, employeeId)
+export async function getOldSlipById(id, employeeId, options = {}) {
+  return getSlipById(`o-${id}`, employeeId, options)
 }
 
 /** Get one slip by id ("p-123", "o-456", or "s-789") with employeeId for auth. */
-export async function getSlipById(rawId, employeeId) {
+export async function getSlipById(rawId, employeeId, options = {}) {
+  const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
+  if (onHold && !options.bypassHold) return null
+
   const isPayroll = String(rawId).startsWith('p-')
   const isOld = String(rawId).startsWith('o-')
   const numericId = isPayroll ? String(rawId).replace(/^p-/, '') : isOld ? String(rawId).replace(/^o-/, '') : String(rawId).replace(/^s-/, '')
@@ -108,6 +124,8 @@ export async function getSlipById(rawId, employeeId) {
   if (isPayroll) {
     const slip = await salaryRepo.getPayrollSlipById(numericId, employeeId)
     if (!slip) return null
+    const held = slip.slip_on_hold === true || slip.slip_on_hold === 't'
+    if (held && !options.bypassHold) return null
     const emp = await salaryRepo.getEmployeeBasicInfo(employeeId)
     const structure = await salaryRepo.getEmployeeSalaryStructure(employeeId)
     const monthLabel = slip.period_name || monthLabelFromDate(slip.pay_month) || 'Payroll'
@@ -346,7 +364,10 @@ export async function getCurrentSalary(employeeId) {
 }
 
 /** Legacy: history (same source as listSlips but different shape). */
-export async function getSalaryHistory(employeeId, limit = 12) {
+export async function getSalaryHistory(employeeId, limit = 12, options = {}) {
+  const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
+  if (onHold && !options.bypassHold) return []
+
   const hrIds = await salaryRepo.getHrEmpIdsForEmployee(employeeId)
   const slips = await salaryRepo.getLegacyHistory(hrIds, limit)
   return slips.map((s) => ({
@@ -359,7 +380,10 @@ export async function getSalaryHistory(employeeId, limit = 12) {
 }
 
 /** Download: return slip data. rawId = "p-123", "o-456", or "s-789", employeeId required. */
-export async function getSalarySlipForDownload(rawId, employeeId) {
+export async function getSalarySlipForDownload(rawId, employeeId, options = {}) {
+  const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
+  if (onHold && !options.bypassHold) return null
+
   const isPayroll = String(rawId).startsWith('p-')
   const isOld = String(rawId).startsWith('o-')
   const numericId = String(rawId).replace(/^p-|^o-|^s-/, '')
@@ -367,6 +391,8 @@ export async function getSalarySlipForDownload(rawId, employeeId) {
   if (isPayroll) {
     const slip = await salaryRepo.getPayrollSlipById(numericId, employeeId)
     if (!slip) return null
+    const held = slip.slip_on_hold === true || slip.slip_on_hold === 't'
+    if (held && !options.bypassHold) return null
     const emp = await salaryRepo.getEmployeeBasicInfo(employeeId)
     const monthLabel = slip.period_name || monthLabelFromDate(slip.pay_month) || 'Payroll'
     const totGross = parseFloat(slip.gross_salary ?? 0) + parseFloat(slip.total_allowances ?? 0)

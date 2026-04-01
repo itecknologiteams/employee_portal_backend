@@ -26,6 +26,10 @@ router.post('/periods/:id/apply-deductions-sheet', payrollExcelUpload.single('fi
 router.post('/periods/:id/run', payrollController.runPayroll)
 router.post('/periods/:id/close', payrollController.closePeriod)
 router.get('/periods/:id/slips', payrollController.listSlips)
+router.post('/periods/:id/slips/hold-all', payrollController.postHoldAllSlips)
+router.get('/periods/:id/slips/:slipId/hold', payrollController.getSlipHoldInfo)
+router.post('/periods/:id/slips/:slipId/hold', payrollController.postSlipHold)
+router.put('/periods/:id/slips/:slipId/hold', payrollController.postSlipHold)
 
 // ---------- Income tax slabs (separate table – no mix with payroll) ----------
 router.get('/tax-slabs', payrollController.getTaxSlabs)
