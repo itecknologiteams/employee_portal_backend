@@ -199,9 +199,34 @@ export async function ssoPrepare(req, res) {
 
 /**
  * GET /api/auth/sso/consume?token=...&redirect=/optional/path — browser / iframe; sets session cookie.
+ *
+ * When loaded inside a cross-origin iframe (e.g. CRM embedding the portal), Chrome blocks the
+ * session cookie as a third-party cookie. We detect this via Sec-Fetch-Dest/Sec-Fetch-Site headers
+ * and break out to a top-level navigation so the cookie is set in a first-party context.
  */
 export async function ssoConsume(req, res) {
   try {
+    // ── Iframe breakout ───────────────────────────────────────────────────────
+    // When Chrome loads this inside a cross-origin iframe it blocks session cookies.
+    // Return a tiny HTML page that navigates the TOP-LEVEL window to this same URL
+    // (with _tl=1 flag), making the cookie first-party and therefore not blocked.
+    const fetchDest = req.headers['sec-fetch-dest'] || ''
+    const fetchSite = req.headers['sec-fetch-site'] || ''
+    const isIframe = fetchDest === 'iframe' || fetchDest === 'frame'
+    const isCrossSite = fetchSite === 'cross-site' || fetchSite === 'same-site'
+    const alreadyTopLevel = req.query._tl === '1'
+
+    if (isIframe && isCrossSite && !alreadyTopLevel) {
+      const base = portalPublicBase(req)
+      const topUrl = new URL(`/api/auth/sso/consume`, base)
+      if (req.query.token) topUrl.searchParams.set('token', req.query.token)
+      if (req.query.redirect) topUrl.searchParams.set('redirect', req.query.redirect)
+      topUrl.searchParams.set('_tl', '1')
+      const safeTopUrl = JSON.stringify(topUrl.toString())
+      return res.send(`<!DOCTYPE html><html><head><meta charset="utf-8"></head><body><script>try{window.top.location.href=${safeTopUrl}}catch(e){window.location.href=${safeTopUrl}}</script></body></html>`)
+    }
+
+    // ── Normal consume (top-level request) ───────────────────────────────────
     const token = req.query.token
     const employeeId = await consumeSsoToken(token)
     if (!employeeId) {
