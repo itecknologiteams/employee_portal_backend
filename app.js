@@ -41,6 +41,7 @@ const getNetworkIP = () => {
 
 const NETWORK_IP = getNetworkIP()
 const FRONTEND_PORT = process.env.FRONTEND_PORT || 5173
+const IS_HTTPS = (process.env.PORTAL_PUBLIC_URL || '').startsWith('https://')
 const envCorsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
@@ -97,8 +98,8 @@ app.use(session({
   rolling: false,
   cookie: {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    secure: IS_HTTPS || process.env.NODE_ENV === 'production',
+    sameSite: IS_HTTPS ? 'none' : 'lax',
     maxAge: SESSION_MAX_AGE_MS
   }
 }))
