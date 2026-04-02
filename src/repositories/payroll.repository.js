@@ -590,6 +590,7 @@ export async function listSlips(periodId, filters, limit, offset) {
     const listQuery = `
     SELECT s.id, s.employee_id, s.working_days, s.paid_days, s.absent_days,
            s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary,
+           COALESCE(s.absent_deduction, 0) AS absent_deduction,
            s.status, s.remarks, COALESCE(s.income_tax, 0) AS income_tax,
            COALESCE(s.slip_on_hold, false) AS slip_on_hold,
            e.first_name, e.last_name, e.employee_code

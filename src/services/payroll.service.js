@@ -837,12 +837,17 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     const absentDays = Number.isFinite(absentDaysComputed) ? Math.round(absentDaysComputed) : 0
     const paidDays = Math.max(0, (workingDays ?? 0) - absentDays)
 
-    const totalDeductions =
-      (eobiDeduction || 0) + (absentDeduction || 0) + (otherDeduction || 0) + (incomeTax || 0) +
-      (loan || 0) + (salaryAdvance || 0) + (late || 0) + (deviceDed || 0) + (cellphoneInst || 0) +
-      (foodpanda || 0) + (fuelOver || 0) + (overUtilMobile || 0)
+    // Gross from payroll is already paid-days based; do not subtract absent again for net
+    const cashDeductions =
+      (eobiDeduction || 0) + (otherDeduction || 0) + (incomeTax || 0) + (loan || 0) + (salaryAdvance || 0) +
+      (late || 0) + (deviceDed || 0) + (cellphoneInst || 0) + (foodpanda || 0) + (fuelOver || 0) + (overUtilMobile || 0)
     const netFromSheet = idx.netSalaryPayable >= 0 ? parseNum(row[idx.netSalaryPayable]) : NaN
-    const netSalary = Number.isFinite(netFromSheet) ? Math.round(netFromSheet * 100) / 100 : Math.round((gross - totalDeductions) * 100) / 100
+    const computedNet = Math.round((gross - cashDeductions) * 100) / 100
+    let netSalary = Number.isFinite(netFromSheet) ? Math.round(netFromSheet * 100) / 100 : computedNet
+    if (Number.isFinite(netFromSheet) && Math.abs(netSalary - computedNet) > 0.01) {
+      netSalary = computedNet
+    }
+    const totalDeductions = cashDeductions
 
     // If no slip exists for this period+employee, create one from sheet (sheet-only payroll flow)
     if (!slip) {
@@ -1009,8 +1014,12 @@ export async function runPayroll(periodId) {
     // Income tax is not auto-calculated from tax slabs. Slips show 0 until you apply deductions from
     // the payroll sheet (Income Tax column) or set amounts manually on slips.
     const incomeTaxMonthly = 0
-    const totalDeductions = eobiDeduction + absentDeduction + periodOtherDeduction + periodLoan + periodSalaryAdvance + incomeTaxMonthly
-    const netSalary = Math.max(0, grossSalary - totalDeductions)
+    // Cash deductions only: grossSalary is already (basic+allowances)×(paidDays/WD), so absence is
+    // already reflected in gross. Subtracting absentDeduction again would double-count (wrong net).
+    const cashDeductions = eobiDeduction + periodOtherDeduction + periodLoan + periodSalaryAdvance + incomeTaxMonthly
+    const netSalary = Math.max(0, grossSalary - cashDeductions)
+    // total_deductions = cash only so Gross − Deductions = Net on HR slips table; absent_deduction column holds absent amount
+    const totalDeductions = cashDeductions
 
     await repo.upsertPayrollSlip({
       periodId,
@@ -1083,6 +1092,7 @@ export async function listSlips(periodId, search, page, limit, options = {}) {
       grossSalary: parseFloat(r.gross_salary),
       totalAllowances: parseFloat(r.total_allowances),
       totalDeductions: parseFloat(r.total_deductions),
+      absentDeduction: parseFloat(r.absent_deduction) || 0,
       netSalary: parseFloat(r.net_salary),
       incomeTax: parseFloat(r.income_tax) || 0,
       status: r.status,

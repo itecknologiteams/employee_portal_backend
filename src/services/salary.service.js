@@ -155,19 +155,10 @@ export async function getSlipById(rawId, employeeId, options = {}) {
     const conveyanceLitersVal = structure ? f(structure.conveyance_liters_allowance) : 0
     const incrementalArrearsVal = structure ? f(structure.incremental_arrears) : 0
     const overtimeVal = structure ? f(structure.overtime_allowance) : 0
-    // Total Gross = basic_salary + utilities_allowance + house_rent_allowance + medical_allowance
-    const totGross = (structure && (basicVal || medicalVal || houseRentVal || utilitiesVal))
-      ? (basicVal + utilitiesVal + houseRentVal + medicalVal)
-      : gross
-    // Net = (Total Gross + all other allowances including fixed: conveyance, meal, bike, etc.) - total_deductions
-    const otherAllowancesSum = conveyanceVal + conveyanceLitersVal + communicationVal + mealVal + overtimeVal +
-      arrearsVal + incrementalArrearsVal + bikeVal + incentivesVal + deviceVal + otherAllVal
-    const totEarnings = totGross + otherAllowancesSum
-    const computedNet = Math.round((totEarnings - totDed) * 100) / 100
-    const fallbackNet = Math.round((gross - totDed) * 100) / 100
-    const totNet = (structure && (basicVal || medicalVal || houseRentVal || utilitiesVal))
-      ? (otherAllowancesSum > 0 ? computedNet : fallbackNet)
-      : net
+    // Line-item breakdown comes from salary structure (monthly components). Summary totals must match
+    // payroll_slip so "Total Gross", "Total Deductions", and "Net" reconcile (gross − deductions = net).
+    // Do not use only basic+medical+house+utilities as "Total Gross" — that omitted conveyance, meal,
+    // communication, etc. and made net look wrong vs the displayed gross row.
     return {
       id: slip.id,
       payrollId: slip.payroll_period_id,
@@ -176,10 +167,10 @@ export async function getSlipById(rawId, employeeId, options = {}) {
       employeeName: name || '—',
       employeeCode: emp?.employee_code || '—',
       email: emp?.email || '—',
-      totGrossSalary: totGross,
+      totGrossSalary: gross,
       totAllowances: totAll,
       totDeductions: totDed,
-      totNetSalary: totNet,
+      totNetSalary: net,
       remarks: slip.remarks || '',
       salaryStatus: slip.status || 'Generated',
       mDays: slip.working_days,
