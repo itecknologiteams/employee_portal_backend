@@ -46,23 +46,103 @@ export function getRequisitionBucket(row, itemsLineTotalPkr = null) {
   return 'hod'
 }
 
-export async function getHodEmployeeCodesForDepartment(departmentId) {
-  if (departmentId == null) return []
+/** Normalize single id, array of ids, or null to a deduped int[] (empty if none). */
+function normalizeDepartmentIds(departmentIdOrIds) {
+  if (departmentIdOrIds == null) return []
+  const arr = Array.isArray(departmentIdOrIds) ? departmentIdOrIds : [departmentIdOrIds]
+  const set = new Set()
+  for (const id of arr) {
+    const n = typeof id === 'number' ? id : parseInt(id, 10)
+    if (!Number.isNaN(n)) set.add(n)
+  }
+  return [...set]
+}
+
+/**
+ * All department ids for a creator: `employee_department_memberships` ∪ `employees.department_id`.
+ * Used so HOD routing matches every department the employee belongs to, not only the legacy single FK.
+ */
+export async function getEmployeeDepartmentIdsForCreator(employeeId) {
+  if (employeeId == null) return []
+  const ids = new Set()
   try {
-    const q = `
-      SELECT e.employee_code FROM employees e
+    const rows = await executeQuery(
+      `SELECT department_id FROM employees WHERE employee_id = $1 AND department_id IS NOT NULL`,
+      [employeeId]
+    )
+    if (rows[0]?.department_id != null) ids.add(Number(rows[0].department_id))
+  } catch (err) {
+    if (err.code !== '42P01') throw err
+  }
+  try {
+    const rows = await executeQuery(
+      `SELECT department_id FROM employee_department_memberships WHERE employee_id = $1`,
+      [employeeId]
+    )
+    ;(rows || []).forEach((r) => {
+      if (r.department_id != null) ids.add(Number(r.department_id))
+    })
+  } catch (err) {
+    if (err.code !== '42P01') throw err
+  }
+  return [...ids].sort((a, b) => a - b)
+}
+
+export async function getDepartmentNamesForIds(departmentIds) {
+  const ids = normalizeDepartmentIds(departmentIds)
+  if (ids.length === 0) return ''
+  const rows = await executeQuery(
+    `SELECT STRING_AGG(d.department_name, ', ' ORDER BY d.department_name) AS names
+     FROM departments d WHERE d.department_id = ANY($1::int[])`,
+    [ids]
+  )
+  return rows[0]?.names || ''
+}
+
+/**
+ * HOD employee codes for any of the given departments (union): designation/type HOD in each dept,
+ * plus rows in `employee_hod_departments` (authoritative HOD assignment per department).
+ */
+export async function getHodEmployeeCodesForDepartments(departmentIds) {
+  const ids = normalizeDepartmentIds(departmentIds)
+  if (ids.length === 0) return []
+  const codes = new Set()
+  try {
+    const rows = await executeQuery(
+      `SELECT DISTINCT e.employee_code FROM employees e
       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
-      WHERE e.department_id = $1 AND e.is_active = true AND e.employee_code IS NOT NULL AND e.employee_code != ''
-        AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)
-      LIMIT 5
-    `
-    const rows = await executeQuery(q, [departmentId])
-    return (rows || []).map((r) => r.employee_code).filter(Boolean)
+      WHERE e.department_id = ANY($1::int[]) AND e.is_active = true
+        AND e.employee_code IS NOT NULL AND e.employee_code != ''
+        AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+      [ids]
+    )
+    ;(rows || []).forEach((r) => {
+      if (r.employee_code) codes.add(r.employee_code)
+    })
   } catch (err) {
     if (err.code === '42P01') return []
     throw err
   }
+  try {
+    const rows2 = await executeQuery(
+      `SELECT DISTINCT e.employee_code FROM employee_hod_departments h
+       INNER JOIN employees e ON e.employee_id = h.employee_id AND e.is_active = true
+       WHERE h.department_id = ANY($1::int[])
+         AND e.employee_code IS NOT NULL AND e.employee_code != ''`,
+      [ids]
+    )
+    ;(rows2 || []).forEach((r) => {
+      if (r.employee_code) codes.add(r.employee_code)
+    })
+  } catch (err) {
+    if (err.code !== '42P01') throw err
+  }
+  return [...codes]
+}
+
+export async function getHodEmployeeCodesForDepartment(departmentId) {
+  return getHodEmployeeCodesForDepartments(departmentId != null ? [departmentId] : [])
 }
 
 export async function getEmployeeCodesByRole(roleName) {
@@ -82,9 +162,13 @@ export async function getEmployeeCodesByRole(roleName) {
   }
 }
 
-export async function getEmailsForBucket(bucket, departmentId) {
+/**
+ * @param {string} bucket
+ * @param {number|number[]|null} departmentIdOrIds - For `hod`, use all creator department ids (array) or legacy single id.
+ */
+export async function getEmailsForBucket(bucket, departmentIdOrIds) {
   let codes = []
-  if (bucket === 'hod') codes = await getHodEmployeeCodesForDepartment(departmentId)
+  if (bucket === 'hod') codes = await getHodEmployeeCodesForDepartments(departmentIdOrIds)
   else if (bucket === 'hr') codes = await getEmployeeCodesByRole('HR')
   else if (bucket === 'committee') codes = await getEmployeeCodesByRole('Committee')
   else if (bucket === 'ceo') codes = await getEmployeeCodesByRole('CEO')

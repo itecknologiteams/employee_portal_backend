@@ -3,8 +3,10 @@ import { isEmailConfigured } from '../../config/email.js'
 import {
   getRequisitionBucket,
   getEmailsForBucket,
-  getHodEmployeeCodesForDepartment,
+  getHodEmployeeCodesForDepartments,
   getEmployeeCodesByRole,
+  getEmployeeDepartmentIdsForCreator,
+  getDepartmentNamesForIds,
   BUCKET_LABELS,
   fetchLineTotalPkrForCeoRule
 } from '../utils/requisitionEmailRouting.js'
@@ -24,8 +26,8 @@ const ROLE_DEFS = [
   { key: 'finance', label: 'Finance', roleForCodes: 'Finance' }
 ]
 
-async function codesForStage(key, departmentId) {
-  if (key === 'hod') return getHodEmployeeCodesForDepartment(departmentId)
+async function codesForStage(key, departmentIds) {
+  if (key === 'hod') return getHodEmployeeCodesForDepartments(departmentIds)
   const def = ROLE_DEFS.find((r) => r.key === key)
   if (!def?.roleForCodes) return []
   return getEmployeeCodesByRole(def.roleForCodes)
@@ -96,10 +98,10 @@ export async function getRequisitionEmailDiagnostics(reqId) {
 
   const stages = []
   for (const def of ROLE_DEFS) {
-    const codes = await codesForStage(def.key, departmentId)
+    const codes = await codesForStage(def.key, departmentIds)
     const detailRows = await resolveEmailDetailsForCodes(codes)
     const resolvedEmails = await resolveEmailsPreferCrmForCodes(codes)
-    const bucketEmails = await getEmailsForBucket(def.key, departmentId)
+    const bucketEmails = await getEmailsForBucket(def.key, departmentIds)
     stages.push({
       key: def.key,
       label: def.label,
@@ -115,7 +117,7 @@ export async function getRequisitionEmailDiagnostics(reqId) {
   }
 
   const activeRecipients = currentBucket
-    ? await getEmailsForBucket(currentBucket, departmentId)
+    ? await getEmailsForBucket(currentBucket, departmentIds)
     : []
 
   const notes = [
@@ -130,7 +132,8 @@ export async function getRequisitionEmailDiagnostics(reqId) {
     reqId: row.req_id,
     referenceNo: row.req_reference_no || `#${row.req_id}`,
     itemsLineTotalPkr: lineTotalPkr,
-    departmentName: row.department_name || '',
+    departmentName,
+    creatorDepartmentIds: departmentIds,
     requiredByDate: row.req_required_by_date,
     creator: {
       name: creatorName,

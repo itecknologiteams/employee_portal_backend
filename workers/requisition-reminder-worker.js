@@ -5,6 +5,8 @@ import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisi
 import {
   getRequisitionBucket,
   getEmailsForBucket,
+  getEmployeeDepartmentIdsForCreator,
+  getDepartmentNamesForIds,
   BUCKET_LABELS,
   fetchLineTotalPkrForCeoRule
 } from '../src/utils/requisitionEmailRouting.js'
@@ -14,8 +16,8 @@ const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
 const ONE_HOUR_MS = 60 * 60 * 1000        // 1 day / due today → email every 1 hr
 
 /** HOD recipients for legacy requisition-created job (same resolution as bucket HOD). */
-async function getHodEmailForDepartment(departmentId) {
-  return getEmailsForBucket('hod', departmentId)
+async function getHodEmailsForCreatorDepartments(departmentIdOrIds) {
+  return getEmailsForBucket('hod', departmentIdOrIds)
 }
 
 /**
@@ -144,7 +146,8 @@ export async function processRequisitionReminders() {
     ).then((r) => r[0])
     const lineTotal = await fetchLineTotalPkrForCeoRule(reqId)
     const bucket = reqRow ? getRequisitionBucket(reqRow, lineTotal) : 'hod'
-    let toEmails = bucket ? await getEmailsForBucket(bucket, row.department_id) : []
+    const creatorDeptIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+    let toEmails = bucket ? await getEmailsForBucket(bucket, bucket === 'hod' ? creatorDeptIds : row.department_id) : []
     if (!toEmails.length) {
       const testEmail = (process.env.TEST_REMINDER_EMAIL || '').trim()
       if (testEmail) {
@@ -157,7 +160,9 @@ export async function processRequisitionReminders() {
     }
 
     const creatorDescription = (row.req_material || '').trim()
-    const departmentName = (row.department_name || '').trim()
+    const departmentName = (
+      (await getDepartmentNamesForIds(creatorDeptIds)) || row.department_name || ''
+    ).trim()
     let items = []
     try {
       const itemRows = await executeQuery(
@@ -210,7 +215,15 @@ export async function handleRequisitionCreated(data) {
   const requiredBy = data.requiredByDate
     ? new Date(data.requiredByDate).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
     : 'Not set'
-  const toEmails = data.departmentId != null ? await getHodEmailForDepartment(data.departmentId) : []
+  let hodDeptIds = []
+  if (data.requisitionId) {
+    try {
+      const r = await executeQuery('SELECT req_emp_id FROM requisition WHERE req_id = $1', [data.requisitionId])
+      if (r[0]?.req_emp_id != null) hodDeptIds = await getEmployeeDepartmentIdsForCreator(r[0].req_emp_id)
+    } catch (_) {}
+  }
+  if (hodDeptIds.length === 0 && data.departmentId != null) hodDeptIds = [data.departmentId]
+  const toEmails = hodDeptIds.length ? await getHodEmailsForCreatorDepartments(hodDeptIds) : []
   if (!toEmails.length) {
     console.log('[BullMQ] requisition-created:', refNo, '– no HOD email, skip notify')
     return
@@ -218,11 +231,14 @@ export async function handleRequisitionCreated(data) {
 
   let departmentName = ''
   try {
-    const dept = await executeQuery(
-      'SELECT d.department_name FROM departments d WHERE d.department_id = $1',
-      [data.departmentId]
-    )
-    departmentName = dept[0]?.department_name || ''
+    if (hodDeptIds.length) departmentName = await getDepartmentNamesForIds(hodDeptIds)
+    else if (data.departmentId != null) {
+      const dept = await executeQuery(
+        'SELECT d.department_name FROM departments d WHERE d.department_id = $1',
+        [data.departmentId]
+      )
+      departmentName = dept[0]?.department_name || ''
+    }
   } catch (_) {}
 
   let creatorDescription = (data.creatorDescription || '').trim()
@@ -278,7 +294,7 @@ export async function handleRequisitionBucketChanged(data) {
   let row
   try {
     const rows = await executeQuery(
-      `SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_material,
+      `SELECT r.req_id, r.req_emp_id, r.req_reference_no, r.req_required_by_date, r.req_material,
               e.first_name, e.last_name, e.department_id, d.department_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
@@ -295,7 +311,11 @@ export async function handleRequisitionBucketChanged(data) {
     console.warn('[BullMQ] requisition-bucket-changed: requisition not found', requisitionId)
     return
   }
-  let toEmails = await getEmailsForBucket(newBucket, row.department_id)
+  const creatorDeptIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+  let toEmails = await getEmailsForBucket(
+    newBucket,
+    newBucket === 'hod' ? creatorDeptIds : row.department_id
+  )
   if (!toEmails.length && process.env.TEST_REMINDER_EMAIL) {
     toEmails = [process.env.TEST_REMINDER_EMAIL.trim()]
     console.log('[BullMQ] requisition-bucket-changed: no recipient for bucket', newBucket, '– using TEST_REMINDER_EMAIL')
@@ -306,7 +326,7 @@ export async function handleRequisitionBucketChanged(data) {
   }
   const refNo = row.req_reference_no || '#' + requisitionId
   const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
-  const departmentName = row.department_name || ''
+  let departmentName = (await getDepartmentNamesForIds(creatorDeptIds)) || row.department_name || ''
   const requiredBy = row.req_required_by_date
     ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
     : 'Not set'
@@ -343,7 +363,7 @@ export async function handleRequisitionReminder3DayTest(data) {
   let row
   try {
     const rows = await executeQuery(
-      `SELECT r.req_id, r.req_reference_no, r.req_required_by_date, r.req_material,
+      `SELECT r.req_id, r.req_emp_id, r.req_reference_no, r.req_required_by_date, r.req_material,
               r.req_hod_approval, r.req_committee_approval, r.req_ceo_approval, r.req_procurement_ack, r.req_handed_to_finance, r.req_finance_approval, r.req_is_rejected,
               e.first_name, e.last_name, e.department_id, d.department_name
        FROM requisition r
@@ -363,7 +383,11 @@ export async function handleRequisitionReminder3DayTest(data) {
   const bucket = getRequisitionBucket(row, lineTotal)
   if (!bucket) return
 
-  const toEmails = await getEmailsForBucket(bucket, data.departmentId)
+  const creatorDeptIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+  const toEmails = await getEmailsForBucket(
+    bucket,
+    bucket === 'hod' ? creatorDeptIds : data.departmentId ?? row.department_id
+  )
   if (!toEmails.length) {
     console.log('[BullMQ] requisition-reminder-3day-test:', data.referenceNo, '– no recipient for bucket', bucket)
     return
@@ -374,7 +398,9 @@ export async function handleRequisitionReminder3DayTest(data) {
   const requiredBy = row.req_required_by_date
     ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
     : (data.requiredByDate || 'Not set')
-  const departmentName = (row.department_name || '').trim()
+  const departmentName = (
+    (await getDepartmentNamesForIds(creatorDeptIds)) || row.department_name || ''
+  ).trim()
   const creatorDescription = (row.req_material || '').trim()
   const bucketLabel = BUCKET_LABELS[bucket] || bucket
   let items = []
