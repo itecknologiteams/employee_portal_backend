@@ -76,7 +76,9 @@ export async function getRequisitionEmailDiagnostics(reqId) {
     }
   }
 
-  const departmentId = row.department_id
+  const departmentIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+  const departmentName =
+    (await getDepartmentNamesForIds(departmentIds)) || row.department_name || ''
   const lineTotalPkr = await fetchLineTotalPkrForCeoRule(reqId)
   const currentBucket = getRequisitionBucket(row, lineTotalPkr)
   const currentBucketLabel = currentBucket ? BUCKET_LABELS[currentBucket] || currentBucket : null
