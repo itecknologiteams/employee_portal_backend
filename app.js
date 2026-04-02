@@ -43,10 +43,13 @@ const getNetworkIP = () => {
 const NETWORK_IP = getNetworkIP()
 const FRONTEND_PORT = process.env.FRONTEND_PORT || 5173
 const IS_HTTPS = (process.env.PORTAL_PUBLIC_URL || '').startsWith('https://')
-/** Session cookie `Secure` flag: must be false for http://localhost (Vite) even if PORTAL_PUBLIC_URL is https (used for email links). In production over HTTP, do not set Secure or browsers drop the cookie → 401 on all /api calls. */
-const SESSION_COOKIE_SECURE =
-  process.env.SESSION_COOKIE_SECURE === '1' ||
-  (process.env.NODE_ENV === 'production' && IS_HTTPS && process.env.SESSION_COOKIE_SECURE !== '0')
+/**
+ * Session cookie `Secure` flag — opt-in only (`SESSION_COOKIE_SECURE=1`).
+ * Do not infer from PORTAL_PUBLIC_URL: it is often https (email links) while users open http://host:5173
+ * or http://rfm.… internally; Secure cookies are then dropped on HTTP → every API returns 401.
+ * Public HTTPS sites should set SESSION_COOKIE_SECURE=1 in server env.
+ */
+const SESSION_COOKIE_SECURE = process.env.SESSION_COOKIE_SECURE === '1'
 const envCorsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
@@ -75,7 +78,12 @@ app.set('trust proxy', 1)
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true)
-    if (allowedOrigins.indexOf(origin) !== -1 || origin.includes(NETWORK_IP) || origin.includes('192.168.20.244')) {
+    if (
+      allowedOrigins.indexOf(origin) !== -1 ||
+      origin.includes(NETWORK_IP) ||
+      origin.includes('192.168.20.244') ||
+      origin.includes('rfm.itecknologi.internal')
+    ) {
       callback(null, true)
     } else {
       callback(new Error(`CORS: origin '${origin}' is not allowed`))
@@ -108,12 +116,15 @@ app.use(session({
   rolling: false,
   cookie: {
     httpOnly: true,
+    path: '/',
     secure: SESSION_COOKIE_SECURE,
-    // `none` requires Secure — only when actually serving the portal over HTTPS (IS_HTTPS)
     sameSite: SESSION_COOKIE_SECURE && IS_HTTPS ? 'none' : 'lax',
     maxAge: SESSION_MAX_AGE_MS
   }
 }))
+if (process.env.NODE_ENV !== 'test') {
+  console.log(`[session] emp.portal.sid secure=${SESSION_COOKIE_SECURE} (set SESSION_COOKIE_SECURE=1 on public HTTPS only)`)
+}
 app.use(ssoRevocationMiddleware)
 app.use(requestLogger)
 
