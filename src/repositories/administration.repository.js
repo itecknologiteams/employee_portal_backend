@@ -268,7 +268,10 @@ function buildEmployeeFilters(searchPattern, filters = {}) {
     params.push(searchPattern)
   }
   if (filters.departmentId != null && Number.isInteger(filters.departmentId)) {
-    conditions.push(`e.department_id = $${params.length + 1}`)
+    const n = params.length + 1
+    conditions.push(
+      `(e.department_id = $${n} OR EXISTS (SELECT 1 FROM employee_department_memberships edm WHERE edm.employee_id = e.employee_id AND edm.department_id = $${n}))`
+    )
     params.push(filters.departmentId)
   }
   if (filters.designationId != null && Number.isInteger(filters.designationId)) {
@@ -288,6 +291,7 @@ function buildEmployeeFilters(searchPattern, filters = {}) {
 }
 
 export async function listEmployeesSearchPaginated(searchPattern, limit, offset, filters = {}) {
+  await ensureEmployeeDepartmentMembershipsTable()
   const { where, params: filterParams } = buildEmployeeFilters(searchPattern, filters)
   const params = [...filterParams, limit, offset]
   const limitIdx = params.length - 1
@@ -314,6 +318,7 @@ export async function listEmployeesSearchPaginated(searchPattern, limit, offset,
 }
 
 export async function countEmployeesSearch(searchPattern, filters = {}) {
+  await ensureEmployeeDepartmentMembershipsTable()
   const { where, params } = buildEmployeeFilters(searchPattern, filters)
   const q = `SELECT COUNT(*)::int AS total FROM employees e ${where}`
   const r = await executeQuery(q, params)
@@ -674,6 +679,68 @@ export async function setHodDepartments(employeeId, departmentIds) {
   for (const deptId of ids) {
     await executeQuery(
       'INSERT INTO employee_hod_departments (employee_id, department_id) VALUES ($1, $2) ON CONFLICT (employee_id, department_id) DO NOTHING',
+      [employeeId, deptId]
+    )
+  }
+}
+
+/** Primary department memberships (multi-select in Admin); sync with employees.department_id in service */
+async function ensureEmployeeDepartmentMembershipsTable() {
+  await executeQuery(
+    `CREATE TABLE IF NOT EXISTS employee_department_memberships (
+       employee_id INTEGER NOT NULL REFERENCES employees(employee_id) ON DELETE CASCADE,
+       department_id INTEGER NOT NULL REFERENCES departments(department_id) ON DELETE CASCADE,
+       PRIMARY KEY (employee_id, department_id)
+     )`,
+    []
+  )
+  await executeQuery(
+    'CREATE INDEX IF NOT EXISTS idx_employee_dept_mem_department ON employee_department_memberships(department_id)',
+    []
+  )
+  await executeQuery(
+    'CREATE INDEX IF NOT EXISTS idx_employee_dept_mem_employee ON employee_department_memberships(employee_id)',
+    []
+  )
+  await executeQuery(
+    `INSERT INTO employee_department_memberships (employee_id, department_id)
+     SELECT e.employee_id, e.department_id FROM employees e
+     WHERE e.department_id IS NOT NULL
+     ON CONFLICT (employee_id, department_id) DO NOTHING`,
+    []
+  ).catch(() => {})
+}
+
+export async function getMembershipDepartmentIds(employeeId) {
+  await ensureEmployeeDepartmentMembershipsTable()
+  const rows = await executeQuery(
+    'SELECT department_id FROM employee_department_memberships WHERE employee_id = $1 ORDER BY department_id',
+    [employeeId]
+  )
+  return rows.map((r) => r.department_id)
+}
+
+export async function getMembershipDepartmentRowsByEmployeeIds(employeeIds) {
+  if (!Array.isArray(employeeIds) || employeeIds.length === 0) return []
+  await ensureEmployeeDepartmentMembershipsTable()
+  return executeQuery(
+    `SELECT edm.employee_id, edm.department_id, d.department_name
+     FROM employee_department_memberships edm
+     JOIN departments d ON d.department_id = edm.department_id
+     WHERE edm.employee_id = ANY($1::int[])
+     ORDER BY edm.employee_id, d.department_name`,
+    [employeeIds]
+  )
+}
+
+export async function setEmployeeDepartmentMemberships(employeeId, departmentIds) {
+  await ensureEmployeeDepartmentMembershipsTable()
+  await executeQuery('DELETE FROM employee_department_memberships WHERE employee_id = $1', [employeeId])
+  const ids = Array.isArray(departmentIds) ? departmentIds.filter((id) => id != null && Number.isInteger(Number(id))).map((id) => parseInt(id, 10)) : []
+  const uniq = [...new Set(ids)]
+  for (const deptId of uniq) {
+    await executeQuery(
+      'INSERT INTO employee_department_memberships (employee_id, department_id) VALUES ($1, $2) ON CONFLICT (employee_id, department_id) DO NOTHING',
       [employeeId, deptId]
     )
   }

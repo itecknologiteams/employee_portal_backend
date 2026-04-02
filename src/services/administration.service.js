@@ -13,6 +13,14 @@ const PERMISSION_KEYS = [
 
 const ROLES_WITH_PERMISSIONS = ['Admin', 'Staff', 'User', 'Technician']
 
+/** Smallest department id = canonical employees.department_id for legacy joins */
+function primaryDepartmentIdFromIds(ids) {
+  const clean = [...new Set((ids || []).map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)))]
+  if (clean.length === 0) return null
+  clean.sort((a, b) => a - b)
+  return clean[0]
+}
+
 /** Technician default permissions (no requisition) — keep in sync with auth.service TECHNICIAN_PERMISSIONS */
 const TECHNICIAN_ROLE_DEFAULTS = [
   'profile', 'profile_update_requests', 'salary_slip', 'leave', 'leave_pending',
@@ -216,7 +224,30 @@ export async function listEmployeesSearchPaginated(search, page = 1, limit = 10,
     adminRepo.countEmployeesSearch(searchPattern, filterOptions)
   ])
   const hodMap = await buildHodDepartmentIdsMap(data.map((r) => r.id))
-  const dataWithHod = data.map((r) => ({ ...r, hod_department_ids: hodMap[r.id] || [] }))
+  const memRows = await adminRepo.getMembershipDepartmentRowsByEmployeeIds(data.map((r) => r.id))
+  const namesByEmp = {}
+  const idsByEmp = {}
+  for (const row of memRows) {
+    const eid = row.employee_id
+    if (!namesByEmp[eid]) namesByEmp[eid] = []
+    namesByEmp[eid].push(row.department_name)
+    if (!idsByEmp[eid]) idsByEmp[eid] = []
+    idsByEmp[eid].push(row.department_id)
+  }
+  const dataWithHod = data.map((r) => {
+    const hod_department_ids = hodMap[r.id] || []
+    const memNames = namesByEmp[r.id]
+    if (memNames && memNames.length) {
+      const department_name = [...new Set(memNames)].sort().join(', ')
+      const department_ids = idsByEmp[r.id] || []
+      return { ...r, hod_department_ids, department_name, department_ids }
+    }
+    return {
+      ...r,
+      hod_department_ids,
+      department_ids: r.department_id != null ? [r.department_id] : []
+    }
+  })
   return {
     data: dataWithHod,
     pagination: {
@@ -232,8 +263,15 @@ export async function createEmployee(body) {
   const {
     employeeCode, firstName, lastName, email, phone, departmentId,
     designationId, employeeTypeId, stationId, cityId, position,
-    portalUsername, portalPassword, portalUserType, hodDepartmentIds
+    portalUsername, portalPassword, portalUserType, hodDepartmentIds,
+    departmentIds: departmentIdsBody
   } = body
+  const departmentIdsList = Array.isArray(departmentIdsBody)
+    ? departmentIdsBody
+    : departmentId != null && departmentId !== ''
+      ? [departmentId]
+      : []
+  const resolvedDepartmentId = primaryDepartmentIdFromIds(departmentIdsList.map((id) => parseInt(id, 10)))
   if (!firstName || !lastName || !email) {
     const err = new Error('First name, last name and email are required')
     err.status = 400
@@ -254,12 +292,12 @@ export async function createEmployee(body) {
   const addressVal = body.address != null ? String(body.address).trim() : null
   const paramsFull = [
     code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null, addressVal || null,
-    departmentId || null, designationId || null, employeeTypeId || null, resolvedStationId,
+    resolvedDepartmentId, designationId || null, employeeTypeId || null, resolvedStationId,
     cityId ?? null, position?.trim() || null, joinDate, true
   ]
   const paramsMinimal = [
     code, firstName.trim(), lastName.trim(), email.trim(), phone?.trim() || null, addressVal || null,
-    departmentId || null, position?.trim() || null, joinDate, true
+    resolvedDepartmentId, position?.trim() || null, joinDate, true
   ]
   let insertError
   try {
@@ -301,6 +339,8 @@ export async function createEmployee(body) {
     region: body.region,
     bio: body.bio
   }).catch(() => {})
+  const membershipIds = departmentIdsList.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n))
+  if (membershipIds.length > 0) await adminRepo.setEmployeeDepartmentMemberships(newId, membershipIds)
   const hodIds = Array.isArray(hodDepartmentIds) ? hodDepartmentIds.map((id) => parseInt(id, 10)).filter((n) => !Number.isNaN(n)) : []
   if (hodIds.length > 0) await adminRepo.setHodDepartments(newId, hodIds)
   if (portalUsername && portalUsername.trim() && portalPassword && portalUserType) {
@@ -337,8 +377,17 @@ export async function updateEmployee(id, body) {
   const {
     employeeCode, firstName, lastName, email, phone, departmentId,
     designationId, employeeTypeId, stationId, cityId, position, isActive,
-    portalUsername, portalPassword, portalUserType, hodDepartmentIds
+    portalUsername, portalPassword, portalUserType, hodDepartmentIds,
+    departmentIds: departmentIdsBody
   } = body
+  let effectiveDepartmentId = departmentId
+  if (departmentIdsBody !== undefined) {
+    const ids = Array.isArray(departmentIdsBody)
+      ? departmentIdsBody.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n))
+      : []
+    effectiveDepartmentId = primaryDepartmentIdFromIds(ids)
+    await adminRepo.setEmployeeDepartmentMemberships(id, ids)
+  }
   if (!firstName || !lastName || !email) {
     const err = new Error('First name, last name and email are required')
     err.status = 400
@@ -349,7 +398,7 @@ export async function updateEmployee(id, body) {
     resolvedStationId = await adminRepo.getStationIdByCityId(cityId)
   }
   await adminRepo.updateEmployee(id, {
-    firstName, lastName, email, phone, departmentId, designationId, employeeTypeId,
+    firstName, lastName, email, phone, departmentId: effectiveDepartmentId, designationId, employeeTypeId,
     stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive, joinDate: body.joinDate,
     address: body.address,
     dateOfBirth: body.dateOfBirth,
@@ -420,7 +469,9 @@ export async function updateEmployee(id, body) {
   const result = await adminRepo.getEmployeeById(id)
   if (!result.length) return { notFound: true }
   const hodIds = await adminRepo.getHodDepartmentIds(id)
-  return { ...result[0], hod_department_ids: hodIds }
+  const memIds = await adminRepo.getMembershipDepartmentIds(id)
+  const department_ids = memIds.length ? memIds : (result[0].department_id != null ? [result[0].department_id] : [])
+  return { ...result[0], hod_department_ids: hodIds, department_ids }
 }
 
 export async function deactivateEmployee(id) {
