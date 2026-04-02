@@ -157,17 +157,80 @@ function colIndex(headerRow, patterns, options = {}) {
 const REJECT_GROSS_TOTAL_COL = (h) =>
   /deduction|deduct\b|tax\b|withhold|loan|advance|fine|penalty|eobi\b|provident|pf\b|statutory|nssf|paye\b/i.test(h)
 
-/** Net pay / take-home column (must not match gross). */
-function colIndexNetSalary(headerRow) {
+/** Some sheets label base gross as "Net Salary" — must not match "Net Salary Payable". */
+function colIndexSheetBaseGross(headerRow) {
+  return colIndex(headerRow, ['net salary'], { reject: (h) => /payable/i.test(h) })
+}
+
+/**
+ * "Total" = salary + allowances (full earnings before deductions). Reject "Total Leaves", "Total Deduction", etc.
+ */
+function colIndexTotalEarnings(headerRow) {
   return colIndex(
     headerRow,
     [
-      /^net\s*salary\s*payable$/i,
-      /^net\s*(salary|pay)$/i,
+      /^total\s*$/i,
+      /^total\s*salary$/i,
+      /^gross\s*total$/i,
+      /^total\s*gross$/i,
+      /grand\s*total/i,
+      'gross total',
+      'total gross',
+      /^gross\s*salary$/i
+    ],
+    {
+      reject: (h) =>
+        /deduction|deduct\b|leave|absent|loan|net\s*salary|payable|withhold|eobi|advance|tax\b|day\b/i.test(h)
+    }
+  )
+}
+
+/** Full earnings after OT/bonus etc. (e.g. Indian sheets). Prefer over plain "Gross Salary". */
+function colIndexGrossSalaryPayable(headerRow) {
+  return colIndex(
+    headerRow,
+    [
+      /^gross\s*salary\s*payable/i,
+      'gross salary payable',
+      /^gross\s*payable$/i
+    ],
+    { reject: (h) => /deduction|deduct|tax\b|withhold/i.test(h) }
+  )
+}
+
+/** Base gross column "Gross Salary" — reject "Gross Salary Payable" and similar. */
+function colIndexGrossSalaryStandalone(headerRow) {
+  return colIndex(headerRow, [/^gross\s*salary$/i], {
+    reject: (h) => /payable|deduction|deduct|tax\b|net\b/i.test(h)
+  })
+}
+
+/** Sheet total employee deductions (e.g. "Total Gross Deduction") — use as-is, no summing parts. */
+function colIndexTotalGrossDeduction(headerRow) {
+  return colIndex(
+    headerRow,
+    [
+      /^total\s*gross\s*deduction/i,
+      'total gross deduction',
+      /^total\s*gross\s*deductions/i,
+      /^total\s*employee\s*deduction/i
+    ],
+    { reject: (h) => /employer|company|ctc|cost\s*to/i.test(h) }
+  )
+}
+
+/** Final take-home: "Net Salary Payable" only — never plain "Net Salary" (that is base gross in some sheets). */
+function colIndexNetSalaryPayable(headerRow) {
+  return colIndex(
+    headerRow,
+    [
+      /^net\s*salary\s*payable/i,
+      'net salary payable',
+      /^net\s*amount\s*pay$/i,
+      'net amount pay',
       /^total\s*net/i,
       /^take\s*home$/i,
       /^take\s*home\s*pay$/i,
-      'net salary',
       'net payable',
       'net pay',
       'salary credited',
@@ -229,12 +292,22 @@ function readPayrollGridRows(buffer, filename = '') {
 }
 
 /**
- * When Basic / allowance columns are missing: derive monthly gross from Total/Gross column,
- * or from Net + (Income Tax, EOBI, Loan, etc. deduction columns), or Net alone as last resort.
+ * When Basic / allowance columns are missing: derive monthly gross from:
+ * 1) Total (salary + allowances), 2) "Net Salary" column when it means base gross (not Payable),
+ * 3) Net Salary Payable + deduction columns, 4) Payable alone as last resort.
  */
 function deriveGrossForStructureFromRow(row, idx) {
+  const payable = idx.grossSalaryPayable >= 0 ? parseNum(row[idx.grossSalaryPayable]) : NaN
+  if (Number.isFinite(payable) && payable > 0) return payable
+
   const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
   if (Number.isFinite(totalFromSheet) && totalFromSheet > 0) return totalFromSheet
+
+  const standaloneGross = idx.grossSalaryStandalone >= 0 ? parseNum(row[idx.grossSalaryStandalone]) : NaN
+  if (Number.isFinite(standaloneGross) && standaloneGross > 0) return standaloneGross
+
+  const baseGrossVal = idx.baseGross >= 0 ? parseNum(row[idx.baseGross]) : NaN
+  if (Number.isFinite(baseGrossVal) && baseGrossVal > 0) return baseGrossVal
 
   const netVal = idx.netSalary >= 0 ? parseNum(row[idx.netSalary]) : NaN
   if (!Number.isFinite(netVal) || netVal < 0) return NaN
@@ -303,19 +376,11 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
     incentives: getCol('incentives'),
     deviceReimbursement: getCol('device reimbursement'),
     overTime: getCol('overtime', 'over time', /over\s*time/),
-    total: getColGrossTotal(
-      /^gross\s*total$/i,
-      /^total\s*gross$/i,
-      /grand\s*total/i,
-      /monthly\s*gross/i,
-      /^total\s*salary$/i,
-      /^gross\s*salary$/i,
-      'gross total',
-      'total gross',
-      'gross',
-      'total'
-    ),
-    netSalary: colIndexNetSalary(headerRow),
+    total: colIndexTotalEarnings(headerRow),
+    grossSalaryPayable: colIndexGrossSalaryPayable(headerRow),
+    grossSalaryStandalone: colIndexGrossSalaryStandalone(headerRow),
+    baseGross: colIndexSheetBaseGross(headerRow),
+    netSalary: colIndexNetSalaryPayable(headerRow),
     incomeTaxDed: colIndexIncomeTax(headerRow),
     loanDed: getCol('loan'),
     salaryAdvanceDed: getCol('salary advance'),
@@ -325,9 +390,9 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
   if (idx.employeeId < 0) {
     throw new Error('Column "Employee ID" / "Emp Code" not found in header row.')
   }
-  if (idx.basic < 0 && idx.total < 0 && idx.netSalary < 0) {
+  if (idx.basic < 0 && idx.total < 0 && idx.baseGross < 0 && idx.netSalary < 0) {
     throw new Error(
-      'Sheet has no Basic Salary column. Add either a Gross/Total column or a Net Salary column (optionally with Income Tax, EOBI, Loan columns) so gross can be derived from join-date rules.'
+      'Sheet has no Basic Salary column. Add Total (salary + allowances), or Net Salary (base gross), or Net Salary Payable with deduction columns, so gross can be derived from join-date rules.'
     )
   }
 
@@ -394,9 +459,18 @@ export async function uploadPayrollSheetFromFile(buffer, filename = '') {
       continue
     }
 
+    const payable = idx.grossSalaryPayable >= 0 ? parseNum(row[idx.grossSalaryPayable]) : NaN
     const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
+    const standaloneGross = idx.grossSalaryStandalone >= 0 ? parseNum(row[idx.grossSalaryStandalone]) : NaN
     const sumComponents = basic + medical + conveyance + conveyanceLiters + communication + houseRent + utilities + meal + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimbursement + (Number.isFinite(overTime) ? overTime : 0)
-    const grossSalary = Number.isFinite(totalFromSheet) && totalFromSheet > 0 ? totalFromSheet : sumComponents
+    const grossSalary =
+      Number.isFinite(payable) && payable > 0
+        ? payable
+        : Number.isFinite(totalFromSheet) && totalFromSheet > 0
+          ? totalFromSheet
+          : Number.isFinite(standaloneGross) && standaloneGross > 0
+            ? standaloneGross
+            : sumComponents
 
     try {
       await repo.upsertGrossSalary(employeeId, grossSalary)
@@ -761,19 +835,18 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     deviceReimbursement: getCol('device reimbursement'),
     otherAllowance: getCol('other allowance'),
     overTime: getCol('overtime', 'over time', /over\s*time/),
-    total: getColGrossTotal(
-      /^gross\s*total$/i,
-      /^total\s*gross$/i,
-      /grand\s*total/i,
-      /^total\s*salary$/i,
-      /^gross\s*salary$/i,
-      'gross total',
-      'total gross',
-      'gross',
-      'total'
-    ),
-    netSalaryPayable: getCol('net salary payable', 'net salary'),
+    totalEarnings: colIndexTotalEarnings(headerRow),
+    grossSalaryPayable: colIndexGrossSalaryPayable(headerRow),
+    grossSalaryStandalone: colIndexGrossSalaryStandalone(headerRow),
+    baseGross: colIndexSheetBaseGross(headerRow),
+    netSalaryPayable: colIndexNetSalaryPayable(headerRow),
+    totalGrossDeduction: colIndexTotalGrossDeduction(headerRow),
     incomeTax: colIndexIncomeTax(headerRow),
+    pf: getCol('pf', 'provident fund', 'p.f.'),
+    esic: getCol('esic', 'esi', 'employee state insurance'),
+    pt: colIndex(headerRow, [/^professional\s*tax$/i, 'professional tax', /^p\.t\.?$/i], {
+      reject: (h) => /employer|advance|gross/i.test(h)
+    }),
     loan: getCol('loan'),
     salaryAdvance: getCol('salary advance'),
     otherDeduction: getCol('other deduction'),
@@ -809,10 +882,45 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
 
     const wd = idx.wd >= 0 ? parseInt(String(row[idx.wd] || '').trim(), 10) : null
     const workingDays = wd != null && !Number.isNaN(wd) && wd >= 0 ? wd : (slip?.working_days ?? 30)
-    // Gross and total_allowances from sheet as-is (Total column)
-    const totalFromSheet = idx.total >= 0 ? parseNum(row[idx.total]) : NaN
-    const gross = Number.isFinite(totalFromSheet) ? totalFromSheet : (slip ? parseFloat(slip.gross_salary) || 0 : 0)
-    const totalAllowancesFromSheet = Number.isFinite(totalFromSheet) ? totalFromSheet : null
+    // Prefer sheet columns: Gross Salary Payable > Total/Gross > standalone Gross Salary > PK "Net Salary" base
+    const grossPayable = idx.grossSalaryPayable >= 0 ? parseNum(row[idx.grossSalaryPayable]) : NaN
+    const totalEarnings = idx.totalEarnings >= 0 ? parseNum(row[idx.totalEarnings]) : NaN
+    const baseGrossStandalone = idx.grossSalaryStandalone >= 0 ? parseNum(row[idx.grossSalaryStandalone]) : NaN
+    const baseGross = idx.baseGross >= 0 ? parseNum(row[idx.baseGross]) : NaN
+    let gross
+    if (Number.isFinite(grossPayable) && grossPayable > 0) {
+      gross = grossPayable
+    } else if (Number.isFinite(totalEarnings)) {
+      gross = totalEarnings
+    } else if (Number.isFinite(baseGrossStandalone) && baseGrossStandalone > 0) {
+      gross = baseGrossStandalone
+    } else if (Number.isFinite(baseGross)) {
+      gross = baseGross
+    } else if (slip) {
+      gross = parseFloat(slip.gross_salary) || 0
+    } else {
+      gross = 0
+    }
+    let totalAllowancesFromSheet = null
+    if (Number.isFinite(grossPayable) && grossPayable > 0 && Number.isFinite(baseGrossStandalone) && baseGrossStandalone >= 0) {
+      totalAllowancesFromSheet = Math.round((grossPayable - baseGrossStandalone) * 100) / 100
+      if (totalAllowancesFromSheet < 0) totalAllowancesFromSheet = 0
+    } else if (Number.isFinite(totalEarnings) && Number.isFinite(baseGross) && idx.baseGross >= 0) {
+      totalAllowancesFromSheet = Math.round((totalEarnings - baseGross) * 100) / 100
+      if (totalAllowancesFromSheet < 0) totalAllowancesFromSheet = 0
+    } else if (
+      Number.isFinite(totalEarnings) &&
+      Number.isFinite(baseGrossStandalone) &&
+      idx.grossSalaryStandalone >= 0 &&
+      Number.isFinite(gross)
+    ) {
+      const diff = Math.round((gross - baseGrossStandalone) * 100) / 100
+      totalAllowancesFromSheet = diff >= 0 ? diff : 0
+    } else if (Number.isFinite(totalEarnings)) {
+      totalAllowancesFromSheet = totalEarnings
+    } else if (Number.isFinite(baseGross)) {
+      totalAllowancesFromSheet = baseGross
+    }
 
     const eobiDeduction = idx.eobi >= 0 ? Math.abs(parseNum(row[idx.eobi]) || 0) : (slip?.eobi_deduction ?? 0)
     // Income tax: only from sheet column — no slab auto-calc; if column missing, 0
@@ -826,6 +934,9 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     const foodpanda = idx.foodpandaDeduction >= 0 ? Math.abs(parseNum(row[idx.foodpandaDeduction]) || 0) : 0
     const fuelOver = idx.fuelOverusage >= 0 ? Math.abs(parseNum(row[idx.fuelOverusage]) || 0) : 0
     const overUtilMobile = idx.overUtilizationMobile >= 0 ? Math.abs(parseNum(row[idx.overUtilizationMobile]) || 0) : 0
+    const pfDed = idx.pf >= 0 ? Math.abs(parseNum(row[idx.pf]) || 0) : 0
+    const esicDed = idx.esic >= 0 ? Math.abs(parseNum(row[idx.esic]) || 0) : 0
+    const ptDed = idx.pt >= 0 ? Math.abs(parseNum(row[idx.pt]) || 0) : 0
     const otherDeduction = otherDeductionCol
 
     const absentDeduction =
@@ -839,15 +950,36 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
 
     // Gross from payroll is already paid-days based; do not subtract absent again for net
     const cashDeductions =
-      (eobiDeduction || 0) + (otherDeduction || 0) + (incomeTax || 0) + (loan || 0) + (salaryAdvance || 0) +
-      (late || 0) + (deviceDed || 0) + (cellphoneInst || 0) + (foodpanda || 0) + (fuelOver || 0) + (overUtilMobile || 0)
+      (eobiDeduction || 0) +
+      (otherDeduction || 0) +
+      (incomeTax || 0) +
+      (loan || 0) +
+      (salaryAdvance || 0) +
+      (late || 0) +
+      (deviceDed || 0) +
+      (cellphoneInst || 0) +
+      (foodpanda || 0) +
+      (fuelOver || 0) +
+      (overUtilMobile || 0) +
+      (pfDed || 0) +
+      (esicDed || 0) +
+      (ptDed || 0)
+    const totalGrossDedFromSheet = idx.totalGrossDeduction >= 0 ? parseNum(row[idx.totalGrossDeduction]) : NaN
+    const totalDeductions =
+      Number.isFinite(totalGrossDedFromSheet) && totalGrossDedFromSheet >= 0
+        ? Math.round(Math.abs(totalGrossDedFromSheet) * 100) / 100
+        : cashDeductions
     const netFromSheet = idx.netSalaryPayable >= 0 ? parseNum(row[idx.netSalaryPayable]) : NaN
-    const computedNet = Math.round((gross - cashDeductions) * 100) / 100
-    let netSalary = Number.isFinite(netFromSheet) ? Math.round(netFromSheet * 100) / 100 : computedNet
-    if (Number.isFinite(netFromSheet) && Math.abs(netSalary - computedNet) > 0.01) {
-      netSalary = computedNet
-    }
-    const totalDeductions = cashDeductions
+    const computedNetFromParts = Math.round((gross - cashDeductions) * 100) / 100
+    const computedNetFromTotalDedCol =
+      Number.isFinite(totalGrossDedFromSheet) && totalGrossDedFromSheet >= 0
+        ? Math.round((gross - Math.abs(totalGrossDedFromSheet)) * 100) / 100
+        : NaN
+    const netSalary = Number.isFinite(netFromSheet)
+      ? Math.round(netFromSheet * 100) / 100
+      : Number.isFinite(computedNetFromTotalDedCol)
+        ? computedNetFromTotalDedCol
+        : computedNetFromParts
 
     // If no slip exists for this period+employee, create one from sheet (sheet-only payroll flow)
     if (!slip) {
@@ -884,7 +1016,7 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
         working_days: workingDays,
         paid_days: paidDays,
         absent_days: absentDays,
-        gross_salary: totalAllowancesFromSheet ?? undefined,
+        gross_salary: gross,
         total_allowances: totalAllowancesFromSheet ?? undefined,
         eobi_deduction: eobiDeduction,
         absent_deduction: absentDeduction,

@@ -83,6 +83,9 @@ export async function login(req, res) {
     }
     const streamToken = await issueNotificationStreamToken(result.employeeId)
     if (streamToken) req.session.notificationStreamToken = streamToken
+    await new Promise((resolve, reject) => {
+      req.session.save((err) => (err ? reject(err) : resolve()))
+    })
     const payload = { ...result }
     if (streamToken) payload.notificationStreamToken = streamToken
     res.json(payload)
