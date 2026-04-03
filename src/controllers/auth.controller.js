@@ -103,6 +103,32 @@ export async function me(req, res) {
   res.json(req.session.user)
 }
 
+/**
+ * GET /api/auth/debug-session
+ * Temporary diagnostic endpoint — shows cookie & session state without exposing sensitive data.
+ * Remove this after diagnosing the 401 issue.
+ */
+export async function debugSession(req, res) {
+  const cookieHeader = req.headers.cookie || ''
+  const hasCookieHeader = !!cookieHeader
+  const hasPortalCookie = cookieHeader.includes('emp.portal.sid')
+  res.json({
+    hasCookieHeader,
+    hasPortalCookie,
+    sessionID: req.sessionID || null,
+    hasSession: !!req.session,
+    hasUser: !!req.session?.user,
+    employeeId: req.session?.user?.employeeId || null,
+    reqSecure: req.secure,
+    xForwardedProto: req.headers['x-forwarded-proto'] || null,
+    cookiePreview: cookieHeader ? cookieHeader.substring(0, 80) + '...' : '(none)',
+    serverCookieConfig: {
+      SESSION_COOKIE_SECURE: process.env.SESSION_COOKIE_SECURE || '(not set)',
+      NODE_ENV: process.env.NODE_ENV || '(not set)',
+    }
+  })
+}
+
 /** POST /api/auth/logout – destroy session. */
 export async function logout(req, res) {
   const tok = req.session?.notificationStreamToken
