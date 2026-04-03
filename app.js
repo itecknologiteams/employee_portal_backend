@@ -44,12 +44,15 @@ const NETWORK_IP = getNetworkIP()
 const FRONTEND_PORT = process.env.FRONTEND_PORT || 5173
 const IS_HTTPS = (process.env.PORTAL_PUBLIC_URL || '').startsWith('https://')
 /**
- * Session cookie `Secure` flag — opt-in only (`SESSION_COOKIE_SECURE=1`).
- * Do not infer from PORTAL_PUBLIC_URL: it is often https (email links) while users open http://host:5173
- * or http://rfm.… internally; Secure cookies are then dropped on HTTP → every API returns 401.
- * Public HTTPS sites should set SESSION_COOKIE_SECURE=1 in server env.
+ * Session cookie `Secure` flag.
+ * Defaults to true when PORTAL_PUBLIC_URL is https:// (production).
+ * Set SESSION_COOKIE_SECURE=0 in .env ONLY for pure HTTP internal deployments
+ * (e.g. http://rfm.itecknologi.internal) where PORTAL_PUBLIC_URL is not https.
  */
-const SESSION_COOKIE_SECURE = process.env.SESSION_COOKIE_SECURE === '1'
+const SESSION_COOKIE_SECURE =
+  process.env.SESSION_COOKIE_SECURE === '0'
+    ? false
+    : (process.env.SESSION_COOKIE_SECURE === '1' || IS_HTTPS)
 const envCorsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
@@ -123,7 +126,7 @@ app.use(session({
   }
 }))
 if (process.env.NODE_ENV !== 'test') {
-  console.log(`[session] emp.portal.sid secure=${SESSION_COOKIE_SECURE} (set SESSION_COOKIE_SECURE=1 on public HTTPS only)`)
+  console.log(`[session] emp.portal.sid secure=${SESSION_COOKIE_SECURE} IS_HTTPS=${IS_HTTPS} (override: SESSION_COOKIE_SECURE=0 for HTTP-only deployments)`)
 }
 app.use(ssoRevocationMiddleware)
 app.use(requestLogger)
