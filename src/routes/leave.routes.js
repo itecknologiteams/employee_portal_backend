@@ -15,7 +15,4 @@ router.get('/hr/deductions', leaveController.getHrDeductionLog)
 router.post('/request', leaveController.createLeaveRequest)
 router.put('/request/:leaveRequestId/status', leaveController.updateLeaveStatus)
 
-// Combined leaves: Annual from portal + Casual/Sick from external API
-router.get('/all-leaves/:employeeCode', leaveController.getAllLeavesCombined)
-
 export default router

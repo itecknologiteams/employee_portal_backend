@@ -363,7 +363,8 @@ export async function updateQuotations(req, res) {
 export async function uploadQuotations(req, res) {
   try {
     const updatedByEmployeeId = req.body.updatedByEmployeeId
-    const result = await requisitionService.uploadQuotations(req.params.reqId, req.files || {}, updatedByEmployeeId)
+    const updatedByEmployeeCode = req.body.updatedByEmployeeCode
+    const result = await requisitionService.uploadQuotations(req.params.reqId, req.files || {}, updatedByEmployeeId, updatedByEmployeeCode)
     if (result.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {
@@ -391,6 +392,17 @@ export async function updateItemsByHod(req, res) {
   } catch (error) {
     console.error('Update items by HOD error:', error)
     res.status(500).json({ error: 'Failed to update items' })
+  }
+}
+
+export async function deleteItemByHod(req, res) {
+  try {
+    const result = await requisitionService.deleteItemByHod(req.params.reqId, req.params.itemId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Delete item by HOD error:', error)
+    res.status(500).json({ error: 'Failed to delete item' })
   }
 }
 

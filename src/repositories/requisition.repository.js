@@ -502,6 +502,14 @@ export async function updateItemHodBoq(itemId, reqId, size, brand, qty, estCost)
   )
 }
 
+/** Delete a single requisition item. Only for items belonging to reqId. */
+export async function deleteRequisitionItem(itemId, reqId) {
+  return executeQuery(
+    `DELETE FROM requisition_items WHERE item_id = $1 AND req_id = $2`,
+    [itemId, reqId]
+  )
+}
+
 /** Update a single requisition item (description, size, brand, qty, est_cost, remarks). Only for items belonging to reqId. */
 export async function updateRequisitionItem(itemId, reqId, payload) {
   const { item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks } = payload

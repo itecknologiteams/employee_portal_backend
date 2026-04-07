@@ -1102,11 +1102,11 @@ export async function getPendingProcurement(employeeId) {
 }
 
 export async function acknowledgeProcurement(body) {
-  const { requisitionId, acknowledgedByEmployeeId } = body
+  const { requisitionId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(acknowledgedByEmployeeId != null ? String(acknowledgedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.acknowledgedByEmployeeId, approvedByEmployeeCode: body.acknowledgedByEmployeeCode })
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and acknowledgedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId or acknowledgedByEmployeeCode are required', status: 400 }
   }
   const ok = await reqRepo.isProcurementMember(eid)
   if (!ok) return { error: 'Only Procurement can acknowledge', status: 403 }
@@ -1119,9 +1119,9 @@ export async function acknowledgeProcurement(body) {
 export async function updateQuotations(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
-  const { quotation1Url, quotation2Url, quotation3Url, updatedByEmployeeId } = body
-  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
-  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const { quotation1Url, quotation2Url, quotation3Url } = body
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.updatedByEmployeeId, approvedByEmployeeCode: body.updatedByEmployeeCode })
+  if (eid == null) return { error: 'Valid updatedByEmployeeId or updatedByEmployeeCode required', status: 400 }
   const ok = await reqRepo.isProcurementMember(eid)
   if (!ok) return { error: 'Only Procurement can add quotations', status: 403 }
   const rows = await reqRepo.getRequisitionForQuotations(reqIdNum)
@@ -1130,11 +1130,11 @@ export async function updateQuotations(reqId, body) {
   return { message: 'Quotations updated', status: 'Quotations Added - Hand over to Finance' }
 }
 
-export async function uploadQuotations(reqId, files, updatedByEmployeeId) {
+export async function uploadQuotations(reqId, files, updatedByEmployeeId, updatedByEmployeeCode) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
-  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
-  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: updatedByEmployeeId, approvedByEmployeeCode: updatedByEmployeeCode })
+  if (eid == null) return { error: 'Valid updatedByEmployeeId or updatedByEmployeeCode required', status: 400 }
   const ok = await reqRepo.isProcurementMember(eid)
   if (!ok) return { error: 'Only Procurement can add quotations', status: 403 }
   const rows = await reqRepo.getRequisitionForQuotations(reqIdNum)
@@ -1165,9 +1165,9 @@ export async function uploadQuotations(reqId, files, updatedByEmployeeId) {
 export async function setExpectedHandover(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
-  const { expectedHandoverDate, updatedByEmployeeId } = body
-  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
-  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const { expectedHandoverDate } = body
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.updatedByEmployeeId, approvedByEmployeeCode: body.updatedByEmployeeCode })
+  if (eid == null) return { error: 'Valid updatedByEmployeeId or updatedByEmployeeCode required', status: 400 }
   const ok = await reqRepo.isProcurementMember(eid)
   if (!ok) return { error: 'Only Procurement can set expected handover date', status: 403 }
   const rows = await reqRepo.getRequisitionForExpectedHandover(reqIdNum)
@@ -1222,6 +1222,29 @@ export async function updateItemsByHod(reqId, body) {
   return { message: 'Items updated' }
 }
 
+/** HOD only: delete a single item from a requisition. Allowed only while in HOD bucket. Must keep at least 1 item. */
+export async function deleteItemByHod(reqId, itemId) {
+  const reqIdNum = parseInt(reqId, 10)
+  const itemIdNum = parseInt(itemId, 10)
+  if (Number.isNaN(reqIdNum) || Number.isNaN(itemIdNum)) {
+    return { error: 'Valid requisition ID and item ID required', status: 400 }
+  }
+  const rows = await reqRepo.getRequisitionById(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const row = rows[0]
+  if (row.req_hod_approval === 1) {
+    return { error: 'Requisition already forwarded. Items can only be deleted while in HOD bucket.', status: 403 }
+  }
+  const existingItems = await reqRepo.getRequisitionItems(reqIdNum)
+  if (existingItems.length <= 1) {
+    return { error: 'Cannot delete the last item. A requisition must have at least one item.', status: 400 }
+  }
+  const belongs = existingItems.some((i) => i.item_id === itemIdNum)
+  if (!belongs) return { error: 'Item not found in this requisition', status: 404 }
+  await reqRepo.deleteRequisitionItem(itemIdNum, reqIdNum)
+  return { message: 'Item deleted' }
+}
+
 function toDateOnlyString(val) {
   if (val == null) return null
   const s = String(val)
@@ -1244,9 +1267,9 @@ async function isCommitteeActor(employeeId) {
 export async function updateRequiredByDate(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
-  const { requiredByDate, updatedByEmployeeId } = body
-  const eid = parseEmployeeId(updatedByEmployeeId != null ? String(updatedByEmployeeId) : null)
-  if (eid == null) return { error: 'Valid updatedByEmployeeId required', status: 400 }
+  const { requiredByDate } = body
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.updatedByEmployeeId, approvedByEmployeeCode: body.updatedByEmployeeCode })
+  if (eid == null) return { error: 'Valid updatedByEmployeeId or updatedByEmployeeCode required', status: 400 }
   const rows = await reqRepo.getRequisitionById(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
@@ -1324,9 +1347,8 @@ export async function getPendingAdminExecution(employeeId) {
 export async function completePurchase(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
   if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
-  const { completedByEmployeeId } = body
-  const eid = parseEmployeeId(completedByEmployeeId != null ? String(completedByEmployeeId) : null)
-  if (eid == null) return { error: 'Valid completedByEmployeeId required', status: 400 }
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.completedByEmployeeId, approvedByEmployeeCode: body.completedByEmployeeCode })
+  if (eid == null) return { error: 'Valid completedByEmployeeId or completedByEmployeeCode required', status: 400 }
   const isProcurement = await reqRepo.isProcurementMember(eid)
   const isAdmin = await reqRepo.isAdminMember(eid)
   const rows = await reqRepo.getRequisitionForCompletePurchase(reqIdNum)
@@ -1401,11 +1423,11 @@ export async function getPendingHodAcknowledge(employeeId) {
 
 /** HOD/Committee/CEO: acknowledge receipt of completed purchase based on creator role. */
 export async function acknowledgeReceipt(body) {
-  const { requisitionId, acknowledgedByEmployeeId } = body
+  const { requisitionId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(acknowledgedByEmployeeId != null ? String(acknowledgedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.acknowledgedByEmployeeId, approvedByEmployeeCode: body.acknowledgedByEmployeeCode })
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and acknowledgedByEmployeeId required', status: 400 }
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId or acknowledgedByEmployeeCode required', status: 400 }
   }
   const rows = await reqRepo.getRequisitionForHodAcknowledge(reqId)
   if (!rows.length) return { error: 'Requisition not found or not pending acknowledgment', status: 404 }
@@ -1478,11 +1500,11 @@ export async function getPendingCreatorAcknowledge(employeeId) {
 
 /** Creator (requester) acknowledges – closes the requisition ticket. */
 export async function acknowledgeByCreator(body) {
-  const { requisitionId, acknowledgedByEmployeeId } = body
+  const { requisitionId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(acknowledgedByEmployeeId != null ? String(acknowledgedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.acknowledgedByEmployeeId, approvedByEmployeeCode: body.acknowledgedByEmployeeCode })
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and acknowledgedByEmployeeId required', status: 400 }
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId or acknowledgedByEmployeeCode required', status: 400 }
   }
   const rows = await reqRepo.getRequisitionForCreatorAcknowledge(reqId, eid)
   if (!rows.length) return { error: 'Requisition not found or you are not the creator or it is not ready for your acknowledgment', status: 404 }
@@ -1491,11 +1513,11 @@ export async function acknowledgeByCreator(body) {
 }
 
 export async function handoverFinance(body) {
-  const { requisitionId, handedByEmployeeId } = body
+  const { requisitionId } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(handedByEmployeeId != null ? String(handedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.handedByEmployeeId, approvedByEmployeeCode: body.handedByEmployeeCode })
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and handedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and handedByEmployeeId or handedByEmployeeCode are required', status: 400 }
   }
   const ok = await reqRepo.isProcurementMember(eid)
   if (!ok) return { error: 'Only Procurement can hand over to Finance', status: 403 }
@@ -1625,7 +1647,22 @@ export async function getTatReport(query) {
     if (m) behaviorByCategory.set(String(cat).trim().toLowerCase(), m)
   }
 
+  // Fetch all items for these requisitions in bulk (for CEO skip rule)
+  const reqIds = rows.map((r) => r.req_id)
+  let allItems = []
+  if (reqIds.length > 0) {
+    allItems = await reqRepo.getRequisitionItemsByReqIds(reqIds)
+  }
+  const itemsByReqId = new Map()
+  for (const it of allItems) {
+    const list = itemsByReqId.get(it.req_id) || []
+    list.push(it)
+    itemsByReqId.set(it.req_id, list)
+  }
+
   const data = rows.map((row) => {
+    // Attach items to row for CEO skip calculation
+    row.items = itemsByReqId.get(row.req_id) || []
     const bm = row.req_category ? behaviorByCategory.get(String(row.req_category).trim().toLowerCase()) : null
     const { totalHours } =
       stages?.length && bm
@@ -1655,6 +1692,11 @@ export async function getTat(reqId) {
   }
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
+
+  // Fetch items for CEO skip rule calculation
+  const items = await reqRepo.getRequisitionItems(reqId)
+  row.items = items || []
+
   const stages = await reqRepo.getFlowStages()
   const behaviorMap = row.req_category ? await reqRepo.getCategoryStageBehaviorMap(row.req_category) : null
   const { buckets, totalHours } =

@@ -1,79 +1,52 @@
-import { executeQuery } from '../../config/database.js'
 import { getCrmEmailMapByEmployeeCodes } from '../../config/crmDatabase.js'
 
-async function getPortalEmailMapByEmployeeCodes(codes) {
-  const map = new Map()
-  if (!codes || codes.length === 0) return map
-  const unique = [...new Set(codes.map((c) => String(c).trim()).filter(Boolean))]
-  if (unique.length === 0) return map
-  const placeholders = unique.map((_, i) => `$${i + 1}`).join(', ')
-  try {
-    const rows = await executeQuery(
-      `SELECT e.employee_code, TRIM(e.email) AS email FROM employees e
-       WHERE e.employee_code IN (${placeholders}) AND COALESCE(e.is_active, true) = true
-         AND e.email IS NOT NULL AND TRIM(e.email) != ''`,
-      unique
-    )
-    for (const r of rows || []) {
-      if (r.employee_code && r.email) {
-        map.set(String(r.employee_code).trim().toLowerCase(), String(r.email).trim())
-      }
-    }
-  } catch (e) {
-    console.warn('getPortalEmailMapByEmployeeCodes:', e.message)
-  }
-  return map
-}
-
 /**
- * For each employee_code: use CRM USERS official email (EMAIL) if present; else portal employees.email.
- * Dedupes by email (case-insensitive). Does not send to both personal + official for the same person.
+ * For each employee_code: use ONLY CRM USERS official email (EMAIL).
+ * Portal emails are NOT used - only CRM emails from ERP_Tracking.dbo.USERS table.
+ * Dedupes by email (case-insensitive).
  */
 export async function resolveEmailsPreferCrmForCodes(employeeCodes) {
   const unique = [...new Set((employeeCodes || []).map((c) => String(c).trim()).filter(Boolean))]
   if (unique.length === 0) return []
   const crmMap = await getCrmEmailMapByEmployeeCodes(unique)
-  const portalMap = await getPortalEmailMapByEmployeeCodes(unique)
   const seen = new Set()
   const out = []
-  let portalFallbackCount = 0
+  let skippedCount = 0
   for (const code of unique) {
     const key = String(code).trim().toLowerCase()
     const crmEmail = crmMap.get(key)
-    const portalEmail = portalMap.get(key)
-    const chosen = (crmEmail && crmEmail.trim()) || (portalEmail && portalEmail.trim())
-    if (!chosen) continue
-    if (!crmEmail && portalEmail) portalFallbackCount++
-    const lk = chosen.toLowerCase()
+    if (!crmEmail || !crmEmail.trim()) {
+      skippedCount++
+      console.log(`[Requisition email] Skipped ${code}: No CRM email found in ERP_Tracking.dbo.USERS`)
+      continue
+    }
+    const lk = crmEmail.toLowerCase()
     if (seen.has(lk)) continue
     seen.add(lk)
-    out.push(chosen)
+    out.push(crmEmail.trim())
   }
-  if (portalFallbackCount > 0) {
+  if (skippedCount > 0) {
     console.log(
-      `[Requisition email] CRM-first: ${portalFallbackCount} recipient(s) using portal employees.email (no CRM email for this code)`
+      `[Requisition email] CRM-only: ${skippedCount} recipient(s) skipped (no CRM email in USERS table)`
     )
   }
   return out
 }
 
 /**
- * Per employee_code: CRM email, portal email, chosen address, and source (crm | portal | none).
+ * Per employee_code: CRM email only (portal email field kept for compatibility but always null).
  * Used by admin diagnostics UI to see why someone might not receive mail.
  */
 export async function resolveEmailDetailsForCodes(employeeCodes) {
   const unique = [...new Set((employeeCodes || []).map((c) => String(c).trim()).filter(Boolean))]
   if (unique.length === 0) return []
   const crmMap = await getCrmEmailMapByEmployeeCodes(unique)
-  const portalMap = await getPortalEmailMapByEmployeeCodes(unique)
   return unique.map((code) => {
     const key = String(code).trim().toLowerCase()
     const crmRaw = crmMap.get(key)
-    const portalRaw = portalMap.get(key)
     const crmEmail = crmRaw && String(crmRaw).trim() ? String(crmRaw).trim() : null
-    const portalEmail = portalRaw && String(portalRaw).trim() ? String(portalRaw).trim() : null
-    const chosenEmail = crmEmail || portalEmail || null
-    const source = crmEmail ? 'crm' : portalEmail ? 'portal' : 'none'
-    return { employeeCode: code, crmEmail, portalEmail, chosenEmail, source }
+    const chosenEmail = crmEmail
+    const source = crmEmail ? 'crm' : 'none'
+    return { employeeCode: code, crmEmail, portalEmail: null, chosenEmail, source }
   })
 }

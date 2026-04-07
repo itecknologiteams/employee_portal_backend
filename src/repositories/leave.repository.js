@@ -4,112 +4,85 @@ import { executeQuery } from '../../config/database.js'
 export const DEFAULT_ANNUAL = 14
 export const DEFAULT_CASUAL = 10
 export const DEFAULT_SICK = 6
-export const DEFAULT_CARRIED = 0
 
 export async function ensureLeaveBalanceRow(employeeId) {
   await executeQuery(
-    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave, carried_forward)
-     VALUES ($1, $2, $3, $4, 0, $5)
+    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave)
+     VALUES ($1, $2, $3, $4, 0)
      ON CONFLICT (employee_id) DO NOTHING`,
-    [employeeId, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK, DEFAULT_CARRIED]
+    [employeeId, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK]
   )
 }
 
 export async function getLeaveBalance(employeeId) {
   await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
-    `SELECT lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave, lb.carried_forward
+    `SELECT lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave
      FROM leave_balance lb WHERE lb.employee_id = $1`,
     [employeeId]
   )
 }
 
-/**
- * Deduct annual days using annual_leave first, then carried_forward if needed.
- * Logic: Uses annual_leave up to available amount, then uses carried_forward for remainder.
- * Returns updated row or [] if insufficient total balance (annual + carried_forward < days).
- */
+/** Deduct annual days if balance sufficient. Returns updated row or []. */
 export async function deductAnnualLeave(employeeId, days) {
   const d = Math.max(0, Math.floor(Number(days) || 0))
   if (d === 0) return []
   await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
-    `UPDATE leave_balance
-     SET
-       annual_leave = CASE
-         WHEN annual_leave >= $2 THEN annual_leave - $2
-         ELSE 0
-       END,
-       carried_forward = CASE
-         WHEN annual_leave >= $2 THEN carried_forward
-         ELSE GREATEST(carried_forward - ($2 - annual_leave), 0)
-       END,
-       updated_at = CURRENT_TIMESTAMP
-     WHERE employee_id = $1 AND (annual_leave + carried_forward) >= $2
-     RETURNING annual_leave, carried_forward, casual_leave, sick_leave`,
+    `UPDATE leave_balance SET annual_leave = annual_leave - $2, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1 AND annual_leave >= $2
+     RETURNING annual_leave, casual_leave, sick_leave`,
     [employeeId, d]
   )
 }
 
-/**
- * Add back annual days (rollback).
- * Logic: First restores to annual_leave up to DEFAULT_ANNUAL (14), remainder goes to carried_forward.
- */
+/** Add back annual days (rollback). */
 export async function refundAnnualLeave(employeeId, days) {
   const d = Math.max(0, Math.floor(Number(days) || 0))
   if (d === 0) return []
   return executeQuery(
-    `UPDATE leave_balance
-     SET
-       annual_leave = LEAST(annual_leave + $2, ${DEFAULT_ANNUAL}),
-       carried_forward = CASE
-         WHEN annual_leave + $2 <= ${DEFAULT_ANNUAL} THEN carried_forward
-         ELSE carried_forward + (annual_leave + $2 - ${DEFAULT_ANNUAL})
-       END,
-       updated_at = CURRENT_TIMESTAMP
-     WHERE employee_id = $1
-     RETURNING annual_leave, carried_forward`,
+    `UPDATE leave_balance SET annual_leave = annual_leave + $2, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1 RETURNING annual_leave`,
     [employeeId, d]
   )
 }
 
-/** HR: set full annual / casual / sick / carried_forward totals (non-negative integers). personal_leave stays 0. */
-export async function setLeaveBalanceTotals(employeeId, annual, casual, sick, carried = 0) {
+/** HR: set full annual / casual / sick totals (non-negative integers). personal_leave stays 0. */
+export async function setLeaveBalanceTotals(employeeId, annual, casual, sick) {
   await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
     `UPDATE leave_balance SET
        annual_leave = $2,
        casual_leave = $3,
        sick_leave = $4,
-       carried_forward = $5,
        personal_leave = 0,
        updated_at = CURRENT_TIMESTAMP
      WHERE employee_id = $1
-     RETURNING annual_leave, carried_forward, casual_leave, sick_leave`,
-    [employeeId, annual, casual, sick, carried]
+     RETURNING annual_leave, casual_leave, sick_leave`,
+    [employeeId, annual, casual, sick]
   )
 }
 
 /**
  * HR manual deduction with audit logging.
- * leaveType must be one of: annual, casual, sick, carried.
+ * leaveType must be one of: annual, casual, sick.
  * Returns [] when balance is insufficient.
  */
 export async function createManualDeduction(employeeId, leaveType, days, reason, deductedByEmployeeId) {
   const d = Math.max(0, Math.floor(Number(days) || 0))
   if (d === 0) return []
   const type = String(leaveType || '').trim().toLowerCase()
-  if (type !== 'annual' && type !== 'casual' && type !== 'sick' && type !== 'carried') {
+  if (type !== 'annual' && type !== 'casual' && type !== 'sick') {
     throw new Error('Invalid leave type')
   }
   await ensureLeaveBalanceRow(employeeId)
-  const column = type === 'annual' ? 'annual_leave' : type === 'casual' ? 'casual_leave' : type === 'sick' ? 'sick_leave' : 'carried_forward'
+  const column = type === 'annual' ? 'annual_leave' : type === 'casual' ? 'casual_leave' : 'sick_leave'
   const rows = await executeQuery(
     `WITH updated AS (
        UPDATE leave_balance
        SET ${column} = ${column} - $2, updated_at = CURRENT_TIMESTAMP
        WHERE employee_id = $1 AND ${column} >= $2
-       RETURNING annual_leave, carried_forward, casual_leave, sick_leave
+       RETURNING annual_leave, casual_leave, sick_leave
      ),
      logged AS (
        INSERT INTO leave_deduction_log (
@@ -121,14 +94,12 @@ export async function createManualDeduction(employeeId, leaveType, days, reason,
          CASE
            WHEN $3::text = 'annual' THEN u.annual_leave + $2
            WHEN $3::text = 'casual' THEN u.casual_leave + $2
-           WHEN $3::text = 'sick' THEN u.sick_leave + $2
-           ELSE u.carried_forward + $2
+           ELSE u.sick_leave + $2
          END,
          CASE
            WHEN $3::text = 'annual' THEN u.annual_leave
            WHEN $3::text = 'casual' THEN u.casual_leave
-           WHEN $3::text = 'sick' THEN u.sick_leave
-           ELSE u.carried_forward
+           ELSE u.sick_leave
          END,
          CURRENT_TIMESTAMP
        FROM updated u
@@ -136,7 +107,7 @@ export async function createManualDeduction(employeeId, leaveType, days, reason,
      )
      SELECT
        l.deduction_id, l.leave_type, l.days_deducted, l.reason, l.balance_before, l.balance_after, l.created_at,
-       u.annual_leave, u.carried_forward, u.casual_leave, u.sick_leave
+       u.annual_leave, u.casual_leave, u.sick_leave
      FROM logged l
      CROSS JOIN updated u`,
     [employeeId, d, type, reason, deductedByEmployeeId]
@@ -205,7 +176,7 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
   const d = Math.max(0, Math.floor(Number(days) || 0))
   if (d === 0) return []
   const type = String(leaveType || '').trim().toLowerCase()
-  if (type !== 'annual' && type !== 'casual' && type !== 'sick' && type !== 'carried') {
+  if (type !== 'annual' && type !== 'casual' && type !== 'sick') {
     throw new Error('Invalid leave type')
   }
   const rows = await executeQuery(
@@ -226,9 +197,6 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
          sick_leave = lb.sick_leave
            + CASE WHEN e.leave_type = 'sick' THEN e.days_deducted ELSE 0 END
            - CASE WHEN $2::text = 'sick' THEN $3::int ELSE 0 END,
-         carried_forward = lb.carried_forward
-           + CASE WHEN e.leave_type = 'carried' THEN e.days_deducted ELSE 0 END
-           - CASE WHEN $2::text = 'carried' THEN $3::int ELSE 0 END,
          updated_at = CURRENT_TIMESTAMP
        FROM existing e
        WHERE lb.employee_id = e.employee_id
@@ -241,10 +209,7 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
          AND lb.sick_leave
            + CASE WHEN e.leave_type = 'sick' THEN e.days_deducted ELSE 0 END
            - CASE WHEN $2::text = 'sick' THEN $3::int ELSE 0 END >= 0
-         AND lb.carried_forward
-           + CASE WHEN e.leave_type = 'carried' THEN e.days_deducted ELSE 0 END
-           - CASE WHEN $2::text = 'carried' THEN $3::int ELSE 0 END >= 0
-       RETURNING lb.employee_id, lb.annual_leave, lb.carried_forward, lb.casual_leave, lb.sick_leave
+       RETURNING lb.employee_id, lb.annual_leave, lb.casual_leave, lb.sick_leave
      ),
      updated_log AS (
        UPDATE leave_deduction_log l
@@ -255,14 +220,12 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
          balance_before = CASE
            WHEN $2::text = 'annual' THEN ub.annual_leave + $3::int
            WHEN $2::text = 'casual' THEN ub.casual_leave + $3::int
-           WHEN $2::text = 'sick' THEN ub.sick_leave + $3::int
-           ELSE ub.carried_forward + $3::int
+           ELSE ub.sick_leave + $3::int
          END,
          balance_after = CASE
            WHEN $2::text = 'annual' THEN ub.annual_leave
            WHEN $2::text = 'casual' THEN ub.casual_leave
-           WHEN $2::text = 'sick' THEN ub.sick_leave
-           ELSE ub.carried_forward
+           ELSE ub.sick_leave
          END
        FROM updated_balance ub
        WHERE l.deduction_id = $1
@@ -271,7 +234,7 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
      SELECT
        ul.deduction_id, ul.employee_id, ul.leave_type, ul.days_deducted, ul.reason,
        ul.balance_before, ul.balance_after, ul.created_at, ul.deducted_by_employee_id,
-       ub.annual_leave, ub.carried_forward, ub.casual_leave, ub.sick_leave
+       ub.annual_leave, ub.casual_leave, ub.sick_leave
      FROM updated_log ul
      JOIN updated_balance ub ON ub.employee_id = ul.employee_id`,
     [deductionId, type, d, reason]

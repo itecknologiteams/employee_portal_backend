@@ -120,26 +120,62 @@ function mapBucketsToDuration(buckets) {
   return { buckets: withDuration, totalHours: Math.round(totalHours * 100) / 100 }
 }
 
-/** Legacy static pipeline (when DB flow / category map unavailable). */
+/** Legacy static pipeline (when DB flow stages unavailable). Determines path from actual data. */
 export function getTATFromRequisition(row) {
-  /** If committee approved but approval_date missing in DB, infer exit from CEO stamp (same moment when CEO skipped). */
+  const skipCeo = shouldSkipCeo(row)
+  const currentKey = String(row.req_current_stage_key || '').toLowerCase()
+
   const committeeExit =
     row.req_committee_approval_date ||
     (Number(row.req_committee_approval) === 1 ? row.req_ceo_approval_date || null : null)
-  const committeeStart = (row.req_hr_approval_date || row.req_hod_approval_date) || null
-  const ceoStageStart = committeeExit
 
-  const buckets = [
-    { name: 'HOD', start: row.req_created_at, end: row.req_hod_approval_date || null, assignee: '—' },
-    ...(row.req_hr_approval_date != null ? [{ name: 'HR', start: row.req_hod_approval_date || null, end: row.req_hr_approval_date || null, assignee: '—' }] : []),
-    { name: 'Committee', start: committeeStart, end: committeeExit, assignee: '—' },
-    { name: 'CEO', start: ceoStageStart, end: row.req_ceo_approval_date || null, assignee: '—' },
-    { name: 'Procurement', start: row.req_ceo_approval_date || null, end: row.req_handed_to_finance_date || null, assignee: '—' },
-    { name: 'Finance', start: row.req_handed_to_finance_date || null, end: row.req_finance_approval_date || null, assignee: '—' },
-    { name: 'Procurement (complete)', start: row.req_finance_approval_date || null, end: row.req_purchase_completed_date || null, assignee: '—' },
-    { name: 'HOD Acknowledge', start: row.req_purchase_completed_date || null, end: row.req_hod_acknowledged_date || null, assignee: '—' },
-    { name: 'Creator Acknowledge', start: (row.req_purchase_completed_date || row.req_admin_approval_date || row.req_finance_approval_date) || null, end: row.req_creator_acknowledged_date || null, assignee: '—' }
-  ]
+  const buckets = []
+  let lastEnd = row.req_created_at
+
+  // HOD — always first stage
+  buckets.push({ name: 'HOD', start: lastEnd, end: row.req_hod_approval_date || null, assignee: '—' })
+  if (row.req_hod_approval_date) lastEnd = row.req_hod_approval_date
+  else return mapBucketsToDuration(buckets)
+
+  // HR — only if visited
+  if (row.req_hr_approval_date || currentKey === 'hr') {
+    buckets.push({ name: 'HR', start: lastEnd, end: row.req_hr_approval_date || null, assignee: '—' })
+    if (row.req_hr_approval_date) lastEnd = row.req_hr_approval_date
+    else return mapBucketsToDuration(buckets)
+  }
+
+  // Committee — if HOD approved
+  if (row.req_hod_approval === 1 || committeeExit || currentKey === 'committee') {
+    buckets.push({ name: 'Committee', start: lastEnd, end: committeeExit || null, assignee: '—' })
+    if (committeeExit) lastEnd = committeeExit
+    else return mapBucketsToDuration(buckets)
+  }
+
+  // CEO — only if not skipped and actually visited
+  if (!skipCeo && (row.req_ceo_approval_date || currentKey === 'ceo')) {
+    buckets.push({ name: 'CEO', start: lastEnd, end: row.req_ceo_approval_date || null, assignee: '—' })
+    if (row.req_ceo_approval_date) lastEnd = row.req_ceo_approval_date
+    else return mapBucketsToDuration(buckets)
+  }
+
+  // Procurement — if committee or CEO forwarded to it
+  const procReached = row.req_ceo_approval === 1 || (row.req_committee_approval === 1 && skipCeo) ||
+    row.req_procurement_ack === 1 || currentKey === 'procurement'
+  if (procReached) {
+    buckets.push({ name: 'Procurement', start: lastEnd, end: row.req_handed_to_finance_date || null, assignee: '—' })
+    if (row.req_handed_to_finance_date) lastEnd = row.req_handed_to_finance_date
+    else return mapBucketsToDuration(buckets)
+  }
+
+  // Finance — only if handed to finance
+  if (row.req_handed_to_finance === 1 || currentKey === 'finance') {
+    buckets.push({ name: 'Finance', start: lastEnd, end: row.req_finance_approval_date || null, assignee: '—' })
+    if (row.req_finance_approval_date) lastEnd = row.req_finance_approval_date
+    else return mapBucketsToDuration(buckets)
+  }
+
+  // Post-flow tail (purchase completion, acknowledgments)
+  buckets.push(...buildPostFlowTailBuckets(row))
   return mapBucketsToDuration(buckets)
 }
 
@@ -152,6 +188,12 @@ function getActiveFlowStages(flowStages, behaviorMap) {
     const b = behaviorMap[s.stage_key]
     return b && b !== 'skip'
   })
+}
+
+/** Human-readable label map for stage keys (fallback when DB label missing). */
+const STAGE_KEY_LABELS = {
+  hod: 'HOD', hr: 'HR', committee: 'Committee',
+  ceo: 'CEO', procurement: 'Procurement', finance: 'Finance', admin: 'Admin'
 }
 
 /** When this stage finished (exit timestamp), or null if not yet. */
@@ -205,34 +247,111 @@ function buildPostFlowTailBuckets(row) {
 }
 
 /**
- * TAT buckets from DB-driven category flow: only non-skipped stages, in order.
- * Next stage does not appear until the previous stage has an exit timestamp — so HR pending shows HR, not Committee.
+ * Compute committee line total (same formula as CEO skip rule).
+ */
+function computeLineTotalForCeoSkip(row) {
+  // If items are not available, we can't compute - assume >= threshold to be safe
+  if (!row?.items?.length && !row?.req_items?.length) return null
+  const items = row.items || row.req_items || []
+  return computeCommitteeApprovedLineTotalPKR(items)
+}
+
+/**
+ * Check if CEO stage should be skipped.
+ * Priority: structural signals first (req_current_stage_key, req_procurement_ack, etc.),
+ * then fall back to amount-based calculation from items.
+ */
+function shouldSkipCeo(row) {
+  // If CEO already approved, definitely not skipped
+  if (row.req_ceo_approval === 1) return false
+
+  // If requisition has structurally moved past CEO without CEO approval → CEO was skipped
+  const currentKey = String(row.req_current_stage_key || '').toLowerCase()
+  if (['procurement', 'finance', 'admin'].includes(currentKey)) return true
+  if (row.req_procurement_ack === 1) return true
+  if (row.req_handed_to_finance === 1) return true
+  if (row.req_finance_approval === 1) return true
+
+  // Fall back to amount-based calculation (needs items to be loaded)
+  const lineTotal = computeLineTotalForCeoSkip(row)
+  if (lineTotal == null) return false
+  return lineTotal < REQUISITION_CEO_MIN_AMOUNT_PKR
+}
+
+/**
+ * Returns true only if this requisition has actually entered the given stage.
+ * Used to avoid showing stages in the TAT that were skipped or not yet reached.
+ */
+function hasStageBeenEntered(row, stageKey, skipCeo) {
+  const k = String(stageKey || '').toLowerCase()
+  // If stage has a completion timestamp, it was definitely entered
+  if (getStageCompletionTimestamp(row, k)) return true
+  // If this is the current active stage key, it's entered
+  if (row.req_current_stage_key === k) return true
+  switch (k) {
+    case 'hod': return true
+    case 'hr': return row.req_hod_approval === 1
+    case 'committee': return row.req_hod_approval === 1
+    case 'ceo': return row.req_committee_approval === 1 && !skipCeo
+    case 'procurement':
+      return (
+        row.req_ceo_approval === 1 ||
+        row.req_procurement_ack === 1 ||
+        (row.req_committee_approval === 1 && skipCeo)
+      )
+    // Finance: ONLY if procurement explicitly handed off to finance
+    case 'finance': return row.req_handed_to_finance === 1
+    case 'admin': return row.req_admin_approval === 1
+    default: return false
+  }
+}
+
+/**
+ * TAT buckets using DB flow stage ORDERING but actual visit data for inclusion.
+ *
+ * KEY PRINCIPLE: A stage appears in the TAT if the requisition ACTUALLY went through it
+ * (has a completion timestamp OR is the current active stage). Category behavior map
+ * is for workflow routing — NOT for TAT display. We ignore 'skip' config here.
+ *
+ * - CEO is excluded only if amount < 100K PKR (shouldSkipCeo) AND CEO was never approved.
+ * - Finance only if req_handed_to_finance = 1.
+ * - Stages with no timestamp and not current are silently skipped.
  */
 export function buildTatFromRequisition(row, flowStages, behaviorMap) {
   if (!row) return { buckets: [], totalHours: 0 }
-  const active = getActiveFlowStages(flowStages, behaviorMap)
-  if (!active.length) return getTATFromRequisition(row)
+  if (!Array.isArray(flowStages) || !flowStages.length) return getTATFromRequisition(row)
+
+  const skipCeo = shouldSkipCeo(row)
+  const currentKey = String(row.req_current_stage_key || '').toLowerCase()
 
   const raw = []
-  for (let i = 0; i < active.length; i++) {
-    const stage = active[i]
+  let lastEnd = row.req_created_at
+
+  // Use flowStages for ORDER only — check actual data to decide inclusion
+  for (const stage of flowStages) {
     const key = stage.stage_key
-    const label = stage.stage_label || key
+
+    // CEO: skip only if amount < threshold AND CEO was never approved
+    if (key === 'ceo' && skipCeo) continue
+
+    // A stage is included if it has a completion timestamp OR is the current active stage
+    const completionTs = getStageCompletionTimestamp(row, key)
+    const isCurrentStage = (currentKey === key)
+    if (!completionTs && !isCurrentStage) continue
+
+    // Can't add if the previous stage hasn't completed (chain broken)
+    if (lastEnd == null) break
+
+    const label = stage.stage_label || STAGE_KEY_LABELS[key] || key
     const assignee = stage.employee_type_name || stage.designation_name || '—'
 
-    let start = null
-    const end = getStageCompletionTimestamp(row, key)
+    raw.push({ name: label, start: lastEnd, end: completionTs || null, assignee })
 
-    if (i === 0) {
-      start = row.req_created_at
+    if (completionTs) {
+      lastEnd = completionTs    // Stage done — carry forward
     } else {
-      const prevKey = active[i - 1].stage_key
-      const prevEnd = getStageCompletionTimestamp(row, prevKey)
-      if (prevEnd == null) break
-      start = prevEnd
+      lastEnd = null            // Stage active — stop here
     }
-
-    raw.push({ name: label, start, end, assignee })
   }
 
   const buckets = [...raw, ...buildPostFlowTailBuckets(row)]

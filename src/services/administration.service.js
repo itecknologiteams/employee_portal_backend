@@ -1,7 +1,6 @@
 import bcrypt from 'bcryptjs'
 import * as adminRepo from '../repositories/administration.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
-import * as logService from './employeeLogs.service.js'
 
 const PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
@@ -379,44 +378,16 @@ export async function updateEmployee(id, body) {
     employeeCode, firstName, lastName, email, phone, departmentId,
     designationId, employeeTypeId, stationId, cityId, position, isActive,
     portalUsername, portalPassword, portalUserType, hodDepartmentIds,
-    departmentIds: departmentIdsBody, updatedBy
+    departmentIds: departmentIdsBody
   } = body
 
-  // Get current values before update (for change logging)
-  const currentEmployee = await adminRepo.getEmployeeById(id)
-  if (!currentEmployee) {
-    return { notFound: true }
-  }
-
   let effectiveDepartmentId = departmentId
-  let normalizedDeptIds = null
   if (departmentIdsBody !== undefined) {
     const ids = Array.isArray(departmentIdsBody)
       ? departmentIdsBody.map((x) => parseInt(x, 10)).filter((n) => !Number.isNaN(n))
       : []
-    normalizedDeptIds = ids
     effectiveDepartmentId = primaryDepartmentIdFromIds(ids)
     await adminRepo.setEmployeeDepartmentMemberships(id, ids)
-  }
-
-  // Auto-log department transfer if changed
-  if (updatedBy && normalizedDeptIds !== null) {
-    try {
-      await logService.logDepartmentChangeIfNeeded(id, normalizedDeptIds, updatedBy)
-    } catch (logErr) {
-      // Log error but don't block the update
-      console.error('Failed to log department change:', logErr.message)
-    }
-  }
-
-  // Auto-log designation change if changed
-  if (updatedBy && designationId !== undefined) {
-    try {
-      await logService.logDesignationChangeIfNeeded(id, designationId, updatedBy)
-    } catch (logErr) {
-      // Log error but don't block the update
-      console.error('Failed to log designation change:', logErr.message)
-    }
   }
 
   if (!firstName || !lastName || !email) {

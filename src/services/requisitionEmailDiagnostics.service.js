@@ -54,7 +54,7 @@ const REQUISITION_DIAGNOSTICS_SELECT = `
             r.req_hod_approval, r.req_committee_approval, r.req_ceo_approval, r.req_procurement_ack,
             r.req_handed_to_finance, r.req_finance_approval, r.req_is_rejected,
             r.req_purchase_completed, r.req_hod_acknowledged,
-            e.first_name, e.last_name, e.employee_code AS creator_employee_code, e.email AS creator_portal_email,
+            e.first_name, e.last_name, e.employee_code AS creator_employee_code,
             e.department_id, d.department_name
      FROM requisition r
      JOIN employees e ON r.req_emp_id = e.employee_id
@@ -88,14 +88,6 @@ export async function getRequisitionEmailDiagnostics(reqId) {
   let creatorDetails = []
   if (creatorCode) {
     creatorDetails = await resolveEmailDetailsForCodes([creatorCode])
-  } else if (row.creator_portal_email) {
-    creatorDetails = [{
-      employeeCode: null,
-      crmEmail: null,
-      portalEmail: String(row.creator_portal_email).trim(),
-      chosenEmail: String(row.creator_portal_email).trim(),
-      source: 'portal'
-    }]
   }
 
   const stages = []
@@ -123,10 +115,10 @@ export async function getRequisitionEmailDiagnostics(reqId) {
     : []
 
   const notes = [
-    'Bucket-change emails are sent when a requisition moves to a new stage (worker job requisition-bucket-changed). Recipients are everyone in that stage who has a CRM or portal email for their employee_code.',
-    'If no one in the bucket has a resolvable email, the worker logs "no recipient" unless TEST_REMINDER_EMAIL is set in server .env.',
+    'Bucket-change emails are sent when a requisition moves to a new stage (worker job requisition-bucket-changed). Recipients are everyone in that stage who has a CRM email (from ERP_Tracking.dbo.USERS) for their employee_code.',
+    'Portal emails are NOT used - only official CRM emails from the USERS table are used for all email notifications.',
+    'If no one in the bucket has a CRM email in the USERS table, the worker logs "no recipient" unless TEST_REMINDER_EMAIL is set in server .env.',
     'Deadline reminders (required-by date) are separate: sent only Mon–Fri 9:00–17:00 (REMINDER_TIMEZONE) to the current bucket recipients.',
-    'CRM email wins over portal employees.email when both exist for the same employee_code.',
     `CEO stage applies only when the committee line total (qty × price) is ≥ ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR (REQUISITION_CEO_MIN_AMOUNT_PKR). Below that, the workflow goes to Procurement and CEO is not notified.`
   ]
 

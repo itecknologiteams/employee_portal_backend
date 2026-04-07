@@ -5,7 +5,7 @@ import * as notifSvc from './notification.service.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
-const defaultBalance = { annual: 14, casual: 10, sick: 6, carried: 0 }
+const defaultBalance = { annual: 14, casual: 10, sick: 6 }
 
 const LEAVE_EMAIL_SICK_CASUAL = process.env.LEAVE_EMAIL_SICK_CASUAL || 'anas.ahmed@itecknologi.com'
 const LEAVE_EMAIL_ANNUAL = process.env.LEAVE_EMAIL_ANNUAL || 'hr@itecknologi.com'
@@ -41,7 +41,7 @@ async function approveWithAnnualDeduction(leave, reqId, requiredCurrent, newStat
       if (days > 0) {
         if (Number.isNaN(eid)) return { error: 'Invalid employee on leave request', status: 400 }
         const rows = await leaveRepo.deductAnnualLeave(eid, days)
-        if (!rows.length) return { error: 'Insufficient leave balance (annual + carried forward)', status: 400 }
+        if (!rows.length) return { error: 'Insufficient annual leave balance', status: 400 }
         toRefund = days
       }
     }
@@ -126,13 +126,12 @@ export async function getLeaveBalance(employeeId) {
   const b = result[0]
   return {
     annual: parseInt(b.annual_leave || 0, 10),
-    carried: parseInt(b.carried_forward ?? 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
     sick: parseInt(b.sick_leave || 0, 10)
   }
 }
 
-/** HR only: replace employee leave quotas (annual, carried, casual, sick days). */
+/** HR only: replace employee leave quotas (annual, casual, sick days). */
 export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) {
   const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
   if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
@@ -146,20 +145,18 @@ export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) 
   if (!tid) return { error: 'Employee not found', status: 404 }
 
   const annual = Math.max(0, Math.floor(Number(body?.annual)))
-  const carried = Math.max(0, Math.floor(Number(body?.carried)))
   const casual = Math.max(0, Math.floor(Number(body?.casual)))
   const sick = Math.max(0, Math.floor(Number(body?.sick)))
-  if (![annual, carried, casual, sick].every((n) => Number.isFinite(n))) {
-    return { error: 'annual, carried, casual, and sick must be non-negative numbers', status: 400 }
+  if (![annual, casual, sick].every((n) => Number.isFinite(n))) {
+    return { error: 'annual, casual, and sick must be non-negative numbers', status: 400 }
   }
 
-  const rows = await leaveRepo.setLeaveBalanceTotals(tid, annual, casual, sick, carried)
+  const rows = await leaveRepo.setLeaveBalanceTotals(tid, annual, casual, sick)
   if (!rows.length) return { error: 'Could not update leave balance', status: 400 }
   const b = rows[0]
   return {
     employeeCode: code,
     annual: parseInt(b.annual_leave || 0, 10),
-    carried: parseInt(b.carried_forward ?? 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
     sick: parseInt(b.sick_leave || 0, 10)
   }
@@ -196,8 +193,8 @@ export async function hrDeductLeaveBalance(body) {
   if (!targetEmployeeId) return { error: 'Employee not found', status: 404 }
 
   const leaveType = String(body?.leaveType || '').trim().toLowerCase()
-  if (!['annual', 'carried', 'casual', 'sick'].includes(leaveType)) {
-    return { error: 'leaveType must be one of: annual, carried, casual, sick', status: 400 }
+  if (!['annual', 'casual', 'sick'].includes(leaveType)) {
+    return { error: 'leaveType must be one of: annual, casual, sick', status: 400 }
   }
   const days = Math.floor(Number(body?.days) || 0)
   if (days <= 0) return { error: 'days must be a positive integer', status: 400 }
@@ -232,7 +229,6 @@ export async function hrDeductLeaveBalance(body) {
     createdAt: r.created_at,
     balances: {
       annual: parseInt(r.annual_leave || 0, 10),
-      carried: parseInt(r.carried_forward ?? 0, 10),
       casual: parseInt(r.casual_leave || 0, 10),
       sick: parseInt(r.sick_leave || 0, 10)
     }
@@ -297,8 +293,8 @@ export async function hrEditDeduction(deductionId, body) {
   if (!existing) return { error: 'Deduction record not found', status: 404 }
 
   const leaveType = String(body?.leaveType || '').trim().toLowerCase()
-  if (!['annual', 'carried', 'casual', 'sick'].includes(leaveType)) {
-    return { error: 'leaveType must be one of: annual, carried, casual, sick', status: 400 }
+  if (!['annual', 'casual', 'sick'].includes(leaveType)) {
+    return { error: 'leaveType must be one of: annual, casual, sick', status: 400 }
   }
   const days = Math.floor(Number(body?.days) || 0)
   if (days <= 0) return { error: 'days must be a positive integer', status: 400 }
@@ -322,7 +318,6 @@ export async function hrEditDeduction(deductionId, body) {
     createdAt: r.created_at,
     balances: {
       annual: parseInt(r.annual_leave || 0, 10),
-      carried: parseInt(r.carried_forward ?? 0, 10),
       casual: parseInt(r.casual_leave || 0, 10),
       sick: parseInt(r.sick_leave || 0, 10)
     }
@@ -345,10 +340,9 @@ export async function createLeaveRequest(data) {
   const eid = parseEmployeeId(employeeId)
   if (eid != null) {
     const bal = await getLeaveBalance(eid)
-    const totalAvailable = bal.annual + bal.carried
-    if (days > totalAvailable) {
+    if (days > bal.annual) {
       return {
-        error: `Insufficient leave balance. You have ${bal.annual} annual + ${bal.carried} carried forward = ${totalAvailable} day(s) available; this request needs ${days} calendar day(s).`,
+        error: `Insufficient annual leave balance. You have ${bal.annual} day(s) available; this request needs ${days} calendar day(s).`,
         status: 400
       }
     }
@@ -374,27 +368,27 @@ export async function createLeaveRequest(data) {
     if (transport) {
       try {
         const to = getLeaveNotificationEmail()
-        const subject = `New Leave Request – ${(leaveType && String(leaveType).trim()) || 'Leave'}`
+        const subject = `New Leave Request ??? ${(leaveType && String(leaveType).trim()) || 'Leave'}`
         const body = [
           `Leave Request ID: ${leaveRequestId}`,
           `Employee ID: ${employeeId}`,
-          `Leave Type: ${leaveType || '—'}`,
-          `Start Date: ${startDate || '—'}`,
-          `End Date: ${endDate || '—'}`,
+          `Leave Type: ${leaveType || '???'}`,
+          `Start Date: ${startDate || '???'}`,
+          `End Date: ${endDate || '???'}`,
           '',
           'Reason:',
-          reason ? String(reason).trim() : '—'
+          reason ? String(reason).trim() : '???'
         ].join('\n')
-        console.log('📧 [Leave] Sending to:', to, '| Subject:', subject)
+        console.log('???? [Leave] Sending to:', to, '| Subject:', subject)
         await transport.sendMail({
           from: EMAIL_FROM,
           to,
           subject,
           text: body
         })
-        console.log('📧 [Leave] SENT OK →', to)
+        console.log('???? [Leave] SENT OK ???', to)
       } catch (err) {
-        console.error('📧 [Leave] FAILED →', to, '| Error:', err.message)
+        console.error('???? [Leave] FAILED ???', to, '| Error:', err.message)
       }
     }
   }
@@ -490,24 +484,24 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       if (transport) {
         try {
           const to = getLeaveNotificationEmail()
-          const subject = `Leave request forwarded to HR – pending your approval (ID: ${reqId})`
+          const subject = `Leave request forwarded to HR ??? pending your approval (ID: ${reqId})`
           const body = [
             'A leave request has been forwarded by HOD and is now in your HR bucket.',
             '',
             `Leave Request ID: ${reqId}`,
             `Employee ID: ${leave.employee_id}`,
-            `Leave Type: ${leave.leave_type || '—'}`,
-            `Start Date: ${leave.start_date || '—'}`,
-            `End Date: ${leave.end_date || '—'}`,
+            `Leave Type: ${leave.leave_type || '???'}`,
+            `Start Date: ${leave.start_date || '???'}`,
+            `End Date: ${leave.end_date || '???'}`,
             '',
             'Reason:',
-            (leave.reason && String(leave.reason).trim()) || '—'
+            (leave.reason && String(leave.reason).trim()) || '???'
           ].join('\n')
-          console.log('📧 [Leave] HR notify: Sending to:', to, '| Subject:', subject)
+          console.log('???? [Leave] HR notify: Sending to:', to, '| Subject:', subject)
           await transport.sendMail({ from: EMAIL_FROM, to, subject, text: body })
-          console.log('📧 [Leave] HR notify SENT OK →', to)
+          console.log('???? [Leave] HR notify SENT OK ???', to)
         } catch (err) {
-          console.error('📧 [Leave] HR notify FAILED:', err.message)
+          console.error('???? [Leave] HR notify FAILED:', err.message)
         }
       }
     }
@@ -668,126 +662,4 @@ export async function getPendingHod(employeeId) {
     email: r.email,
     departmentName: r.department_name
   }))
-}
-
-/**
- * Fetch external leaves from Attendance System API (casual/sick leaves).
- * @param {string|number} empId - Employee ID (employee_code)
- * @param {number} year - Year (default: current year)
- * @returns {Promise<{success: boolean, data: Array, casual_count: number, sick_count: number, taken_count: number}>}
- */
-export async function fetchExternalLeaves(empId, year = new Date().getFullYear()) {
-  const externalApiUrl = process.env.ATTENDANCE_LEAVE_API_URL || 'https://iot.itecknologi.com/InternalCommunicationSystem/view-allocated-leaves-by-emp.php'
-  
-  try {
-    const payload = {
-      emp_id: parseInt(empId, 10),
-      year: parseInt(year, 10)
-    }
-    
-    const response = await fetch(externalApiUrl, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload)
-    })
-    
-    if (!response.ok) {
-      throw new Error(`External API error: ${response.status}`)
-    }
-    
-    const result = await response.json()
-    
-    if (!result.success) {
-      return {
-        success: false,
-        data: [],
-        casual_count: 0,
-        sick_count: 0,
-        taken_count: 0,
-        message: result.message || 'Failed to fetch external leaves'
-      }
-    }
-    
-    // Keep raw field names from external API as-is
-    const formattedLeaves = (result.data?.leaves || []).map(leave => ({
-      id: `ext-${leave.leave_id}`,
-      leave_type_name: leave.leave_type_name || 'Leave',
-      start_date: leave.start_date,
-      end_date: leave.end_date,
-      total_days: parseInt(leave.total_days || 0, 10),
-      reason: leave.reason || '',
-      date: leave.created_at,
-      status: 'Approved',
-      source: 'external',
-      externalId: leave.leave_id
-    }))
-    
-    return {
-      success: true,
-      data: formattedLeaves,
-      casual_count: result.data?.casual_count || 0,
-      sick_count: result.data?.sick_count || 0,
-      taken_count: result.data?.taken_count || 0,
-      message: result.message
-    }
-  } catch (error) {
-    console.error('Error fetching external leaves:', error.message)
-    return {
-      success: false,
-      data: [],
-      casual_count: 0,
-      sick_count: 0,
-      taken_count: 0,
-      message: error.message
-    }
-  }
-}
-
-/**
- * Get all leaves for an employee: Annual from portal + Casual/Sick from external API.
- * Combines both sources into unified format.
- * @param {string} employeeCode - Employee code
- * @param {number} year - Year (default: current year)
- * @returns {Promise<{portalLeaves: Array, externalLeaves: Array, allLeaves: Array, summary: Object}>}
- */
-export async function getAllEmployeeLeaves(employeeCode, year = new Date().getFullYear()) {
-  const eid = await getEmployeeIdByCode(employeeCode)
-  
-  if (!eid) {
-    return {
-      error: 'Employee not found',
-      status: 404
-    }
-  }
-  
-  // Get portal annual leaves
-  const portalLeaves = await getLeaveRequests(eid)
-  
-  // Get external casual/sick leaves — pass employeeCode (not internal DB id) to external API
-  const externalData = await fetchExternalLeaves(employeeCode, year)
-  
-  // Combine all leaves
-  const allLeaves = [
-    ...portalLeaves.map(l => ({ ...l, source: 'portal' })),
-    ...externalData.data
-  ].sort((a, b) => new Date(b.date || b.start_date) - new Date(a.date || a.start_date))
-  
-  // Get leave balance
-  const balance = await getLeaveBalance(eid)
-  
-  return {
-    portalLeaves,
-    externalLeaves: externalData.data,
-    allLeaves,
-    summary: {
-      annual: balance.annual,
-      carried: balance.carried,
-      casual: externalData.casual_count,
-      sick: externalData.sick_count,
-      taken: externalData.taken_count,
-      totalExternal: externalData.data.length
-    }
-  }
 }
