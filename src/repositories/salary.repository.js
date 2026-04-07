@@ -127,6 +127,58 @@ export async function getPayrollSlipById(slipId, employeeId) {
   }
 }
 
+/** Get most recent payroll slip for employee (new payroll system). Returns gross, allowances, deductions, net. */
+export async function getLatestPayrollSlip(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary, s.status, p.name AS period_name
+       FROM payroll_slip s
+       JOIN payroll_period p ON p.id = s.payroll_period_id
+       WHERE s.employee_id = $1
+       ORDER BY p.end_date DESC, s.id DESC
+       LIMIT 1`,
+      [employeeId]
+    )
+    return rows[0] || null
+  } catch (e) {
+    if (e.code === '42P01') return null
+    throw e
+  }
+}
+
+/** Get most recent old_salary_slip for employee (imported from SQL Server). */
+export async function getLatestOldSalarySlip(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT COALESCE(tot_gross_salary, gross_salary) AS gross_salary,
+              COALESCE(tot_allowances, total_allowances) AS total_allowances,
+              COALESCE(tot_deductions, total_deductions) AS total_deductions,
+              COALESCE(tot_net_salary, net_salary) AS net_salary,
+              COALESCE(salary_status, status) AS status, pay_month, period_label
+       FROM old_salary_slip
+       WHERE employee_id = $1
+       ORDER BY pay_month DESC, id DESC
+       LIMIT 1`,
+      [employeeId]
+    )
+    return rows[0] || null
+  } catch (e) {
+    if (e.code === '42703') {
+      const rows = await executeQuery(
+        `SELECT gross_salary, total_allowances, total_deductions, net_salary, status, pay_month, period_label
+         FROM old_salary_slip
+         WHERE employee_id = $1
+         ORDER BY pay_month DESC, id DESC
+         LIMIT 1`,
+        [employeeId]
+      )
+      return rows[0] || null
+    }
+    if (e.code === '42P01') return null
+    throw e
+  }
+}
+
 /** Get employee_salary_structure for one employee (for gross breakdown on payroll slip). */
 export async function getEmployeeSalaryStructure(employeeId) {
   try {

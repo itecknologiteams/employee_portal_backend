@@ -1,4 +1,5 @@
 import * as adminService from '../services/administration.service.js'
+import * as logService from '../services/employeeLogs.service.js'
 
 function handleError(error, res, fallbackMessage) {
   if (error.status) {
@@ -299,7 +300,8 @@ export async function createEmployee(req, res) {
 export async function updateEmployee(req, res) {
   try {
     const { id } = req.params
-    const result = await adminService.updateEmployee(id, req.body)
+    const updatedBy = req.session?.user?.employeeId || null
+    const result = await adminService.updateEmployee(id, { ...req.body, updatedBy })
     if (result.notFound) return res.status(404).json({ error: 'Employee not found' })
     res.json(result)
   } catch (error) {
@@ -396,5 +398,56 @@ export async function deleteRequisitionCategory(req, res) {
     res.json({ message: 'Category deleted' })
   } catch (error) {
     handleError(error, res, 'Failed to delete category')
+  }
+}
+
+// Employee Update Logs
+export async function getEmployeeLogs(req, res) {
+  try {
+    const { empId } = req.params
+    const { changeType, startDate, endDate, page, limit } = req.query
+    const result = await logService.getEmployeeLogs(empId, {
+      changeType,
+      startDate,
+      endDate,
+      page,
+      limit
+    })
+    res.json(result)
+  } catch (error) {
+    handleError(error, res, 'Failed to get employee logs')
+  }
+}
+
+export async function getAllEmployeeLogs(req, res) {
+  try {
+    const { employeeId, changeType, search, startDate, endDate, page, limit } = req.query
+    console.log('getAllEmployeeLogs query params:', { employeeId, changeType, search, startDate, endDate, page, limit })
+    const result = await logService.getAllEmployeeLogs({
+      employeeId,
+      changeType,
+      search,
+      startDate,
+      endDate,
+      page,
+      limit
+    })
+    console.log('getAllEmployeeLogs result:', { total: result.total, logsCount: result.logs?.length })
+    res.json(result)
+  } catch (error) {
+    console.error('getAllEmployeeLogs error:', error)
+    handleError(error, res, 'Failed to get employee logs')
+  }
+}
+
+export async function createEmployeeLog(req, res) {
+  try {
+    const updatedBy = req.session?.user?.employeeId || null
+    const data = { ...req.body, updatedBy }
+    const result = await logService.addLog(data)
+    res.status(201).json(result)
+  } catch (error) {
+    if (error.status) return res.status(error.status).json({ error: error.message })
+    handleError(error, res, 'Failed to create employee log')
   }
 }

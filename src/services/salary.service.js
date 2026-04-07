@@ -338,19 +338,70 @@ export async function createOldSalarySlips(slips) {
   return { created: created.length, ids: created.map((c) => c.id) }
 }
 
-/** Legacy: current month salary (latest slip by payroll_id for employee via hr_emp_id). */
+/** Get current salary from newest available source:
+ *  1. payroll_slip (new payroll system)
+ *  2. old_salary_slip (imported from SQL Server)
+ *  3. salary_slip legacy via HR emp_id mapping
+ */
 export async function getCurrentSalary(employeeId) {
+  // 1. Try new payroll system first (payroll_slip)
+  const payrollSlip = await salaryRepo.getLatestPayrollSlip(employeeId)
+  if (payrollSlip && payrollSlip.gross_salary) {
+    return {
+      basicSalary: parseFloat(payrollSlip.gross_salary ?? 0) * 0.7,
+      gross_salary: parseFloat(payrollSlip.gross_salary ?? 0),
+      allowances: parseFloat(payrollSlip.total_allowances ?? 0),
+      bonuses: 0,
+      deductions: parseFloat(payrollSlip.total_deductions ?? 0),
+      total: parseFloat(payrollSlip.net_salary ?? 0),
+      month: payrollSlip.period_name || null,
+      source: 'payroll'
+    }
+  }
+
+  // 2. Try old_salary_slip (imported from SQL Server)
+  const oldSlip = await salaryRepo.getLatestOldSalarySlip(employeeId)
+  if (oldSlip && oldSlip.gross_salary) {
+    return {
+      basicSalary: parseFloat(oldSlip.gross_salary ?? 0) * 0.7,
+      gross_salary: parseFloat(oldSlip.gross_salary ?? 0),
+      allowances: parseFloat(oldSlip.total_allowances ?? 0),
+      bonuses: 0,
+      deductions: parseFloat(oldSlip.total_deductions ?? 0),
+      total: parseFloat(oldSlip.net_salary ?? 0),
+      month: oldSlip.period_label || oldSlip.pay_month || null,
+      source: 'old_slip'
+    }
+  }
+
+  // 3. Fall back to legacy salary_slip via HR emp_id mapping
   const hrIds = await salaryRepo.getHrEmpIdsForEmployee(employeeId)
-  if (hrIds.length === 0) return null
-  const s = await salaryRepo.getLegacyCurrentSalary(hrIds)
-  if (!s) return null
+  if (hrIds.length > 0) {
+    const s = await salaryRepo.getLegacyCurrentSalary(hrIds)
+    if (s && s.tot_gross_salary) {
+      return {
+        basicSalary: parseFloat(s.tot_gross_salary ?? 0) * 0.7,
+        gross_salary: parseFloat(s.tot_gross_salary ?? 0),
+        allowances: parseFloat(s.tot_allowances ?? 0),
+        bonuses: 0,
+        deductions: parseFloat(s.tot_deductions ?? 0),
+        total: parseFloat(s.tot_net_salary ?? 0),
+        month: null,
+        source: 'legacy'
+      }
+    }
+  }
+
+  // No salary data found anywhere
   return {
-    basicSalary: parseFloat(s.tot_gross_salary ?? 0) * 0.7,
-    allowances: parseFloat(s.tot_allowances ?? 0),
+    basicSalary: 0,
+    gross_salary: 0,
+    allowances: 0,
     bonuses: 0,
-    deductions: parseFloat(s.tot_deductions ?? 0),
-    total: parseFloat(s.tot_net_salary ?? 0),
-    month: null
+    deductions: 0,
+    total: 0,
+    month: null,
+    source: null
   }
 }
 

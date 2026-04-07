@@ -3,6 +3,7 @@ import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
 import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 import {
   getRequisitionStatus,
   getPendingAt,
@@ -17,6 +18,17 @@ import {
 import { parseNumericCostPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
+
+async function resolveApproverEmployeeId(body) {
+  if (body?.approvedByEmployeeId != null && String(body.approvedByEmployeeId).trim() !== '') {
+    const eid = parseEmployeeId(String(body.approvedByEmployeeId))
+    if (eid != null) return eid
+  }
+  if (body?.approvedByEmployeeCode != null && String(body.approvedByEmployeeCode).trim() !== '') {
+    return await getEmployeeIdByCode(String(body.approvedByEmployeeCode).trim())
+  }
+  return null
+}
 
 async function inAppNotifyRequisitionBucket(reqId, bucket, departmentId) {
   if (departmentId == null || bucket == null) return
@@ -412,9 +424,12 @@ export async function getQueueStats() {
   }
   const q = getQueue()
   const counts = await q.getJobCounts()
-  const [waiting, completed] = await Promise.all([
+  const [waiting, completed, delayed, failed, active] = await Promise.all([
     q.getJobs(['waiting'], 0, 9),
-    q.getJobs(['completed'], 0, 9)
+    q.getJobs(['completed'], 0, 9),
+    q.getJobs(['delayed'], 0, 9),
+    q.getJobs(['failed'], 0, 9),
+    q.getJobs(['active'], 0, 9)
   ])
   return {
     enabled: true,
@@ -427,7 +442,10 @@ export async function getQueueStats() {
       delayed: counts.delayed ?? 0
     },
     recentWaiting: waiting.map(j => ({ id: j.id, name: j.name, data: j.data, timestamp: j.timestamp })),
-    recentCompleted: completed.map(j => ({ id: j.id, name: j.name, data: j.data, finishedOn: j.finishedOn }))
+    recentCompleted: completed.map(j => ({ id: j.id, name: j.name, data: j.data, finishedOn: j.finishedOn })),
+    recentDelayed: delayed.map(j => ({ id: j.id, name: j.name, data: j.data, delay: j.delay, timestamp: j.timestamp })),
+    recentFailed: failed.map(j => ({ id: j.id, name: j.name, data: j.data, failedReason: j.failedReason })),
+    recentActive: active.map(j => ({ id: j.id, name: j.name, data: j.data, processedOn: j.processedOn }))
   }
 }
 
@@ -615,14 +633,14 @@ export async function getApprovedByHod(employeeId) {
 export async function approveHod(body) {
   const boqItemsRaw = body.boqItems ?? body.boq_items
   const boqItems = Array.isArray(boqItemsRaw) ? boqItemsRaw : []
-  const { requisitionId, approvedByEmployeeId, approved } = body
-  if (!requisitionId || approvedByEmployeeId == null) {
-    return { error: 'requisitionId and approvedByEmployeeId required', status: 400 }
+  const { requisitionId, approved } = body
+  const approverEid = await resolveApproverEmployeeId(body)
+  if (!requisitionId || approverEid == null) {
+    return { error: 'requisitionId and approvedByEmployeeId or approvedByEmployeeCode required', status: 400 }
   }
   const reqRow = await reqRepo.getRequisitionAndDepartment(requisitionId)
   if (!reqRow.length) return { error: 'Requisition not found', status: 404 }
   const deptIdForReq = reqRow[0].department_id
-  const approverEid = parseInt(approvedByEmployeeId, 10)
   const isHodForDept = deptIdForReq != null && (await reqRepo.isHodOfDepartment(approverEid, deptIdForReq))
   if (!isHodForDept) {
     return { error: 'Only HOD of the same department can approve', status: 403 }
@@ -783,11 +801,11 @@ export async function getPendingCommittee(employeeId) {
 }
 
 export async function approveHR(body) {
-  const { requisitionId, approvedByEmployeeId, approved } = body
+  const { requisitionId, approved } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
@@ -834,11 +852,11 @@ export async function approveHR(body) {
 }
 
 export async function approveCommittee(body) {
-  const { requisitionId, approvedByEmployeeId, approved, approvedQuantities } = body
+  const { requisitionId, approved, approvedQuantities } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'committee') : await reqRepo.isCommitteeMember(eid)
@@ -989,11 +1007,11 @@ export async function getPendingCeo(employeeId) {
 }
 
 export async function approveCeo(body) {
-  const { requisitionId, approvedByEmployeeId, approved } = body
+  const { requisitionId, approved } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const ok = await reqRepo.isCeoMember(eid)
   if (!ok) {
@@ -1030,11 +1048,11 @@ export async function approveCeo(body) {
 }
 
 export async function approveAdmin(body) {
-  const { requisitionId, approvedByEmployeeId, approved } = body
+  const { requisitionId, approved } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'admin') : await reqRepo.isAdminMember(eid)
@@ -1515,11 +1533,11 @@ export async function getPendingFinance(employeeId) {
 }
 
 export async function approveFinance(body) {
-  const { requisitionId, approvedByEmployeeId, approvedQuotationIndex } = body
+  const { requisitionId, approvedQuotationIndex } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
-  const eid = parseEmployeeId(approvedByEmployeeId != null ? String(approvedByEmployeeId) : null)
+  const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
-    return { error: 'Valid requisitionId and approvedByEmployeeId are required', status: 400 }
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const ok = await reqRepo.isFinanceHod(eid)
   if (!ok) return { error: 'Only Finance HOD can approve', status: 403 }

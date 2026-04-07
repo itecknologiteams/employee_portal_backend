@@ -148,3 +148,42 @@ export async function hrEditDeduction(req, res) {
     res.status(500).json({ error: message })
   }
 }
+
+/**
+ * GET /all-leaves/:employeeCode?year=2026
+ * Returns combined leave data: Annual from portal + Casual/Sick from external API.
+ * Unified format for all leave types.
+ */
+export async function getAllLeavesCombined(req, res) {
+  try {
+    const { employeeCode } = req.params
+    const year = parseInt(req.query?.year, 10) || new Date().getFullYear()
+    
+    if (!employeeCode) {
+      return res.status(400).json({ error: 'employeeCode is required' })
+    }
+    
+    const result = await leaveService.getAllEmployeeLeaves(employeeCode, year)
+    
+    if (result.error) {
+      return res.status(result.status || 400).json({ error: result.error })
+    }
+    
+    res.json({
+      success: true,
+      data: {
+        portalLeaves: result.portalLeaves,
+        externalLeaves: result.externalLeaves,
+        allLeaves: result.allLeaves,
+        summary: result.summary
+      }
+    })
+  } catch (error) {
+    console.error('Get all leaves combined error:', error)
+    res.status(500).json({ 
+      success: false,
+      error: 'Failed to fetch combined leave data',
+      data: { portalLeaves: [], externalLeaves: [], allLeaves: [], summary: {} }
+    })
+  }
+}

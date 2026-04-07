@@ -42,4 +42,9 @@ router.post('/requisition-categories', adminController.createRequisitionCategory
 router.put('/requisition-categories/:id', adminController.updateRequisitionCategory)
 router.delete('/requisition-categories/:id', adminController.deleteRequisitionCategory)
 
+// Employee Update Logs routes
+router.get('/employee-logs', adminController.getAllEmployeeLogs)
+router.get('/employee-logs/:empId', adminController.getEmployeeLogs)
+router.post('/employee-logs', adminController.createEmployeeLog)
+
 export default router
