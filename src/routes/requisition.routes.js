@@ -34,6 +34,7 @@ router.get('/pending/ceo/:employeeCode', requisitionController.getPendingCeo)
 router.post('/approve/ceo', requisitionController.approveCeo)
 router.get('/pending/procurement/:employeeCode', requisitionController.getPendingProcurement)
 router.post('/acknowledge/procurement', requisitionController.acknowledgeProcurement)
+router.post('/reject/procurement', requisitionController.rejectProcurement)
 router.put('/quotations/:reqId', requisitionController.updateQuotations)
 router.post(
   '/quotations/:reqId/upload',
@@ -46,7 +47,7 @@ router.post(
 )
 router.put('/expected-handover/:reqId', requisitionController.setExpectedHandover)
 router.post('/handover/finance', requisitionController.handoverFinance)
-router.get('/pending/finance/:employeeId', requisitionController.getPendingFinance)
+router.get('/pending/finance/:employeeCode', requisitionController.getPendingFinance)
 router.post('/approve/finance', requisitionController.approveFinance)
 router.get('/tat-report', requisitionController.getTatReport)
 router.get('/tat/:reqId', requisitionController.getTat)

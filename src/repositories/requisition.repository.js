@@ -400,10 +400,11 @@ export async function isProcurementMember(employeeId) {
 
 export async function isFinanceHod(employeeId) {
   try {
+    // Use ILIKE for flexible matching (Finance, Finance HOD, Finance Manager, etc.)
     const rows = await executeQuery(
       `SELECT 1 FROM employees e
-       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'Finance'
-       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'Finance'
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name ILIKE '%finance%'
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name ILIKE '%finance%'
        WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
       [employeeId]
     )
@@ -412,7 +413,7 @@ export async function isFinanceHod(employeeId) {
     if (err.code === '42P01') {
       try {
         const rows = await executeQuery(
-          `SELECT 1 FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'Finance' WHERE e.employee_id = $1`,
+          `SELECT 1 FROM employees e INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name ILIKE '%finance%' WHERE e.employee_id = $1`,
           [employeeId]
         )
         return rows.length > 0
@@ -478,14 +479,15 @@ export async function getRequisitionAndDepartment(requisitionId) {
   )
 }
 
-export async function rejectRequisition(requisitionId) {
+export async function rejectRequisition(requisitionId, reason) {
   try {
     return await executeQuery(
-      'UPDATE requisition SET req_is_rejected = 1, req_current_stage_key = NULL WHERE req_id = $1',
-      [requisitionId]
+      `UPDATE requisition SET req_is_rejected = 1, req_current_stage_key = NULL${reason ? ', req_rejection_reason = $2' : ''} WHERE req_id = $1`,
+      reason ? [requisitionId, String(reason).trim()] : [requisitionId]
     )
   } catch (err) {
     if (err.code === '42703') {
+      // Either req_current_stage_key or req_rejection_reason column missing — fall back
       return executeQuery('UPDATE requisition SET req_is_rejected = 1 WHERE req_id = $1', [requisitionId])
     }
     throw err
@@ -1071,8 +1073,14 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
-       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND r.req_current_stage_key = $1`
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 `
     const params = [stageKey]
+    // For finance stage, also include requisitions handed over via legacy method (backward compatibility)
+    if (stageKey === 'finance') {
+      q += ` AND (r.req_current_stage_key = $1 OR (r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0))`
+    } else {
+      q += ` AND r.req_current_stage_key = $1`
+    }
     if (stageKey === 'hod' && (departmentId != null || (departmentName != null && String(departmentName).trim() !== ''))) {
       q += ` AND (e.department_id = $2 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $3 AND $3 != ''))`
       params.push(departmentId ?? null, (departmentName || '').trim().toLowerCase())
@@ -1138,6 +1146,17 @@ export async function isEmployeeTypeForStage(employeeId, stageKey) {
         [employeeId]
       )
       if (hrRows.length > 0) return true
+    }
+    // Finance stage: also treat as Finance if designation/type contains Finance (flexible matching for Finance HOD, Finance Manager, etc.)
+    if (stageKey === 'finance') {
+      const financeRows = await executeQuery(
+        `SELECT 1 FROM employees e
+         LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name ILIKE '%finance%'
+         LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name ILIKE '%finance%'
+         WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+        [employeeId]
+      )
+      if (financeRows.length > 0) return true
     }
     return false
   } catch (err) {
@@ -1325,7 +1344,9 @@ export async function getPendingFinanceRequisitions() {
     `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE COALESCE(r.req_is_rejected, 0) = 0 AND r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0
+     WHERE COALESCE(r.req_is_rejected, 0) = 0 
+       AND COALESCE(r.req_finance_approval, 0) = 0
+       AND (r.req_handed_to_finance = 1 OR r.req_current_stage_key = 'finance')
      ORDER BY r.req_handed_to_finance_date ASC`
   )
 }

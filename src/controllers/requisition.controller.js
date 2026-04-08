@@ -349,6 +349,17 @@ export async function acknowledgeProcurement(req, res) {
   }
 }
 
+export async function rejectProcurement(req, res) {
+  try {
+    const result = await requisitionService.rejectProcurement(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('Reject procurement error:', error)
+    res.status(500).json({ error: 'Failed to reject' })
+  }
+}
+
 export async function updateQuotations(req, res) {
   try {
     const result = await requisitionService.updateQuotations(req.params.reqId, req.body)

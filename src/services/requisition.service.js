@@ -19,6 +19,14 @@ import { parseNumericCostPkr, getEffectiveUnitPricePkrFromItem } from '../utils/
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 
+/** Save rejection reason as a comment and update the rejection record. */
+async function rejectWithReason(requisitionId, reason, approverEid, stageKey) {
+  await reqRepo.rejectRequisition(requisitionId, reason)
+  if (reason && String(reason).trim()) {
+    await reqRepo.insertRequisitionComment(requisitionId, stageKey, `[Rejection reason] ${String(reason).trim()}`, approverEid)
+  }
+}
+
 async function resolveApproverEmployeeId(body) {
   if (body?.approvedByEmployeeId != null && String(body.approvedByEmployeeId).trim() !== '') {
     const eid = parseEmployeeId(String(body.approvedByEmployeeId))
@@ -554,11 +562,21 @@ export async function getReportAll(employeeId) {
     : await reqRepo.getReportAllRequisitions()
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({
-    ...req,
-    status: getRequisitionStatus(req),
-    items: items.filter(i => i.req_id === req.req_id)
-  }))
+
+  // Fetch rejection comments for rejected requisitions to include stage and reason
+  const rejectedIds = rows.filter(r => r.req_is_rejected === 1).map(r => r.req_id)
+  const commentsMap = rejectedIds.length ? await reqRepo.getRequisitionCommentsByReqIds(rejectedIds) : new Map()
+
+  return rows.map(req => {
+    const base = { ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }
+    if (req.req_is_rejected === 1) {
+      const comments = commentsMap.get(req.req_id) || []
+      const rejectionComment = comments.find(c => c.comment_text && c.comment_text.startsWith('[Rejection reason]'))
+      base.rejection_stage = rejectionComment?.stage_key || null
+      base.rejection_reason = req.req_rejection_reason || (rejectionComment ? rejectionComment.comment_text.replace('[Rejection reason] ', '').trim() : null)
+    }
+    return base
+  })
 }
 
 export async function getPendingHod(employeeId) {
@@ -646,14 +664,16 @@ export async function approveHod(body) {
     return { error: 'Only HOD of the same department can approve', status: 403 }
   }
   if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
     const creatorId = await notifRepo.getRequisitionCreatorId(requisitionId)
-    await reqRepo.rejectRequisition(requisitionId)
+    await rejectWithReason(requisitionId, reason, approverEid, 'hod')
     if (creatorId) {
       notifSvc.notifySafe(notifSvc.notify({
         recipientEmployeeId: creatorId,
         type: 'requisition_rejected',
-        title: 'Requisition rejected',
-        body: 'Your requisition was rejected by HOD.',
+        title: 'Requisition rejected by HOD',
+        body: `Your requisition was rejected by HOD. Reason: ${reason}`,
         url: '/requisition/history',
         relatedEntityType: 'requisition',
         relatedEntityId: requisitionId
@@ -813,14 +833,16 @@ export async function approveHR(body) {
     return { error: 'Only HR can approve this stage. Check your Employee Type or Designation.', status: 403 }
   }
   if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
     const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
-    await reqRepo.rejectRequisition(reqId)
+    await rejectWithReason(reqId, reason, eid, 'hr')
     if (creatorId) {
       notifSvc.notifySafe(notifSvc.notify({
         recipientEmployeeId: creatorId,
         type: 'requisition_rejected',
-        title: 'Requisition rejected',
-        body: 'Your requisition was rejected by HR.',
+        title: 'Requisition rejected by HR',
+        body: `Your requisition was rejected by HR. Reason: ${reason}`,
         url: '/requisition/history',
         relatedEntityType: 'requisition',
         relatedEntityId: reqId
@@ -864,14 +886,16 @@ export async function approveCommittee(body) {
     return { error: 'Only Committee members can approve. Check your Employee Type or Designation in Administration.', status: 403 }
   }
   if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being cancelled.', status: 400 }
     const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
-    await reqRepo.rejectRequisition(reqId)
+    await rejectWithReason(reqId, reason, eid, 'committee')
     if (creatorId) {
       notifSvc.notifySafe(notifSvc.notify({
         recipientEmployeeId: creatorId,
         type: 'requisition_rejected',
-        title: 'Requisition rejected',
-        body: 'Your requisition was rejected by Committee.',
+        title: 'Requisition cancelled by Committee',
+        body: `Your requisition was cancelled by Committee. Reason: ${reason}`,
         url: '/requisition/history',
         relatedEntityType: 'requisition',
         relatedEntityId: reqId
@@ -1018,14 +1042,16 @@ export async function approveCeo(body) {
     return { error: 'Only CEO can approve. Check your Employee Type or Designation in Administration.', status: 403 }
   }
   if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
     const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
-    await reqRepo.rejectRequisition(reqId)
+    await rejectWithReason(reqId, reason, eid, 'ceo')
     if (creatorId) {
       notifSvc.notifySafe(notifSvc.notify({
         recipientEmployeeId: creatorId,
         type: 'requisition_rejected',
-        title: 'Requisition rejected',
-        body: 'Your requisition was rejected by CEO.',
+        title: 'Requisition rejected by CEO',
+        body: `Your requisition was rejected by CEO. Reason: ${reason}`,
         url: '/requisition/history',
         relatedEntityType: 'requisition',
         relatedEntityId: reqId
@@ -1060,14 +1086,16 @@ export async function approveAdmin(body) {
     return { error: 'Only Admin can approve this stage.', status: 403 }
   }
   if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
     const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
-    await reqRepo.rejectRequisition(reqId)
+    await rejectWithReason(reqId, reason, eid, 'admin')
     if (creatorId) {
       notifSvc.notifySafe(notifSvc.notify({
         recipientEmployeeId: creatorId,
         type: 'requisition_rejected',
-        title: 'Requisition rejected',
-        body: 'Your requisition was rejected by Admin.',
+        title: 'Requisition rejected by Admin',
+        body: `Your requisition was rejected by Admin. Reason: ${reason}`,
         url: '/requisition/history',
         relatedEntityType: 'requisition',
         relatedEntityId: reqId
@@ -1114,6 +1142,33 @@ export async function acknowledgeProcurement(body) {
   if (!rows.length) return { error: 'Requisition not found or not yet forwarded to Procurement', status: 404 }
   await reqRepo.acknowledgeProcurement(reqId, eid)
   return { message: 'Requisition acknowledged by Procurement', status: 'Acknowledged by Procurement - Add 3 Quotations' }
+}
+
+export async function rejectProcurement(body) {
+  const { requisitionId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.approvedByEmployeeId, approvedByEmployeeCode: body.approvedByEmployeeCode })
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
+  }
+  const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+  if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can reject at this stage', status: 403 }
+  const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+  await rejectWithReason(reqId, reason, eid, 'procurement')
+  if (creatorId) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: creatorId,
+      type: 'requisition_rejected',
+      title: 'Requisition rejected by Procurement',
+      body: `Your requisition was rejected by Procurement. Reason: ${reason}`,
+      url: '/requisition/history',
+      relatedEntityType: 'requisition',
+      relatedEntityId: reqId
+    }))
+  }
+  return { message: 'Requisition rejected', status: 'Rejected' }
 }
 
 export async function updateQuotations(reqId, body) {
@@ -1539,9 +1594,20 @@ export async function getPendingFinance(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
-  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'finance') : await reqRepo.isFinanceHod(eid)
+  // Check role: try flow stage check first, fallback to legacy Finance HOD check
+  let ok = false
+  if (useFlow) {
+    ok = await reqRepo.isEmployeeTypeForStage(eid, 'finance')
+    // Fallback to legacy check if flow stage check fails (e.g., no finance stage in table or designation mismatch)
+    if (!ok) ok = await reqRepo.isFinanceHod(eid)
+  } else {
+    ok = await reqRepo.isFinanceHod(eid)
+  }
   if (!ok) return []
-  const rows = useFlow
+  // Use flow query if stages exist and has finance stage, otherwise use legacy query
+  const flowStages = await reqRepo.getFlowStages()
+  const hasFinanceStage = flowStages.some(s => s.stage_key === 'finance')
+  const rows = (useFlow && hasFinanceStage)
     ? await reqRepo.getPendingRequisitionsByCurrentStage('finance')
     : await reqRepo.getPendingFinanceRequisitions()
   const reqIds = rows.map(r => r.req_id)
@@ -1555,16 +1621,43 @@ export async function getPendingFinance(employeeId) {
 }
 
 export async function approveFinance(body) {
-  const { requisitionId, approvedQuotationIndex } = body
+  const { requisitionId, approvedQuotationIndex, approved } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
   const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
     return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
-  const ok = await reqRepo.isFinanceHod(eid)
+  // Check role: try flow stage check first (if stages exist), fallback to legacy Finance HOD check
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  let ok = false
+  if (useFlow) {
+    ok = await reqRepo.isEmployeeTypeForStage(eid, 'finance')
+    if (!ok) ok = await reqRepo.isFinanceHod(eid)
+  } else {
+    ok = await reqRepo.isFinanceHod(eid)
+  }
   if (!ok) return { error: 'Only Finance HOD can approve', status: 403 }
   const rows = await reqRepo.getRequisitionForFinanceApproval(reqId)
   if (!rows.length) return { error: 'Requisition not found or not pending finance approval', status: 404 }
+
+  if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+    await rejectWithReason(reqId, reason, eid, 'finance')
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected by Finance',
+        body: `Your requisition was rejected by Finance. Reason: ${reason}`,
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
   // Loan & Advance Salary (direct from HR/CEO): no quotations, use default index 1
   const isLoan = isCategoryHrAfterHod(rows[0]?.req_category)
   const idx = (approvedQuotationIndex != null && [1, 2, 3].includes(parseInt(approvedQuotationIndex, 10)))
@@ -1718,11 +1811,22 @@ export async function getById(reqId) {
   const rows = await reqRepo.getRequisitionById(reqId)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const reqRow = rows[0]
-  const items = await reqRepo.getRequisitionItems(reqId)
+  const [items, comments] = await Promise.all([
+    reqRepo.getRequisitionItems(reqId),
+    reqRepo.getRequisitionComments(reqId)
+  ])
+
+  let rejectionStage = null
+  if (reqRow.req_is_rejected === 1) {
+    const rejectionComment = (comments || []).find(c => c.comment_text && c.comment_text.startsWith('[Rejection reason]'))
+    rejectionStage = rejectionComment?.stage_key || null
+  }
+
   return {
     ...reqRow,
     requiredByDate: reqRow.req_required_by_date || null,
     status: getRequisitionStatus(reqRow),
+    rejection_stage: rejectionStage,
     items: items.map(i => ({
       item_id: i.item_id,
       req_id: i.req_id,
