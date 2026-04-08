@@ -1,16 +1,17 @@
 import { executeQuery } from '../../config/database.js'
 
 // Full profile: department, designation, employee_type, station, city, grade (names) + extended profile fields
+// Date columns cast to TEXT to preserve YYYY-MM-DD format (avoid UTC conversion by pg driver)
 const profileQueryFull = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
-    e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
+    e.department_id, d.department_name, e.position, e.employee_code, e.join_date::text AS join_date, e.bio, e.profile_picture,
     e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name,
     e.station_id, s.station_name,
     e.city_id, c.city_name,
-    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion,
+    e.date_of_birth::text AS date_of_birth, e.father_name, e.gender, e.marital_status, e.religion,
     COALESCE(g.grade_name, e.grade) AS grade,
-    e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.cnic_number, e.cnic_issue_date::text AS cnic_issue_date, e.cnic_expiry_date::text AS cnic_expiry_date,
     e.emergency_contact_number, e.employee_extension, e.personal_cell_number
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
@@ -25,12 +26,12 @@ const profileQueryFull = `
 // Fallback when station/city tables missing (no extended columns so old DBs work)
 const profileQueryNoStationCity = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
-    e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
+    e.department_id, d.department_name, e.position, e.employee_code, e.join_date::text AS join_date, e.bio, e.profile_picture,
     e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name,
     e.station_id, e.city_id, NULL::text AS station_name, NULL::text AS city_name,
-    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
-    e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.date_of_birth::text AS date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+    e.cnic_number, e.cnic_issue_date::text AS cnic_issue_date, e.cnic_expiry_date::text AS cnic_expiry_date,
     e.emergency_contact_number, e.employee_extension, e.personal_cell_number
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
@@ -54,13 +55,13 @@ const profileQueryMinimal = `
 // Full profile without grade table (fallback when grade table or grade_id column missing)
 const profileQueryFullNoGrade = `
   SELECT e.employee_id, e.first_name, e.last_name, e.email, e.phone, e.address,
-    e.department_id, d.department_name, e.position, e.employee_code, e.join_date, e.bio, e.profile_picture,
+    e.department_id, d.department_name, e.position, e.employee_code, e.join_date::text AS join_date, e.bio, e.profile_picture,
     e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name,
     e.station_id, s.station_name,
     e.city_id, c.city_name,
-    e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
-    e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.date_of_birth::text AS date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+    e.cnic_number, e.cnic_issue_date::text AS cnic_issue_date, e.cnic_expiry_date::text AS cnic_expiry_date,
     e.emergency_contact_number, e.employee_extension, e.personal_cell_number
   FROM employees e
   LEFT JOIN departments d ON e.department_id = d.department_id
