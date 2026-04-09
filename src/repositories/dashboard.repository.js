@@ -135,15 +135,14 @@ export async function getProcurementPendingCount() {
   }
 }
 
-// Get basic stats without pending requisitions
+// Get basic stats (employee count, active leaves, monthly salary)
 export async function getBasicStats() {
-  const [totalEmployees, activeLeaves, monthlySalary, pendingLeaveRequests] = await Promise.all([
+  const [totalEmployees, activeLeaves, monthlySalary] = await Promise.all([
     executeQuery(statsQueries.totalEmployees).catch(() => [{ count: 0 }]),
     executeQuery(statsQueries.activeLeaves).catch(() => [{ count: 0 }]),
-    executeQuery(statsQueries.monthlySalary).catch(() => [{ total: 0 }]),
-    executeQuery(statsQueries.pendingLeaveRequests).catch(() => [{ count: 0 }])
+    executeQuery(statsQueries.monthlySalary).catch(() => [{ total: 0 }])
   ])
-  return { totalEmployees, activeLeaves, monthlySalary, pendingLeaveRequests }
+  return { totalEmployees, activeLeaves, monthlySalary }
 }
 
 export async function getActivities(employeeId = null) {
