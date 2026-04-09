@@ -582,52 +582,62 @@ export async function getReportAll(employeeId) {
 export async function getPendingHod(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const emp = await reqRepo.getEmployeeDept(employeeId)
-  if (!emp) return { error: 'Employee not found', status: 404 }
-  const deptId = emp.department_id
-  const deptName = (emp.department_name || '').trim().toLowerCase()
-  if (deptId == null && !deptName) return []
-  const isHodForDept = await reqRepo.isHodOfDepartment(eid, deptId)
-  if (!isHodForDept) return []
 
-  let rows
-  try {
-    const flowStages = await reqRepo.getFlowStages()
-    if (flowStages && flowStages.length > 0) {
-      const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName })
-      let ackList = []
-      try {
-        ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
-      } catch (_) {}
-      const byStageIds = new Set((byStage || []).map(r => r.req_id))
-      const merged = [...(byStage || [])]
-      for (const r of ackList || []) {
-        if (!byStageIds.has(r.req_id)) merged.push(r)
+  // Get ALL departments this employee is HOD of (handles multi-department HODs)
+  const hodDepartments = await reqRepo.getHodDepartmentsForEmployee(eid)
+  if (hodDepartments.length === 0) return []
+
+  const allRows = []
+  const seenReqIds = new Set()
+
+  const flowStages = await reqRepo.getFlowStages().catch(() => [])
+
+  for (const dept of hodDepartments) {
+    const deptId = dept.department_id
+    const deptName = (dept.department_name || '').trim().toLowerCase()
+
+    let rows = []
+    try {
+      if (flowStages && flowStages.length > 0) {
+        const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName })
+        let ackList = []
+        try {
+          ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
+        } catch (_) {}
+        const byStageIds = new Set((byStage || []).map(r => r.req_id))
+        const merged = [...(byStage || [])]
+        for (const r of ackList || []) {
+          if (!byStageIds.has(r.req_id)) merged.push(r)
+        }
+        rows = merged
+      } else {
+        rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
       }
-      rows = merged
-    } else {
-      rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+    } catch (err) {
+      if (err.code === '42703') rows = await reqRepo.getPendingHodRequisitionsFallback(deptId, deptName, eid)
+      else throw err
     }
-  } catch (err) {
-    if (err.code === '42703') rows = await reqRepo.getPendingHodRequisitionsFallback(deptId, deptName, eid)
-    else throw err
-  }
-  try {
-    const extRows = await reqRepo.getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName)
-    const seen = new Set((rows || []).map((r) => r.req_id))
-    for (const r of extRows || []) {
-      if (r.req_id != null && !seen.has(r.req_id)) {
-        rows.push(r)
-        seen.add(r.req_id)
+
+    try {
+      const extRows = await reqRepo.getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName)
+      for (const r of extRows || []) {
+        if (r.req_id != null && !rows.some(x => x.req_id === r.req_id)) rows.push(r)
+      }
+    } catch (_) {}
+
+    for (const r of rows || []) {
+      if (r.req_id != null && !seenReqIds.has(r.req_id)) {
+        seenReqIds.add(r.req_id)
+        allRows.push(r)
       }
     }
-  } catch (_) {
-    /* optional merge */
   }
-  const reqIds = rows.map(r => r.req_id)
+
+  allRows.sort((a, b) => new Date(a.req_created_at) - new Date(b.req_created_at))
+
+  const reqIds = allRows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
-  return list
+  return allRows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
 }
 
 export async function getApprovedByHod(employeeId) {
@@ -1454,26 +1464,38 @@ export async function completePurchase(reqId, body) {
 export async function getPendingHodAcknowledge(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const emp = await reqRepo.getEmployeeDept(eid)
-  if (!emp) return []
-  const deptId = emp.department_id
-  const deptName = (emp.department_name || '').trim().toLowerCase()
-  const isHod = await reqRepo.isHodOfDepartment(eid, deptId)
-  if (!isHod) return []
-  try {
-    const rows = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
-    const reqIds = rows.map(r => r.req_id)
-    const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-    const list = rows.map(req => ({
-      ...req,
-      status: getRequisitionStatus(req),
-      items: items.filter(i => i.req_id === req.req_id)
-    }))
-    return list
-  } catch (err) {
-    if (err.code === '42703') return []
-    throw err
+
+  // Get ALL departments this employee is HOD of (handles multi-department HODs)
+  const hodDepartments = await reqRepo.getHodDepartmentsForEmployee(eid)
+  if (hodDepartments.length === 0) return []
+
+  const allRows = []
+  const seenReqIds = new Set()
+
+  for (const dept of hodDepartments) {
+    const deptId = dept.department_id
+    const deptName = (dept.department_name || '').trim().toLowerCase()
+    try {
+      const rows = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
+      for (const r of rows || []) {
+        if (r.req_id != null && !seenReqIds.has(r.req_id)) {
+          seenReqIds.add(r.req_id)
+          allRows.push(r)
+        }
+      }
+    } catch (err) {
+      if (err.code === '42703') continue
+      throw err
+    }
   }
+
+  const reqIds = allRows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return allRows.map(req => ({
+    ...req,
+    status: getRequisitionStatus(req),
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
 }
 
 /** HOD/Committee/CEO: acknowledge receipt of completed purchase based on creator role. */

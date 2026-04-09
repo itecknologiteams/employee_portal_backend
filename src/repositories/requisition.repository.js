@@ -259,6 +259,61 @@ export async function getHodEmailsForDepartment(departmentId) {
   return resolveEmailsPreferCrmForCodes(codes)
 }
 
+/**
+ * Get ALL departments where this employee is the HOD.
+ * Checks employee_hod_departments first (explicit multi-dept assignments),
+ * then falls back to checking their primary department via employee_type/designation.
+ * @returns {Array<{department_id: number, department_name: string}>}
+ */
+export async function getHodDepartmentsForEmployee(employeeId) {
+  if (employeeId == null) return []
+  const results = []
+  const seenIds = new Set()
+
+  // 1. Explicit HOD assignments from employee_hod_departments
+  try {
+    const rows = await executeQuery(
+      `SELECT h.department_id, d.department_name
+       FROM employee_hod_departments h
+       JOIN departments d ON d.department_id = h.department_id
+       WHERE h.employee_id = $1`,
+      [employeeId]
+    )
+    for (const row of rows) {
+      if (row.department_id != null && !seenIds.has(row.department_id)) {
+        seenIds.add(row.department_id)
+        results.push({ department_id: row.department_id, department_name: row.department_name || '' })
+      }
+    }
+  } catch (err) {
+    if (err.code !== '42P01') throw err
+  }
+
+  // 2. Fallback: HOD by employee_type or designation in their own department
+  if (results.length === 0) {
+    try {
+      const rows = await executeQuery(
+        `SELECT e.department_id, d.department_name
+         FROM employees e
+         LEFT JOIN departments d ON d.department_id = e.department_id
+         LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+         LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name = 'HOD'
+         WHERE e.employee_id = $1 AND e.is_active = true
+           AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+        [employeeId]
+      )
+      for (const row of rows) {
+        if (row.department_id != null && !seenIds.has(row.department_id)) {
+          seenIds.add(row.department_id)
+          results.push({ department_id: row.department_id, department_name: row.department_name || '' })
+        }
+      }
+    } catch (_) {}
+  }
+
+  return results
+}
+
 /** True if this employee is HOD of this department (employee_hod_departments first, then by type or designation). */
 export async function isHodOfDepartment(employeeId, departmentId) {
   if (employeeId == null || departmentId == null) return false
