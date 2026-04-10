@@ -417,7 +417,8 @@ export async function updateEmployee(id, body) {
     grade: body.grade,
     region: body.region,
     bio: body.bio,
-    ...(typeof body.salarySlipOnHold === 'boolean' ? { salarySlipOnHold: body.salarySlipOnHold } : {})
+    ...(typeof body.salarySlipOnHold === 'boolean' ? { salarySlipOnHold: body.salarySlipOnHold } : {}),
+    ...(body.lastWorkingDate !== undefined ? { lastWorkingDate: body.lastWorkingDate } : {})
   })
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {
@@ -480,6 +481,12 @@ export async function deactivateEmployee(id) {
   const check = await adminRepo.deactivateEmployee(id)
   if (!check.length) return { notFound: true }
   return { message: 'Employee deactivated' }
+}
+
+export async function toggleEmployeeStatus(id, isActive, lastWorkingDate) {
+  const result = await adminRepo.toggleEmployeeStatus(id, isActive, lastWorkingDate)
+  if (!result) return { notFound: true }
+  return result
 }
 
 export async function getSuperAdminStatus() {

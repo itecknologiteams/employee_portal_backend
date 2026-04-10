@@ -31,6 +31,7 @@ router.delete('/cities/:id', adminController.deleteCity)
 router.get('/employees', adminController.listEmployees)
 router.post('/employees', adminController.createEmployee)
 router.put('/employees/:id', adminController.updateEmployee)
+router.patch('/employees/:id/status', adminController.toggleEmployeeStatus)
 router.delete('/employees/:id', adminController.deactivateEmployee)
 
 router.get('/superadmin-status', adminController.getSuperAdminStatus)

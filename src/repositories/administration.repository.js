@@ -252,6 +252,7 @@ const employeesSelect = `
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
     e.city_id, c.city_name,
     e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold, e.join_date,
+    e.last_working_date,
     e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
     e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
     e.religion, e.grade, e.region, e.bio
@@ -477,6 +478,11 @@ export async function updateEmployee(id, updates) {
     params.push(salarySlipOnHold)
     idx++
   }
+  if (updates.lastWorkingDate !== undefined) {
+    setClauses.push(`last_working_date = $${idx}`)
+    params.push(updates.lastWorkingDate || null)
+    idx++
+  }
   params.push(id)
   await executeQuery(
     `UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $${idx}`,
@@ -558,6 +564,26 @@ export async function getEmployeeById(id) {
 export async function deactivateEmployee(id) {
   await executeQuery('UPDATE employees SET is_active = $2 WHERE employee_id = $1', [id, false])
   return executeQuery('SELECT employee_id FROM employees WHERE employee_id = $1 AND is_active = $2', [id, false])
+}
+
+export async function toggleEmployeeStatus(id, isActive, lastWorkingDate) {
+  const setClauses = ['is_active = $2']
+  const params = [id, isActive]
+  let idx = 3
+  if (lastWorkingDate !== undefined) {
+    setClauses.push(`last_working_date = $${idx}`)
+    params.push(lastWorkingDate || null)
+    idx++
+  } else if (!isActive) {
+    // Auto-set last_working_date to today when deactivating if not provided
+    setClauses.push(`last_working_date = CURRENT_DATE`)
+  }
+  await executeQuery(
+    `UPDATE employees SET ${setClauses.join(', ')} WHERE employee_id = $1`,
+    params
+  )
+  const rows = await executeQuery('SELECT employee_id, is_active, last_working_date FROM employees WHERE employee_id = $1', [id])
+  return rows[0] || null
 }
 
 export async function getUserByEmployee(empId) {

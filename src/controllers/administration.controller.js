@@ -320,6 +320,19 @@ export async function deactivateEmployee(req, res) {
   }
 }
 
+export async function toggleEmployeeStatus(req, res) {
+  try {
+    const { id } = req.params
+    const { isActive, lastWorkingDate } = req.body
+    if (typeof isActive !== 'boolean') return res.status(400).json({ error: 'isActive (boolean) is required' })
+    const result = await adminService.toggleEmployeeStatus(id, isActive, lastWorkingDate)
+    if (result.notFound) return res.status(404).json({ error: 'Employee not found' })
+    res.json(result)
+  } catch (error) {
+    handleError(error, res, 'Failed to toggle employee status')
+  }
+}
+
 export async function getSuperAdminStatus(req, res) {
   try {
     const result = await adminService.getSuperAdminStatus()
