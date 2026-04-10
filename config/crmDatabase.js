@@ -5,15 +5,22 @@
  *
  * .env:
  *   CRM_HOST=192.168.21.33
+ *   CRM_FALLBACK_IP=192.168.21.33    # Fallback if hostname doesn't resolve
  *   CRM_USER=crm
  *   CRM_PASS=...
  *   CRM_DB=ERP_Tracking
  */
 import dotenv from 'dotenv'
+import dns from 'dns'
+import { promisify } from 'util'
+
 dotenv.config()
+
+const dnsLookup = promisify(dns.lookup)
 
 let crmPool = null
 let Sql = null
+let lastHostTried = null
 
 async function getMssql() {
   if (Sql) return Sql
@@ -27,18 +34,71 @@ function stripEnvQuotes(s) {
   return s.replace(/^['"]|['"]$/g, '').trim()
 }
 
+/**
+ * Resolve hostname to IP address. Returns null if fails.
+ */
+async function resolveHostnameToIp(hostname) {
+  try {
+    const { address } = await dnsLookup(hostname)
+    return address
+  } catch (err) {
+    console.log(`CRM: DNS lookup failed for ${hostname}: ${err.message}`)
+    return null
+  }
+}
+
+/**
+ * Get the effective server address to use.
+ * Tries: 1) Hostname as-is, 2) DNS resolved IP, 3) Fallback IP from .env
+ */
+async function getEffectiveServerAddress(host, fallbackIp) {
+  // Check if host is already an IP
+  const ipv4Regex = /^(\d{1,3}\.){3}\d{1,3}$/
+  if (ipv4Regex.test(host)) {
+    return host
+  }
+
+  // Try to resolve hostname
+  console.log(`CRM: Attempting to resolve hostname ${host}...`)
+  const resolvedIp = await resolveHostnameToIp(host)
+  
+  if (resolvedIp) {
+    console.log(`CRM: ${host} resolved to ${resolvedIp}`)
+    return resolvedIp
+  }
+
+  // Fallback to IP from .env
+  if (fallbackIp) {
+    console.log(`CRM: Falling back to CRM_FALLBACK_IP: ${fallbackIp}`)
+    return fallbackIp
+  }
+
+  // Last resort: return original host and hope for the best
+  console.warn(`CRM: Could not resolve ${host} and no fallback IP configured. Trying anyway...`)
+  return host
+}
+
 export async function getCrmPool() {
   if (crmPool) return crmPool
+
   const host = stripEnvQuotes(process.env.CRM_HOST)
   if (!host) return null
+
+  const fallbackIp = stripEnvQuotes(process.env.CRM_FALLBACK_IP || '')
   const Mssql = await getMssql()
   const password = stripEnvQuotes(process.env.CRM_PASS || '')
   const port = parseInt(process.env.CRM_PORT, 10)
+
   if (!password) {
     console.warn('CRM: CRM_PASS is empty. Set CRM_PASS in .env for CRM login.')
   }
+
+  // Resolve hostname to IP if needed
+  const serverAddress = await getEffectiveServerAddress(host, fallbackIp)
+  lastHostTried = serverAddress
+
   crmPool = new Mssql.ConnectionPool({
-    server: host,
+    server: serverAddress,
     port: Number.isNaN(port) ? undefined : port,
     database: stripEnvQuotes(process.env.CRM_DB) || 'ERP_Tracking',
     user: stripEnvQuotes(process.env.CRM_USER) || 'crm',
@@ -51,8 +111,9 @@ export async function getCrmPool() {
     },
     pool: { max: 5, idleTimeoutMillis: 30000 },
   })
+
   await crmPool.connect()
-  console.log(`✅ CRM SQL Server connected: ${host} / ${stripEnvQuotes(process.env.CRM_USER) || 'crm'} @ ${stripEnvQuotes(process.env.CRM_DB) || 'ERP_Tracking'}`)
+  console.log(`✅ CRM SQL Server connected: ${serverAddress} (original: ${host}) / ${stripEnvQuotes(process.env.CRM_USER) || 'crm'} @ ${stripEnvQuotes(process.env.CRM_DB) || 'ERP_Tracking'}`)
   return crmPool
 }
 
@@ -70,7 +131,7 @@ export async function checkCrmLogin(username, password) {
   } catch (err) {
     console.error('CRM connection error:', err.message)
     if (err.message && err.message.includes('Login failed for user')) {
-      console.error('CRM: Verify in SSMS: connect to', process.env.CRM_HOST, 'with user', process.env.CRM_USER, 'and the same password. Ensure SQL Server Authentication is enabled.')
+      console.error('CRM: Verify in SSMS: connect to', lastHostTried || process.env.CRM_HOST, 'with user', process.env.CRM_USER, 'and the same password. Ensure SQL Server Authentication is enabled.')
     }
     return { valid: false }
   }
