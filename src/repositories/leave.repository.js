@@ -4,20 +4,53 @@ import { executeQuery } from '../../config/database.js'
 export const DEFAULT_ANNUAL = 14
 export const DEFAULT_CASUAL = 10
 export const DEFAULT_SICK = 6
+export const DEFAULT_MARRIAGE = 10
+export const DEFAULT_MATERNITY = 90
+export const DEFAULT_PATERNAL = 7
+export const DEFAULT_PILGRIMAGE = 20
+
+/** All portal-managed leave types that support requests and deductions. */
+export const PORTAL_LEAVE_TYPES = ['annual', 'marriage', 'maternity', 'paternal', 'pilgrimage']
+
+/** Gender-specific leave types. */
+export const GENDER_SPECIFIC_LEAVES = {
+  maternity: 'Female',
+  paternal: 'Male'
+}
+
+/** Check if a leave type is managed by the portal (not external). */
+export function isPortalLeaveType(leaveType) {
+  const t = String(leaveType || '').trim().toLowerCase().replace(/\s+/g, '').replace('leave', '')
+  return PORTAL_LEAVE_TYPES.includes(t) || PORTAL_LEAVE_TYPES.some(pt => t.includes(pt))
+}
+
+/** Get the column name for a leave type in the leave_balance table. */
+export function getLeaveBalanceColumn(leaveType) {
+  const t = String(leaveType || '').trim().toLowerCase().replace(/\s+/g, '').replace('leave', '')
+  if (t === 'annual' || t.includes('annual')) return 'annual_leave'
+  if (t === 'marriage' || t.includes('marriage')) return 'marriage_leave'
+  if (t === 'maternity' || t.includes('maternity')) return 'maternity_leave'
+  if (t === 'paternal' || t.includes('paternal') || t === 'paternity' || t.includes('paternity')) return 'paternal_leave'
+  if (t === 'pilgrimage' || t.includes('pilgrimage')) return 'pilgrimage_leave'
+  if (t === 'casual' || t.includes('casual')) return 'casual_leave'
+  if (t === 'sick' || t.includes('sick')) return 'sick_leave'
+  return null
+}
 
 export async function ensureLeaveBalanceRow(employeeId) {
   await executeQuery(
-    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave)
-     VALUES ($1, $2, $3, $4, 0)
+    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
+     VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8)
      ON CONFLICT (employee_id) DO NOTHING`,
-    [employeeId, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK]
+    [employeeId, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK, DEFAULT_MARRIAGE, DEFAULT_MATERNITY, DEFAULT_PATERNAL, DEFAULT_PILGRIMAGE]
   )
 }
 
 export async function getLeaveBalance(employeeId) {
   await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
-    `SELECT lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave
+    `SELECT lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave,
+            lb.marriage_leave, lb.maternity_leave, lb.paternal_leave, lb.pilgrimage_leave
      FROM leave_balance lb WHERE lb.employee_id = $1`,
     [employeeId]
   )
@@ -47,6 +80,38 @@ export async function refundAnnualLeave(employeeId, days) {
   )
 }
 
+/** Generic deduct function for any portal leave type. */
+export async function deductLeave(employeeId, leaveType, days) {
+  const d = Math.max(0, Math.floor(Number(days) || 0))
+  if (d === 0) return []
+  const column = getLeaveBalanceColumn(leaveType)
+  if (!column || column === 'casual_leave' || column === 'sick_leave') {
+    throw new Error('Invalid leave type for deduction')
+  }
+  await ensureLeaveBalanceRow(employeeId)
+  return executeQuery(
+    `UPDATE leave_balance SET ${column} = ${column} - $2, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1 AND ${column} >= $2
+     RETURNING annual_leave, casual_leave, sick_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave`,
+    [employeeId, d]
+  )
+}
+
+/** Generic refund function for any portal leave type. */
+export async function refundLeave(employeeId, leaveType, days) {
+  const d = Math.max(0, Math.floor(Number(days) || 0))
+  if (d === 0) return []
+  const column = getLeaveBalanceColumn(leaveType)
+  if (!column || column === 'casual_leave' || column === 'sick_leave') {
+    throw new Error('Invalid leave type for refund')
+  }
+  return executeQuery(
+    `UPDATE leave_balance SET ${column} = ${column} + $2, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1 RETURNING ${column}`,
+    [employeeId, d]
+  )
+}
+
 /** HR: set full annual / casual / sick totals (non-negative integers). personal_leave stays 0. */
 export async function setLeaveBalanceTotals(employeeId, annual, casual, sick) {
   await ensureLeaveBalanceRow(employeeId)
@@ -63,26 +128,61 @@ export async function setLeaveBalanceTotals(employeeId, annual, casual, sick) {
   )
 }
 
+/** HR: set all portal-managed leave totals including new types. */
+export async function setAllLeaveBalanceTotals(employeeId, balances) {
+  const {
+    annual = DEFAULT_ANNUAL,
+    casual = DEFAULT_CASUAL,
+    sick = DEFAULT_SICK,
+    marriage = DEFAULT_MARRIAGE,
+    maternity = DEFAULT_MATERNITY,
+    paternal = DEFAULT_PATERNAL,
+    pilgrimage = DEFAULT_PILGRIMAGE
+  } = balances
+  await ensureLeaveBalanceRow(employeeId)
+  return executeQuery(
+    `UPDATE leave_balance SET
+       annual_leave = $2,
+       casual_leave = $3,
+       sick_leave = $4,
+       marriage_leave = $5,
+       maternity_leave = $6,
+       paternal_leave = $7,
+       pilgrimage_leave = $8,
+       personal_leave = 0,
+       updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1
+     RETURNING annual_leave, casual_leave, sick_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave`,
+    [employeeId, annual, casual, sick, marriage, maternity, paternal, pilgrimage]
+  )
+}
+
 /**
  * HR manual deduction with audit logging.
- * leaveType must be one of: annual, casual, sick.
+ * leaveType must be one of: annual, casual, sick, marriage, maternity, paternal, pilgrimage.
  * Returns [] when balance is insufficient.
  */
 export async function createManualDeduction(employeeId, leaveType, days, reason, deductedByEmployeeId) {
   const d = Math.max(0, Math.floor(Number(days) || 0))
   if (d === 0) return []
-  const type = String(leaveType || '').trim().toLowerCase()
-  if (type !== 'annual' && type !== 'casual' && type !== 'sick') {
+  const type = String(leaveType || '').trim().toLowerCase().replace(/\s+/g, '').replace('leave', '')
+  const validTypes = ['annual', 'casual', 'sick', 'marriage', 'maternity', 'paternal', 'pilgrimage', 'paternity']
+  if (!validTypes.includes(type)) {
     throw new Error('Invalid leave type')
   }
+  // Map paternity to paternal
+  const normalizedType = type === 'paternity' ? 'paternal' : type
   await ensureLeaveBalanceRow(employeeId)
-  const column = type === 'annual' ? 'annual_leave' : type === 'casual' ? 'casual_leave' : 'sick_leave'
+  const column = getLeaveBalanceColumn(normalizedType)
+  if (!column) {
+    throw new Error('Invalid leave type')
+  }
   const rows = await executeQuery(
     `WITH updated AS (
        UPDATE leave_balance
        SET ${column} = ${column} - $2, updated_at = CURRENT_TIMESTAMP
        WHERE employee_id = $1 AND ${column} >= $2
-       RETURNING annual_leave, casual_leave, sick_leave
+       RETURNING annual_leave, casual_leave, sick_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave
      ),
      logged AS (
        INSERT INTO leave_deduction_log (
@@ -94,12 +194,20 @@ export async function createManualDeduction(employeeId, leaveType, days, reason,
          CASE
            WHEN $3::text = 'annual' THEN u.annual_leave + $2
            WHEN $3::text = 'casual' THEN u.casual_leave + $2
-           ELSE u.sick_leave + $2
+           WHEN $3::text = 'sick' THEN u.sick_leave + $2
+           WHEN $3::text = 'marriage' THEN u.marriage_leave + $2
+           WHEN $3::text = 'maternity' THEN u.maternity_leave + $2
+           WHEN $3::text = 'paternal' OR $3::text = 'paternity' THEN u.paternal_leave + $2
+           ELSE u.pilgrimage_leave + $2
          END,
          CASE
            WHEN $3::text = 'annual' THEN u.annual_leave
            WHEN $3::text = 'casual' THEN u.casual_leave
-           ELSE u.sick_leave
+           WHEN $3::text = 'sick' THEN u.sick_leave
+           WHEN $3::text = 'marriage' THEN u.marriage_leave
+           WHEN $3::text = 'maternity' THEN u.maternity_leave
+           WHEN $3::text = 'paternal' OR $3::text = 'paternity' THEN u.paternal_leave
+           ELSE u.pilgrimage_leave
          END,
          CURRENT_TIMESTAMP
        FROM updated u
@@ -107,10 +215,10 @@ export async function createManualDeduction(employeeId, leaveType, days, reason,
      )
      SELECT
        l.deduction_id, l.leave_type, l.days_deducted, l.reason, l.balance_before, l.balance_after, l.created_at,
-       u.annual_leave, u.casual_leave, u.sick_leave
+       u.annual_leave, u.casual_leave, u.sick_leave, u.marriage_leave, u.maternity_leave, u.paternal_leave, u.pilgrimage_leave
      FROM logged l
      CROSS JOIN updated u`,
-    [employeeId, d, type, reason, deductedByEmployeeId]
+    [employeeId, d, normalizedType, reason, deductedByEmployeeId]
   )
   return rows
 }
@@ -175,10 +283,13 @@ export async function getManualDeductionById(deductionId) {
 export async function updateManualDeduction(deductionId, leaveType, days, reason) {
   const d = Math.max(0, Math.floor(Number(days) || 0))
   if (d === 0) return []
-  const type = String(leaveType || '').trim().toLowerCase()
-  if (type !== 'annual' && type !== 'casual' && type !== 'sick') {
+  const type = String(leaveType || '').trim().toLowerCase().replace(/\s+/g, '').replace('leave', '')
+  const validTypes = ['annual', 'casual', 'sick', 'marriage', 'maternity', 'paternal', 'pilgrimage', 'paternity']
+  if (!validTypes.includes(type)) {
     throw new Error('Invalid leave type')
   }
+  // Map paternity to paternal
+  const normalizedType = type === 'paternity' ? 'paternal' : type
   const rows = await executeQuery(
     `WITH existing AS (
        SELECT deduction_id, employee_id, leave_type, days_deducted
@@ -197,6 +308,18 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
          sick_leave = lb.sick_leave
            + CASE WHEN e.leave_type = 'sick' THEN e.days_deducted ELSE 0 END
            - CASE WHEN $2::text = 'sick' THEN $3::int ELSE 0 END,
+         marriage_leave = lb.marriage_leave
+           + CASE WHEN e.leave_type = 'marriage' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'marriage' THEN $3::int ELSE 0 END,
+         maternity_leave = lb.maternity_leave
+           + CASE WHEN e.leave_type = 'maternity' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'maternity' THEN $3::int ELSE 0 END,
+         paternal_leave = lb.paternal_leave
+           + CASE WHEN e.leave_type IN ('paternal', 'paternity') THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text IN ('paternal', 'paternity') THEN $3::int ELSE 0 END,
+         pilgrimage_leave = lb.pilgrimage_leave
+           + CASE WHEN e.leave_type = 'pilgrimage' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'pilgrimage' THEN $3::int ELSE 0 END,
          updated_at = CURRENT_TIMESTAMP
        FROM existing e
        WHERE lb.employee_id = e.employee_id
@@ -209,7 +332,19 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
          AND lb.sick_leave
            + CASE WHEN e.leave_type = 'sick' THEN e.days_deducted ELSE 0 END
            - CASE WHEN $2::text = 'sick' THEN $3::int ELSE 0 END >= 0
-       RETURNING lb.employee_id, lb.annual_leave, lb.casual_leave, lb.sick_leave
+         AND lb.marriage_leave
+           + CASE WHEN e.leave_type = 'marriage' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'marriage' THEN $3::int ELSE 0 END >= 0
+         AND lb.maternity_leave
+           + CASE WHEN e.leave_type = 'maternity' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'maternity' THEN $3::int ELSE 0 END >= 0
+         AND lb.paternal_leave
+           + CASE WHEN e.leave_type IN ('paternal', 'paternity') THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text IN ('paternal', 'paternity') THEN $3::int ELSE 0 END >= 0
+         AND lb.pilgrimage_leave
+           + CASE WHEN e.leave_type = 'pilgrimage' THEN e.days_deducted ELSE 0 END
+           - CASE WHEN $2::text = 'pilgrimage' THEN $3::int ELSE 0 END >= 0
+       RETURNING lb.employee_id, lb.annual_leave, lb.casual_leave, lb.sick_leave, lb.marriage_leave, lb.maternity_leave, lb.paternal_leave, lb.pilgrimage_leave
      ),
      updated_log AS (
        UPDATE leave_deduction_log l
@@ -220,12 +355,20 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
          balance_before = CASE
            WHEN $2::text = 'annual' THEN ub.annual_leave + $3::int
            WHEN $2::text = 'casual' THEN ub.casual_leave + $3::int
-           ELSE ub.sick_leave + $3::int
+           WHEN $2::text = 'sick' THEN ub.sick_leave + $3::int
+           WHEN $2::text = 'marriage' THEN ub.marriage_leave + $3::int
+           WHEN $2::text = 'maternity' THEN ub.maternity_leave + $3::int
+           WHEN $2::text IN ('paternal', 'paternity') THEN ub.paternal_leave + $3::int
+           ELSE ub.pilgrimage_leave + $3::int
          END,
          balance_after = CASE
            WHEN $2::text = 'annual' THEN ub.annual_leave
            WHEN $2::text = 'casual' THEN ub.casual_leave
-           ELSE ub.sick_leave
+           WHEN $2::text = 'sick' THEN ub.sick_leave
+           WHEN $2::text = 'marriage' THEN ub.marriage_leave
+           WHEN $2::text = 'maternity' THEN ub.maternity_leave
+           WHEN $2::text IN ('paternal', 'paternity') THEN ub.paternal_leave
+           ELSE ub.pilgrimage_leave
          END
        FROM updated_balance ub
        WHERE l.deduction_id = $1
@@ -234,10 +377,10 @@ export async function updateManualDeduction(deductionId, leaveType, days, reason
      SELECT
        ul.deduction_id, ul.employee_id, ul.leave_type, ul.days_deducted, ul.reason,
        ul.balance_before, ul.balance_after, ul.created_at, ul.deducted_by_employee_id,
-       ub.annual_leave, ub.casual_leave, ub.sick_leave
+       ub.annual_leave, ub.casual_leave, ub.sick_leave, ub.marriage_leave, ub.maternity_leave, ub.paternal_leave, ub.pilgrimage_leave
      FROM updated_log ul
      JOIN updated_balance ub ON ub.employee_id = ul.employee_id`,
-    [deductionId, type, d, reason]
+    [deductionId, normalizedType, d, reason]
   )
   return rows
 }

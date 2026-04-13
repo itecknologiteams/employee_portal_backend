@@ -5,7 +5,59 @@ import * as notifSvc from './notification.service.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
-const defaultBalance = { annual: 14, casual: 10, sick: 6 }
+const defaultBalance = {
+  annual: 14,
+  casual: 10,
+  sick: 6,
+  marriage: 10,
+  maternity: 90,
+  paternal: 7,
+  pilgrimage: 20
+}
+
+/** All leave types that can be requested through the portal. */
+const PORTAL_REQUESTABLE_LEAVE_TYPES = [
+  'Annual Leave',
+  'Marriage Leave',
+  'Maternity Leave',
+  'Paternal Leave',
+  'Paternity Leave',
+  'Pilgrimage Leave'
+]
+
+/** Check if leave type is requestable through the portal. */
+function isPortalRequestableLeaveType(leaveType) {
+  const t = String(leaveType || '').trim().toLowerCase()
+  return PORTAL_REQUESTABLE_LEAVE_TYPES.some(
+    type => t === type.toLowerCase() || t.includes(type.toLowerCase().replace(' leave', ''))
+  )
+}
+
+/** Get the normalized leave type name. */
+function getNormalizedLeaveType(leaveType) {
+  const t = String(leaveType || '').trim().toLowerCase()
+  if (t.includes('annual')) return 'Annual Leave'
+  if (t.includes('marriage')) return 'Marriage Leave'
+  if (t.includes('maternity')) return 'Maternity Leave'
+  if (t.includes('paternal') || t.includes('paternity')) return 'Paternal Leave'
+  if (t.includes('pilgrimage')) return 'Pilgrimage Leave'
+  if (t.includes('casual')) return 'Casual Leave'
+  if (t.includes('sick')) return 'Sick Leave'
+  return leaveType
+}
+
+/** Get the balance key for a leave type. */
+function getLeaveBalanceKey(leaveType) {
+  const t = String(leaveType || '').trim().toLowerCase()
+  if (t.includes('annual')) return 'annual'
+  if (t.includes('marriage')) return 'marriage'
+  if (t.includes('maternity')) return 'maternity'
+  if (t.includes('paternal') || t.includes('paternity')) return 'paternal'
+  if (t.includes('pilgrimage')) return 'pilgrimage'
+  if (t.includes('casual')) return 'casual'
+  if (t.includes('sick')) return 'sick'
+  return null
+}
 
 const LEAVE_EMAIL_SICK_CASUAL = process.env.LEAVE_EMAIL_SICK_CASUAL || 'anas.ahmed@itecknologi.com'
 const LEAVE_EMAIL_ANNUAL = process.env.LEAVE_EMAIL_ANNUAL || 'hr@itecknologi.com'
@@ -19,6 +71,17 @@ function isAnnualLeaveRequestType(leaveType) {
   return t.includes('annual')
 }
 
+/** Check if leave type is a portal-managed leave type (supports requests/deductions). */
+function isPortalManagedLeaveType(leaveType) {
+  const t = (leaveType && String(leaveType).trim().toLowerCase()) || ''
+  return t.includes('annual') ||
+         t.includes('marriage') ||
+         t.includes('maternity') ||
+         t.includes('paternal') ||
+         t.includes('paternity') ||
+         t.includes('pilgrimage')
+}
+
 function leaveRequestCalendarDays(leave) {
   if (!leave?.start_date || !leave?.end_date) return 0
   const s = new Date(leave.start_date)
@@ -29,30 +92,43 @@ function leaveRequestCalendarDays(leave) {
 }
 
 /**
- * On Approved: deduct annual days first, then update status; refund if status update fails.
+ * On Approved: deduct leave days first, then update status; refund if status update fails.
+ * Supports all portal-managed leave types: annual, marriage, maternity, paternal, pilgrimage.
  */
-async function approveWithAnnualDeduction(leave, reqId, requiredCurrent, newStatus) {
+async function approveWithLeaveDeduction(leave, reqId, requiredCurrent, newStatus) {
   const eid = parseInt(leave.employee_id, 10)
   let toRefund = 0
-  if (newStatus === 'Approved' && isAnnualLeaveRequestType(leave.leave_type)) {
+  let deductedType = null
+  if (newStatus === 'Approved' && isPortalManagedLeaveType(leave.leave_type)) {
     const already = Number(leave.annual_days_deducted) || 0
     if (already === 0) {
       const days = leaveRequestCalendarDays(leave)
       if (days > 0) {
         if (Number.isNaN(eid)) return { error: 'Invalid employee on leave request', status: 400 }
-        const rows = await leaveRepo.deductAnnualLeave(eid, days)
-        if (!rows.length) return { error: 'Insufficient annual leave balance', status: 400 }
+        const rows = await leaveRepo.deductLeave(eid, leave.leave_type, days)
+        if (!rows.length) {
+          const leaveName = getNormalizedLeaveType(leave.leave_type)
+          return { error: `Insufficient ${leaveName} balance`, status: 400 }
+        }
         toRefund = days
+        deductedType = getLeaveBalanceKey(leave.leave_type)
       }
     }
   }
   const result = await leaveRepo.updateLeaveRequestStatus(reqId, newStatus, requiredCurrent)
   if (!result || result.length === 0) {
-    if (toRefund > 0) await leaveRepo.refundAnnualLeave(eid, toRefund)
+    if (toRefund > 0 && deductedType) {
+      await leaveRepo.refundLeave(eid, deductedType, toRefund)
+    }
     return { error: 'Could not update status', status: 400 }
   }
   if (toRefund > 0) await leaveRepo.setAnnualDaysDeducted(reqId, toRefund)
   return { ok: true }
+}
+
+// Keep for backward compatibility - delegates to new function
+async function approveWithAnnualDeduction(leave, reqId, requiredCurrent, newStatus) {
+  return approveWithLeaveDeduction(leave, reqId, requiredCurrent, newStatus)
 }
 
 function parseEmployeeId(employeeId) {
@@ -127,11 +203,15 @@ export async function getLeaveBalance(employeeId) {
   return {
     annual: parseInt(b.annual_leave || 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
-    sick: parseInt(b.sick_leave || 0, 10)
+    sick: parseInt(b.sick_leave || 0, 10),
+    marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
+    maternity: parseInt(b.maternity_leave ?? defaultBalance.maternity, 10),
+    paternal: parseInt(b.paternal_leave ?? defaultBalance.paternal, 10),
+    pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10)
   }
 }
 
-/** HR only: replace employee leave quotas (annual, casual, sick days). */
+/** HR only: replace employee leave quotas (annual, casual, sick, marriage, maternity, paternal, pilgrimage days). */
 export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) {
   const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
   if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
@@ -147,18 +227,29 @@ export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) 
   const annual = Math.max(0, Math.floor(Number(body?.annual)))
   const casual = Math.max(0, Math.floor(Number(body?.casual)))
   const sick = Math.max(0, Math.floor(Number(body?.sick)))
-  if (![annual, casual, sick].every((n) => Number.isFinite(n))) {
-    return { error: 'annual, casual, and sick must be non-negative numbers', status: 400 }
+  const marriage = Math.max(0, Math.floor(Number(body?.marriage) || defaultBalance.marriage))
+  const maternity = Math.max(0, Math.floor(Number(body?.maternity) || defaultBalance.maternity))
+  const paternal = Math.max(0, Math.floor(Number(body?.paternal) || defaultBalance.paternal))
+  const pilgrimage = Math.max(0, Math.floor(Number(body?.pilgrimage) || defaultBalance.pilgrimage))
+
+  if (![annual, casual, sick, marriage, maternity, paternal, pilgrimage].every((n) => Number.isFinite(n))) {
+    return { error: 'All leave quota values must be non-negative numbers', status: 400 }
   }
 
-  const rows = await leaveRepo.setLeaveBalanceTotals(tid, annual, casual, sick)
+  const rows = await leaveRepo.setAllLeaveBalanceTotals(tid, {
+    annual, casual, sick, marriage, maternity, paternal, pilgrimage
+  })
   if (!rows.length) return { error: 'Could not update leave balance', status: 400 }
   const b = rows[0]
   return {
     employeeCode: code,
     annual: parseInt(b.annual_leave || 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
-    sick: parseInt(b.sick_leave || 0, 10)
+    sick: parseInt(b.sick_leave || 0, 10),
+    marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
+    maternity: parseInt(b.maternity_leave ?? defaultBalance.maternity, 10),
+    paternal: parseInt(b.paternal_leave ?? defaultBalance.paternal, 10),
+    pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10)
   }
 }
 
@@ -192,9 +283,10 @@ export async function hrDeductLeaveBalance(body) {
   const targetEmployeeId = await getEmployeeIdByCode(targetCode)
   if (!targetEmployeeId) return { error: 'Employee not found', status: 404 }
 
-  const leaveType = String(body?.leaveType || '').trim().toLowerCase()
-  if (!['annual', 'casual', 'sick'].includes(leaveType)) {
-    return { error: 'leaveType must be one of: annual, casual, sick', status: 400 }
+  const leaveType = String(body?.leaveType || '').trim().toLowerCase().replace(/\s+/g, '').replace('leave', '')
+  const validTypes = ['annual', 'casual', 'sick', 'marriage', 'maternity', 'paternal', 'pilgrimage', 'paternity']
+  if (!validTypes.includes(leaveType)) {
+    return { error: 'leaveType must be one of: annual, casual, sick, marriage, maternity, paternal, pilgrimage', status: 400 }
   }
   const days = Math.floor(Number(body?.days) || 0)
   if (days <= 0) return { error: 'days must be a positive integer', status: 400 }
@@ -230,7 +322,11 @@ export async function hrDeductLeaveBalance(body) {
     balances: {
       annual: parseInt(r.annual_leave || 0, 10),
       casual: parseInt(r.casual_leave || 0, 10),
-      sick: parseInt(r.sick_leave || 0, 10)
+      sick: parseInt(r.sick_leave || 0, 10),
+      marriage: parseInt(r.marriage_leave ?? defaultBalance.marriage, 10),
+      maternity: parseInt(r.maternity_leave ?? defaultBalance.maternity, 10),
+      paternal: parseInt(r.paternal_leave ?? defaultBalance.paternal, 10),
+      pilgrimage: parseInt(r.pilgrimage_leave ?? defaultBalance.pilgrimage, 10)
     }
   }
 }
@@ -292,9 +388,10 @@ export async function hrEditDeduction(deductionId, body) {
   const existing = await leaveRepo.getManualDeductionById(id)
   if (!existing) return { error: 'Deduction record not found', status: 404 }
 
-  const leaveType = String(body?.leaveType || '').trim().toLowerCase()
-  if (!['annual', 'casual', 'sick'].includes(leaveType)) {
-    return { error: 'leaveType must be one of: annual, casual, sick', status: 400 }
+  const leaveType = String(body?.leaveType || '').trim().toLowerCase().replace(/\s+/g, '').replace('leave', '')
+  const validTypes = ['annual', 'casual', 'sick', 'marriage', 'maternity', 'paternal', 'pilgrimage', 'paternity']
+  if (!validTypes.includes(leaveType)) {
+    return { error: 'leaveType must be one of: annual, casual, sick, marriage, maternity, paternal, pilgrimage', status: 400 }
   }
   const days = Math.floor(Number(body?.days) || 0)
   if (days <= 0) return { error: 'days must be a positive integer', status: 400 }
@@ -319,20 +416,28 @@ export async function hrEditDeduction(deductionId, body) {
     balances: {
       annual: parseInt(r.annual_leave || 0, 10),
       casual: parseInt(r.casual_leave || 0, 10),
-      sick: parseInt(r.sick_leave || 0, 10)
+      sick: parseInt(r.sick_leave || 0, 10),
+      marriage: parseInt(r.marriage_leave ?? defaultBalance.marriage, 10),
+      maternity: parseInt(r.maternity_leave ?? defaultBalance.maternity, 10),
+      paternal: parseInt(r.paternal_leave ?? defaultBalance.paternal, 10),
+      pilgrimage: parseInt(r.pilgrimage_leave ?? defaultBalance.pilgrimage, 10)
     }
   }
 }
 
 export async function createLeaveRequest(data) {
   const { employeeId, leaveType, startDate, endDate, reason } = data
-  if (!isAnnualLeaveRequestType(leaveType)) {
+
+  // Normalize and validate leave type
+  const normalizedType = getNormalizedLeaveType(leaveType)
+  if (!isPortalRequestableLeaveType(leaveType)) {
     return {
       error:
-        'Only annual leave can be requested in this portal. Casual and sick leave are managed through the Attendance system.',
+        'Invalid leave type. Allowed types: Annual Leave, Marriage Leave, Maternity Leave, Paternal Leave, Pilgrimage Leave. Casual and sick leave are managed through the Attendance system.',
       status: 400
     }
   }
+
   const range = validateLeaveDateRange(startDate, endDate)
   if (range.error) return { error: range.error, status: range.status }
   const { days } = range
@@ -340,9 +445,14 @@ export async function createLeaveRequest(data) {
   const eid = parseEmployeeId(employeeId)
   if (eid != null) {
     const bal = await getLeaveBalance(eid)
-    if (days > bal.annual) {
+    const balanceKey = getLeaveBalanceKey(leaveType)
+    if (!balanceKey) {
+      return { error: 'Could not determine leave balance type', status: 400 }
+    }
+
+    if (days > bal[balanceKey]) {
       return {
-        error: `Insufficient annual leave balance. You have ${bal.annual} day(s) available; this request needs ${days} calendar day(s).`,
+        error: `Insufficient ${normalizedType} balance. You have ${bal[balanceKey]} day(s) available; this request needs ${days} calendar day(s).`,
         status: 400
       }
     }
@@ -360,7 +470,7 @@ export async function createLeaveRequest(data) {
       if (isSenior) initialStatus = 'Pending HR'
     }
   }
-  const result = await leaveRepo.createLeaveRequest(employeeId, leaveType, startDate, endDate, reason, initialStatus)
+  const result = await leaveRepo.createLeaveRequest(employeeId, normalizedType, startDate, endDate, reason, initialStatus)
   const leaveRequestId = result[0].leave_request_id
 
   if (isEmailConfigured()) {
@@ -368,7 +478,7 @@ export async function createLeaveRequest(data) {
     if (transport) {
       try {
         const to = getLeaveNotificationEmail()
-        const subject = `New Leave Request ??? ${(leaveType && String(leaveType).trim()) || 'Leave'}`
+        const subject = `New Leave Request - ${normalizedType}`
         const body = [
           `Leave Request ID: ${leaveRequestId}`,
           `Employee ID: ${employeeId}`,

@@ -251,9 +251,14 @@ const employeesSelect = `
     e.department_id, d.department_name, e.position, e.designation_id, desg.desg_name AS designation_name,
     e.employee_type_id, et.emp_type_name AS employee_type_name, e.station_id, s.station_name,
     e.city_id, c.city_name,
-    e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold, e.join_date,
-    e.last_working_date,
-    e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+    e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold,
+    TO_CHAR(e.join_date, 'YYYY-MM-DD') AS join_date,
+    TO_CHAR(e.last_working_date, 'YYYY-MM-DD') AS last_working_date,
+    e.address,
+    TO_CHAR(e.date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
+    e.father_name, e.gender, e.marital_status, e.cnic_number,
+    TO_CHAR(e.cnic_issue_date, 'YYYY-MM-DD') AS cnic_issue_date,
+    TO_CHAR(e.cnic_expiry_date, 'YYYY-MM-DD') AS cnic_expiry_date,
     e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
     e.religion, e.grade, e.region, e.bio
 `
@@ -423,7 +428,8 @@ export async function getEmployeeByEmail(email) {
 
 export async function initLeaveBalanceForEmployee(employeeId) {
   return executeQuery(
-    'INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave) VALUES ($1, 14, 10, 6, 0)',
+    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
+     VALUES ($1, 14, 10, 6, 0, 10, 90, 7, 20)`,
     [employeeId]
   ).catch(() => {})
 }
@@ -530,8 +536,13 @@ export async function getEmployeeById(id) {
         e.employee_type_id, et.emp_type_name AS employee_type_name,
         e.station_id, s.station_name,
         e.city_id, c.city_name,
-        e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold, e.join_date,
-        e.address, e.date_of_birth, e.father_name, e.gender, e.marital_status, e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+        e.is_active, COALESCE(e.salary_slip_on_hold, false) AS salary_slip_on_hold,
+        TO_CHAR(e.join_date, 'YYYY-MM-DD') AS join_date,
+        e.address,
+        TO_CHAR(e.date_of_birth, 'YYYY-MM-DD') AS date_of_birth,
+        e.father_name, e.gender, e.marital_status, e.cnic_number,
+        TO_CHAR(e.cnic_issue_date, 'YYYY-MM-DD') AS cnic_issue_date,
+        TO_CHAR(e.cnic_expiry_date, 'YYYY-MM-DD') AS cnic_expiry_date,
         e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
         e.religion, e.grade, e.region, e.bio
       FROM employees e
