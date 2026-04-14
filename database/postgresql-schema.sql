@@ -83,7 +83,7 @@ CREATE TABLE IF NOT EXISTS leave_requests (
 CREATE TABLE IF NOT EXISTS leave_deduction_log (
     deduction_id SERIAL PRIMARY KEY,
     employee_id INTEGER NOT NULL,
-    leave_type VARCHAR(20) NOT NULL CHECK (leave_type IN ('annual', 'casual', 'sick')),
+    leave_type VARCHAR(20) NOT NULL CHECK (leave_type IN ('annual', 'casual', 'sick', 'marriage', 'maternity', 'paternal', 'pilgrimage')),
     days_deducted INTEGER NOT NULL CHECK (days_deducted > 0),
     reason TEXT NOT NULL,
     deducted_by_employee_id INTEGER NOT NULL,

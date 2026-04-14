@@ -299,11 +299,19 @@ export async function hrDeductLeaveBalance(body) {
     rows = await leaveRepo.createManualDeduction(targetEmployeeId, leaveType, days, reason, hid)
   } catch (err) {
     const msg = String(err?.message || '')
-    if (msg.includes('leave_deduction_log')) {
+    // Check for actual missing table error (relation does not exist)
+    if (msg.includes('relation') && msg.includes('does not exist')) {
       return {
         error:
           'Deduction log table is missing. Please run migration: database/migrations/leave_deduction_log_pg.sql',
         status: 500
+      }
+    }
+    // Check for check constraint violation on leave_type
+    if (msg.includes('check constraint') && msg.includes('leave_type')) {
+      return {
+        error: `Invalid leave type "${leaveType}" for deduction log. Please update the database constraint to include this leave type.`,
+        status: 400
       }
     }
     throw err
