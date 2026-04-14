@@ -9,10 +9,172 @@ const defaultBalance = {
   annual: 14,
   casual: 10,
   sick: 6,
+  carried: 0,
   marriage: 10,
   maternity: 90,
   paternal: 7,
   pilgrimage: 20
+}
+
+/** Calculate prorated annual leave for an employee based on join date.
+ * Formula: 14(AL)/12 * Remaining Months in completion of year
+ * After completing 1 year, employee gets full 14 days
+ */
+export async function calculateEmployeeAnnualLeave(employeeId) {
+  const joinDate = await leaveRepo.getEmployeeJoinDate(employeeId)
+  const prorated = leaveRepo.calculateProratedAnnualLeave(joinDate)
+
+  return {
+    employeeId,
+    joinDate,
+    calculatedAnnualLeave: prorated,
+    fullAnnualLeave: defaultBalance.annual,
+    isProrated: prorated < defaultBalance.annual,
+    note: prorated < defaultBalance.annual
+      ? `Prorated annual leave: ${prorated} days (Formula: 14/12 * remaining months in completion of year)`
+      : `Full annual leave: ${prorated} days (Employee has completed 1 year)`
+  }
+}
+
+/** Calculate prorated annual leave by employee code. */
+export async function calculateEmployeeAnnualLeaveByCode(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) return { error: 'Employee code is required', status: 400 }
+
+  const joinDate = await leaveRepo.getEmployeeJoinDateByCode(code)
+  if (!joinDate) {
+    return {
+      employeeCode: code,
+      joinDate: null,
+      calculatedAnnualLeave: defaultBalance.annual,
+      fullAnnualLeave: defaultBalance.annual,
+      isProrated: false,
+      note: 'No join date found. Using default annual leave.'
+    }
+  }
+
+  const prorated = leaveRepo.calculateProratedAnnualLeave(joinDate)
+
+  return {
+    employeeCode: code,
+    joinDate,
+    calculatedAnnualLeave: prorated,
+    fullAnnualLeave: defaultBalance.annual,
+    isProrated: prorated < defaultBalance.annual,
+    note: prorated < defaultBalance.annual
+      ? `Prorated annual leave: ${prorated} days (Formula: 14/12 * remaining months in completion of year)`
+      : `Full annual leave: ${prorated} days (Employee has completed 1 year)`
+  }
+}
+
+/** Rollover annual leave for an employee (2+ years): Move remaining annual to carried_forward and reset annual.
+ * HR can use this to process annual leave rollover for eligible employees.
+ */
+export async function rolloverAnnualLeaveForEmployee(hrEmployeeId, employeeCode) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can perform annual leave rollover', status: 403 }
+
+  const code = String(employeeCode || '').trim()
+  if (!code) return { error: 'Employee code is required', status: 400 }
+
+  try {
+    const result = await leaveRepo.rolloverAnnualLeaveByCode(code)
+
+    if (!result.eligible) {
+      return {
+        success: false,
+        employeeCode: code,
+        eligible: false,
+        reason: result.reason,
+        yearsOfService: result.yearsOfService,
+        status: 200
+      }
+    }
+
+    return {
+      success: true,
+      employeeCode: code,
+      eligible: true,
+      yearsOfService: result.yearsOfService,
+      previousAnnual: result.previousAnnual,
+      previousCarried: result.previousCarried,
+      rolledOverAmount: result.rolledOverAmount,
+      newAnnualLeave: result.newAnnualLeave,
+      newCarriedForward: result.newCarriedForward,
+      rolloverDate: result.rolloverDate,
+      message: `Annual leave rolled over successfully. ${result.rolledOverAmount} days moved to carried forward. New annual quota: ${result.newAnnualLeave} days.`
+    }
+  } catch (err) {
+    return { error: err?.message || 'Failed to rollover annual leave', status: 400 }
+  }
+}
+
+/** Bulk rollover for all eligible employees (2+ years).
+ * HR can use this at year-end to process all eligible employees at once.
+ */
+export async function bulkRolloverAnnualLeaves(hrEmployeeId) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can perform bulk annual leave rollover', status: 403 }
+
+  try {
+    const results = await leaveRepo.bulkRolloverAnnualLeaves()
+
+    return {
+      success: true,
+      processed: results.processed,
+      skipped: results.skipped,
+      total: results.processed + results.skipped,
+      details: results.details,
+      message: `Bulk rollover completed. ${results.processed} employees processed, ${results.skipped} skipped.`
+    }
+  } catch (err) {
+    return { error: err?.message || 'Failed to perform bulk rollover', status: 500 }
+  }
+}
+
+/** Check rollover eligibility for an employee. */
+export async function checkRolloverEligibility(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) return { error: 'Employee code is required', status: 400 }
+
+  try {
+    const joinDate = await leaveRepo.getEmployeeJoinDateByCode(code)
+    if (!joinDate) {
+      return {
+        employeeCode: code,
+        eligible: false,
+        reason: 'No join date found for employee'
+      }
+    }
+
+    const yearsOfService = leaveRepo.getYearsOfService(joinDate)
+    const eligible = leaveRepo.hasCompletedTwoYears(joinDate)
+
+    // Get current balance
+    const balance = await leaveRepo.getLeaveBalanceByEmployeeCode(code)
+    const currentAnnual = balance.length > 0 ? parseInt(balance[0].annual_leave || 0, 10) : 0
+    const currentCarried = balance.length > 0 ? parseInt(balance[0].carried_forward || 0, 10) : 0
+
+    return {
+      employeeCode: code,
+      eligible,
+      yearsOfService,
+      joinDate,
+      currentAnnual,
+      currentCarried,
+      projectedCarried: eligible ? currentAnnual + currentCarried : currentCarried,
+      newAnnualQuota: eligible ? defaultBalance.annual : null,
+      message: eligible
+        ? `Employee is eligible for rollover. ${currentAnnual} days will be added to carried forward, and annual leave will reset to ${defaultBalance.annual} days.`
+        : `Employee not eligible yet. Needs ${2 - yearsOfService} more year(s) to complete 2 years.`
+    }
+  } catch (err) {
+    return { error: err?.message || 'Failed to check eligibility', status: 400 }
+  }
 }
 
 /** All leave types that can be requested through the portal. */
@@ -201,13 +363,73 @@ export async function getLeaveBalance(employeeId) {
   if (result.length === 0) return defaultBalance
   const b = result[0]
   return {
+    employeeCode: b.employee_code || null,
     annual: parseInt(b.annual_leave || 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
     sick: parseInt(b.sick_leave || 0, 10),
+    carried: parseInt(b.carried_forward ?? 0, 10),
     marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
     maternity: parseInt(b.maternity_leave ?? defaultBalance.maternity, 10),
     paternal: parseInt(b.paternal_leave ?? defaultBalance.paternal, 10),
     pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10)
+  }
+}
+
+/** Get leave balance by employee code - returns data with employee_code field. */
+export async function getLeaveBalanceByCode(employeeCode) {
+  const result = await leaveRepo.getLeaveBalanceByEmployeeCode(employeeCode)
+  if (result.length === 0) {
+    // Return default balance with employee code
+    return {
+      employeeCode: employeeCode,
+      annual: defaultBalance.annual,
+      casual: defaultBalance.casual,
+      sick: defaultBalance.sick,
+      carried: 0,
+      marriage: defaultBalance.marriage,
+      maternity: defaultBalance.maternity,
+      paternal: defaultBalance.paternal,
+      pilgrimage: defaultBalance.pilgrimage
+    }
+  }
+  const b = result[0]
+  return {
+    employeeCode: b.employee_code,
+    annual: parseInt(b.annual_leave || 0, 10),
+    casual: parseInt(b.casual_leave ?? 0, 10),
+    sick: parseInt(b.sick_leave || 0, 10),
+    carried: parseInt(b.carried_forward ?? 0, 10),
+    marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
+    maternity: parseInt(b.maternity_leave ?? defaultBalance.maternity, 10),
+    paternal: parseInt(b.paternal_leave ?? defaultBalance.paternal, 10),
+    pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10),
+    updatedAt: b.updated_at
+  }
+}
+
+/** HR only: Get all leave balances with employee_code for all employees. */
+export async function getAllLeaveBalances(hrEmployeeId, limit = 100, offset = 0) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can view all leave balances', status: 403 }
+
+  const rows = await leaveRepo.getAllLeaveBalances(limit, offset)
+  return {
+    balances: rows.map(b => ({
+      employeeCode: b.employee_code,
+      annual: parseInt(b.annual_leave || 0, 10),
+      casual: parseInt(b.casual_leave ?? 0, 10),
+      sick: parseInt(b.sick_leave || 0, 10),
+      carried: parseInt(b.carried_forward ?? 0, 10),
+      marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
+      maternity: parseInt(b.maternity_leave ?? defaultBalance.maternity, 10),
+      paternal: parseInt(b.paternal_leave ?? defaultBalance.paternal, 10),
+      pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10),
+      updatedAt: b.updated_at
+    })),
+    limit,
+    offset
   }
 }
 
@@ -236,8 +458,10 @@ export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) 
     return { error: 'All leave quota values must be non-negative numbers', status: 400 }
   }
 
+  const carried = Math.max(0, Math.floor(Number(body?.carried) || 0))
+
   const rows = await leaveRepo.setAllLeaveBalanceTotals(tid, {
-    annual, casual, sick, marriage, maternity, paternal, pilgrimage
+    annual, casual, sick, carried, marriage, maternity, paternal, pilgrimage
   })
   if (!rows.length) return { error: 'Could not update leave balance', status: 400 }
   const b = rows[0]
@@ -246,10 +470,259 @@ export async function hrSetLeaveBalance(hrEmployeeId, targetEmployeeCode, body) 
     annual: parseInt(b.annual_leave || 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
     sick: parseInt(b.sick_leave || 0, 10),
+    carried: parseInt(b.carried_forward ?? 0, 10),
     marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
     maternity: parseInt(b.maternity_leave ?? defaultBalance.maternity, 10),
     paternal: parseInt(b.paternal_leave ?? defaultBalance.paternal, 10),
     pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10)
+  }
+}
+
+/** HR only: Bulk import leave quotas from CSV by employee_code.
+ * Gender-based assignment:
+ * - Female employees: maternity_leave only (paternal_leave = 0)
+ * - Male employees: paternal_leave only (maternity_leave = 0)
+ */
+export async function hrBulkImportLeaveBalances(hrEmployeeId, importRows) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can import leave quotas', status: 403 }
+
+  if (!Array.isArray(importRows) || importRows.length === 0) {
+    return { error: 'No data to import. Expected array of rows with employeeCode and leave balances.', status: 400 }
+  }
+
+  const results = []
+  const errors = []
+
+  for (const row of importRows) {
+    const code = String(row?.employeeCode || '').trim()
+    if (!code) {
+      errors.push({ row, error: 'Employee code is required' })
+      continue
+    }
+
+    // Get employee gender for gender-based leave assignment
+    const genderRows = await leaveRepo.getEmployeeGenderByCode(code)
+    const gender = genderRows || ''
+    const isFemale = gender === 'female'
+    const isMale = gender === 'male'
+
+    const annual = Math.max(0, Math.floor(Number(row?.annual)))
+    const casual = Math.max(0, Math.floor(Number(row?.casual)))
+    const sick = Math.max(0, Math.floor(Number(row?.sick)))
+    const carried = Math.max(0, Math.floor(Number(row?.carried) || 0))
+    const marriage = Math.max(0, Math.floor(Number(row?.marriage) || defaultBalance.marriage))
+
+    // Handle gender-based maternity/paternal leave assignment
+    // If CSV has explicit value, use it; otherwise use gender-based default
+    let maternity, paternal
+    if (row?.maternity !== undefined && row?.maternity !== '' && row?.maternity !== null) {
+      maternity = Math.max(0, Math.floor(Number(row.maternity)))
+    } else {
+      maternity = isFemale ? defaultBalance.maternity : 0
+    }
+
+    if (row?.paternal !== undefined && row?.paternal !== '' && row?.paternal !== null) {
+      paternal = Math.max(0, Math.floor(Number(row.paternal)))
+    } else {
+      paternal = isMale ? defaultBalance.paternal : 0
+    }
+
+    const pilgrimage = Math.max(0, Math.floor(Number(row?.pilgrimage) || defaultBalance.pilgrimage))
+
+    try {
+      const rows = await leaveRepo.upsertLeaveBalanceByEmployeeCode(code, {
+        annual, casual, sick, carried, marriage, maternity, paternal, pilgrimage
+      })
+      if (rows.length === 0) {
+        errors.push({ employeeCode: code, error: 'Employee not found' })
+      } else {
+        const b = rows[0]
+        results.push({
+          employeeCode: b.employee_code,
+          gender: gender || 'unknown',
+          annual: parseInt(b.annual_leave || 0, 10),
+          casual: parseInt(b.casual_leave ?? 0, 10),
+          sick: parseInt(b.sick_leave || 0, 10),
+          carried: parseInt(b.carried_forward ?? 0, 10),
+          marriage: parseInt(b.marriage_leave ?? defaultBalance.marriage, 10),
+          maternity: parseInt(b.maternity_leave ?? 0, 10),
+          paternal: parseInt(b.paternal_leave ?? 0, 10),
+          pilgrimage: parseInt(b.pilgrimage_leave ?? defaultBalance.pilgrimage, 10),
+          genderBasedAssignment: isFemale
+            ? 'Female: Maternity leave assigned'
+            : isMale
+              ? 'Male: Paternal leave assigned'
+              : 'Unknown gender: No special leave assigned'
+        })
+      }
+    } catch (err) {
+      errors.push({ employeeCode: code, error: err?.message || 'Failed to update' })
+    }
+  }
+
+  return {
+    imported: results.length,
+    failed: errors.length,
+    results,
+    errors
+  }
+}
+
+/** HR only: Allocate default leave quotas to ALL active employees at once.
+ * This is useful for initial setup or yearly refresh.
+ * - Annual leave is prorated based on join date (for < 1 year) or full 14 days (for 1+ year)
+ * - Gender-based assignment: Female get maternity (90), Male get paternal (7)
+ * - Existing carried_forward is preserved
+ * - NOTE: Casual and Sick leaves come from external Attendance System API, not allocated here
+ */
+export async function allocateAllEmployeesLeaveQuota(hrEmployeeId) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can allocate leave quotas', status: 403 }
+
+  // Get all active employees
+  const employees = await leaveRepo.getAllActiveEmployeesForAllocation()
+
+  if (!Array.isArray(employees) || employees.length === 0) {
+    return { error: 'No active employees found', status: 404 }
+  }
+
+  const results = []
+  const errors = []
+  let processed = 0
+  let skipped = 0
+
+  for (const emp of employees) {
+    try {
+      const isFemale = emp.gender === 'female'
+      const isMale = emp.gender === 'male'
+
+      // Calculate prorated annual leave based on join date
+      const proratedAnnual = leaveRepo.calculateProratedAnnualLeave(emp.join_date)
+
+      // Preserve existing carried_forward, casual, sick (from external API)
+      const carried = parseInt(emp.current_carried || 0, 10)
+      // Casual and Sick come from external Attendance System - preserve existing values
+      const casual = parseInt(emp.current_casual || 0, 10)
+      const sick = parseInt(emp.current_sick || 0, 10)
+
+      const data = {
+        employeeCode: emp.employee_code,
+        annual: proratedAnnual,
+        casual, // Preserved from external API
+        sick,   // Preserved from external API
+        marriage: defaultBalance.marriage,
+        maternity: isFemale ? defaultBalance.maternity : 0,
+        paternal: isMale ? defaultBalance.paternal : 0,
+        pilgrimage: defaultBalance.pilgrimage
+      }
+
+      const rows = await leaveRepo.upsertLeaveBalanceByEmployeeCode(emp.employee_code, data)
+
+      if (rows.length === 0) {
+        errors.push({ employeeCode: emp.employee_code, error: 'Failed to update' })
+        skipped++
+      } else {
+        const b = rows[0]
+        processed++
+        results.push({
+          employeeCode: b.employee_code,
+          gender: emp.gender || 'unknown',
+          annual: parseInt(b.annual_leave || 0, 10),
+          casual: parseInt(b.casual_leave ?? 0, 10), // From external API (preserved)
+          sick: parseInt(b.sick_leave || 0, 10),     // From external API (preserved)
+          carried: parseInt(b.carried_forward ?? 0, 10),
+          marriage: parseInt(b.marriage_leave ?? 0, 10),
+          maternity: parseInt(b.maternity_leave ?? 0, 10),
+          paternal: parseInt(b.paternal_leave ?? 0, 10),
+          pilgrimage: parseInt(b.pilgrimage_leave ?? 0, 10),
+          isProrated: proratedAnnual < leaveRepo.DEFAULT_ANNUAL,
+          yearsOfService: leaveRepo.getYearsOfService(emp.join_date),
+          note: 'Casual/Sick from Attendance System API'
+        })
+      }
+    } catch (err) {
+      errors.push({ employeeCode: emp.employee_code, error: err?.message || 'Failed to process' })
+      skipped++
+    }
+  }
+
+  return {
+    success: true,
+    total: employees.length,
+    processed,
+    skipped,
+    errors: errors.length,
+    details: results.slice(0, 50), // Return first 50 for preview
+    errorDetails: errors.slice(0, 10) // Return first 10 errors
+  }
+}
+
+/** HR: Import carried forward leaves only (one-time setup).
+ * This ONLY updates carried_forward field and does NOT modify other leave types.
+ * Use this for initial setup before automatic rollover takes over.
+ * @param {string|number} hrEmployeeId - HR employee ID
+ * @param {Array} importRows - Array of { employeeCode, carried }
+ * @returns {Object} Import results
+ */
+export async function importCarriedForwardOnly(hrEmployeeId, importRows) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(hid)
+  if (!isHr) return { error: 'Only HR can import carried forward leaves', status: 403 }
+
+  if (!Array.isArray(importRows) || importRows.length === 0) {
+    return { error: 'No import data provided', status: 400 }
+  }
+
+  const results = []
+  const errors = []
+  let imported = 0
+  let failed = 0
+
+  for (const row of importRows) {
+    const code = String(row?.employeeCode || '').trim()
+    const carriedDays = Math.max(0, Math.floor(Number(row?.carried) || 0))
+
+    if (!code) {
+      errors.push({ employeeCode: code || 'Unknown', error: 'Employee code is required' })
+      failed++
+      continue
+    }
+
+    try {
+      const rows = await leaveRepo.updateCarriedForwardByEmployeeCode(code, carriedDays)
+
+      if (rows.length === 0) {
+        errors.push({ employeeCode: code, error: 'Employee not found or no update made' })
+        failed++
+      } else {
+        const b = rows[0]
+        imported++
+        results.push({
+          employeeCode: b.employee_code,
+          carriedForward: parseInt(b.carried_forward || 0, 10),
+          annualLeave: parseInt(b.annual_leave || 0, 10)
+        })
+      }
+    } catch (err) {
+      errors.push({ employeeCode: code, error: err?.message || 'Failed to process' })
+      failed++
+    }
+  }
+
+  return {
+    success: true,
+    total: importRows.length,
+    imported,
+    failed,
+    errors: errors.length,
+    details: results.slice(0, 50),
+    errorDetails: errors.slice(0, 10)
   }
 }
 

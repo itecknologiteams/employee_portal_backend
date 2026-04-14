@@ -148,3 +148,134 @@ export async function hrEditDeduction(req, res) {
     res.status(500).json({ error: message })
   }
 }
+
+/** GET /balance-with-code/:employeeCode - Returns balance with employee_code field */
+export async function getLeaveBalanceWithCode(req, res) {
+  try {
+    const { employeeCode } = req.params
+    if (!employeeCode?.trim()) return res.status(400).json({ error: 'Employee code is required' })
+    const balance = await leaveService.getLeaveBalanceByCode(employeeCode.trim())
+    res.json(balance)
+  } catch (error) {
+    console.error('Leave balance with code error:', error)
+    res.status(500).json({ error: 'Failed to fetch leave balance' })
+  }
+}
+
+/** HR: GET /hr/all-balances?hrEmployeeId=&limit=&offset= - Returns all balances with employee_code */
+export async function getAllLeaveBalances(req, res) {
+  try {
+    const hrEmployeeId = req.query?.hrEmployeeId || req.body?.hrEmployeeId
+    const limit = Math.min(1000, Math.max(1, parseInt(req.query?.limit || req.body?.limit || 100, 10)))
+    const offset = Math.max(0, parseInt(req.query?.offset || req.body?.offset || 0, 10))
+    const result = await leaveService.getAllLeaveBalances(hrEmployeeId, limit, offset)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Get all leave balances error:', error)
+    res.status(500).json({ error: 'Failed to fetch leave balances' })
+  }
+}
+
+/** HR: POST /hr/bulk-import body { hrEmployeeId, data: [{ employeeCode, annual, casual, sick, carried, marriage, maternity, paternal, pilgrimage }] } */
+export async function hrBulkImportBalances(req, res) {
+  try {
+    const hrEmployeeId = req.body?.hrEmployeeId || req.body?.hrEmployeeCode
+    const data = req.body?.data || req.body?.rows || []
+    const result = await leaveService.hrBulkImportLeaveBalances(hrEmployeeId, data)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Bulk import leave balances error:', error)
+    res.status(500).json({ error: 'Failed to import leave balances' })
+  }
+}
+
+/** HR: POST /hr/allocate-all body { hrEmployeeId }
+ * Allocates default leave quotas to ALL active employees at once.
+ * Uses prorated annual leave for < 1 year, full 14 days for 1+ year.
+ * Gender-based assignment: Female (maternity=90), Male (paternal=7)
+ */
+export async function allocateAllEmployees(req, res) {
+  try {
+    const hrEmployeeId = req.body?.hrEmployeeId || req.query?.hrEmployeeId
+    const result = await leaveService.allocateAllEmployeesLeaveQuota(hrEmployeeId)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Allocate all employees error:', error)
+    res.status(500).json({ error: 'Failed to allocate leave quotas to all employees' })
+  }
+}
+
+/** HR: POST /hr/import-carried-forward body { hrEmployeeId, data: [{ employeeCode, carried }] }
+ * Import carried forward leaves only (one-time setup).
+ * This ONLY updates carried_forward field and does NOT modify other leave types.
+ */
+export async function importCarriedForward(req, res) {
+  try {
+    const hrEmployeeId = req.body?.hrEmployeeId || req.body?.hrEmployeeCode
+    const data = req.body?.data || req.body?.rows || []
+    const result = await leaveService.importCarriedForwardOnly(hrEmployeeId, data)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Import carried forward error:', error)
+    res.status(500).json({ error: 'Failed to import carried forward leaves' })
+  }
+}
+
+/** GET /calculate-annual-leave/:employeeCode - Calculate prorated annual leave based on join date */
+export async function calculateAnnualLeave(req, res) {
+  try {
+    const { employeeCode } = req.params
+    if (!employeeCode?.trim()) return res.status(400).json({ error: 'Employee code is required' })
+    const result = await leaveService.calculateEmployeeAnnualLeaveByCode(employeeCode.trim())
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Calculate annual leave error:', error)
+    res.status(500).json({ error: 'Failed to calculate annual leave' })
+  }
+}
+
+/** HR: POST /hr/rollover-annual-leave body { hrEmployeeId, employeeCode } - Rollover annual leave for one employee */
+export async function hrRolloverAnnualLeave(req, res) {
+  try {
+    const { employeeCode } = req.params
+    const hrEmployeeId = req.body?.hrEmployeeId || req.body?.hrEmployeeCode
+    const result = await leaveService.rolloverAnnualLeaveForEmployee(hrEmployeeId, employeeCode)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Rollover annual leave error:', error)
+    res.status(500).json({ error: 'Failed to rollover annual leave' })
+  }
+}
+
+/** HR: POST /hr/bulk-rollover body { hrEmployeeId } - Bulk rollover for all eligible employees */
+export async function hrBulkRollover(req, res) {
+  try {
+    const hrEmployeeId = req.body?.hrEmployeeId || req.body?.hrEmployeeCode
+    const result = await leaveService.bulkRolloverAnnualLeaves(hrEmployeeId)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Bulk rollover error:', error)
+    res.status(500).json({ error: 'Failed to perform bulk rollover' })
+  }
+}
+
+/** HR: GET /hr/rollover-eligibility/:employeeCode - Check if employee is eligible for rollover */
+export async function checkRolloverEligibility(req, res) {
+  try {
+    const { employeeCode } = req.params
+    if (!employeeCode?.trim()) return res.status(400).json({ error: 'Employee code is required' })
+    const result = await leaveService.checkRolloverEligibility(employeeCode.trim())
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Check rollover eligibility error:', error)
+    res.status(500).json({ error: 'Failed to check rollover eligibility' })
+  }
+}

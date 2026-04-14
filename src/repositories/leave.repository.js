@@ -37,22 +37,461 @@ export function getLeaveBalanceColumn(leaveType) {
   return null
 }
 
+/** Get employee join date for calculating prorated annual leave. */
+export async function getEmployeeJoinDate(employeeId) {
+  const rows = await executeQuery(
+    'SELECT join_date FROM employees WHERE employee_id = $1',
+    [employeeId]
+  )
+  return rows[0]?.join_date ?? null
+}
+
+/** Calculate prorated annual leave based on join date.
+ * Formula: 14(AL)/12 * Remaining Months in completion of year
+ * After completing 1 year, employee gets full 14 days
+ */
+export function calculateProratedAnnualLeave(joinDate) {
+  if (!joinDate) return DEFAULT_ANNUAL
+
+  const today = new Date()
+  const join = new Date(joinDate)
+
+  // Calculate one year anniversary date
+  const oneYearAnniversary = new Date(join)
+  oneYearAnniversary.setFullYear(oneYearAnniversary.getFullYear() + 1)
+
+  // If employee has completed 1 year, return full annual leave
+  if (today >= oneYearAnniversary) {
+    return DEFAULT_ANNUAL
+  }
+
+  // Calculate remaining months until 1 year completion
+  // Count full months from next month after joining until the 1-year mark
+  let remainingMonths = 0
+
+  // Start from the month after join month
+  const startMonth = new Date(join.getFullYear(), join.getMonth() + 1, 1)
+
+  // Count months until one year anniversary
+  let current = new Date(startMonth)
+  while (current < oneYearAnniversary) {
+    remainingMonths++
+    current.setMonth(current.getMonth() + 1)
+  }
+
+  // Formula: 14/12 * Remaining Months
+  // Round to nearest integer (at least 1 day if they just joined)
+  const prorated = Math.max(1, Math.round((DEFAULT_ANNUAL / 12) * remainingMonths))
+
+  return prorated
+}
+
+/** Calculate prorated annual leave by employee code. */
+export async function calculateProratedAnnualLeaveByCode(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) return DEFAULT_ANNUAL
+
+  const rows = await executeQuery(
+    'SELECT join_date FROM employees WHERE employee_code = $1',
+    [code]
+  )
+
+  return calculateProratedAnnualLeave(rows[0]?.join_date)
+}
+
+/** Check if employee has completed 2 or more years. */
+export function hasCompletedTwoYears(joinDate) {
+  if (!joinDate) return false
+
+  const today = new Date()
+  const join = new Date(joinDate)
+
+  // Calculate two year anniversary date
+  const twoYearAnniversary = new Date(join)
+  twoYearAnniversary.setFullYear(twoYearAnniversary.getFullYear() + 2)
+
+  return today >= twoYearAnniversary
+}
+
+/** Get years of service for an employee. */
+export function getYearsOfService(joinDate) {
+  if (!joinDate) return 0
+
+  const today = new Date()
+  const join = new Date(joinDate)
+
+  let years = today.getFullYear() - join.getFullYear()
+
+  // Adjust if anniversary hasn't occurred yet this year
+  const anniversaryThisYear = new Date(join)
+  anniversaryThisYear.setFullYear(today.getFullYear())
+
+  if (today < anniversaryThisYear) {
+    years--
+  }
+
+  return Math.max(0, years)
+}
+
+/** Annual leave rollover: Move remaining annual leaves to carried_forward and reset annual leave.
+ * This should be called when an employee completes 2+ years.
+ * Returns the rollover details or null if not eligible.
+ */
+export async function rolloverAnnualLeave(employeeId) {
+  // Get employee join date and current balance
+  const employeeRows = await executeQuery(
+    `SELECT e.join_date, lb.annual_leave, lb.carried_forward
+     FROM employees e
+     LEFT JOIN leave_balance lb ON lb.employee_id = e.employee_id
+     WHERE e.employee_id = $1`,
+    [employeeId]
+  )
+
+  if (employeeRows.length === 0) {
+    throw new Error('Employee not found')
+  }
+
+  const { join_date, annual_leave, carried_forward } = employeeRows[0]
+
+  // Check if employee has completed 2 years
+  if (!hasCompletedTwoYears(join_date)) {
+    return {
+      eligible: false,
+      reason: 'Employee has not completed 2 years yet',
+      yearsOfService: getYearsOfService(join_date)
+    }
+  }
+
+  const currentAnnual = parseInt(annual_leave || 0, 10)
+  const currentCarried = parseInt(carried_forward || 0, 10)
+
+  // Calculate new carried forward (remaining annual + existing carried)
+  const newCarriedForward = currentAnnual + currentCarried
+
+  // Reset annual leave to default (14 days) - this is the new quota
+  const newAnnualLeave = DEFAULT_ANNUAL
+
+  // Perform the rollover
+  const result = await executeQuery(
+    `UPDATE leave_balance
+     SET annual_leave = $2,
+         carried_forward = $3,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1
+     RETURNING annual_leave, carried_forward, updated_at`,
+    [employeeId, newAnnualLeave, newCarriedForward]
+  )
+
+  if (result.length === 0) {
+    throw new Error('Failed to update leave balance')
+  }
+
+  return {
+    eligible: true,
+    yearsOfService: getYearsOfService(join_date),
+    previousAnnual: currentAnnual,
+    previousCarried: currentCarried,
+    newAnnualLeave: result[0].annual_leave,
+    newCarriedForward: result[0].carried_forward,
+    rolledOverAmount: currentAnnual,
+    rolloverDate: result[0].updated_at
+  }
+}
+
+/** Rollover annual leave by employee code. */
+export async function rolloverAnnualLeaveByCode(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) throw new Error('Employee code is required')
+
+  // Get employee ID
+  const rows = await executeQuery(
+    'SELECT employee_id FROM employees WHERE employee_code = $1',
+    [code]
+  )
+
+  if (rows.length === 0) {
+    throw new Error('Employee not found')
+  }
+
+  return rolloverAnnualLeave(rows[0].employee_id)
+}
+
+/** Bulk rollover for all eligible employees (2+ years).
+ * Returns summary of processed employees.
+ */
+export async function bulkRolloverAnnualLeaves() {
+  // Get all employees with 2+ years of service
+  const eligibleEmployees = await executeQuery(
+    `SELECT e.employee_id, e.employee_code, e.join_date,
+            lb.annual_leave, lb.carried_forward
+     FROM employees e
+     LEFT JOIN leave_balance lb ON lb.employee_id = e.employee_id
+     WHERE e.join_date <= $1
+       AND e.is_active = true`,
+    [new Date(Date.now() - 2 * 365 * 24 * 60 * 60 * 1000).toISOString().split('T')[0]] // 2 years ago
+  )
+
+  const results = {
+    processed: 0,
+    skipped: 0,
+    details: []
+  }
+
+  for (const emp of eligibleEmployees) {
+    try {
+      if (!hasCompletedTwoYears(emp.join_date)) {
+        results.skipped++
+        continue
+      }
+
+      const currentAnnual = parseInt(emp.annual_leave || 0, 10)
+      const currentCarried = parseInt(emp.carried_forward || 0, 10)
+      const newCarriedForward = currentAnnual + currentCarried
+
+      await executeQuery(
+        `UPDATE leave_balance
+         SET annual_leave = $2,
+             carried_forward = $3,
+             updated_at = CURRENT_TIMESTAMP
+         WHERE employee_id = $1`,
+        [emp.employee_id, DEFAULT_ANNUAL, newCarriedForward]
+      )
+
+      results.processed++
+      results.details.push({
+        employeeCode: emp.employee_code,
+        yearsOfService: getYearsOfService(emp.join_date),
+        rolledOverAmount: currentAnnual,
+        newCarriedForward,
+        newAnnualLeave: DEFAULT_ANNUAL
+      })
+    } catch (err) {
+      results.details.push({
+        employeeCode: emp.employee_code,
+        error: err?.message || 'Failed to process'
+      })
+    }
+  }
+
+  return results
+}
+
 export async function ensureLeaveBalanceRow(employeeId) {
+  // Get employee join date and calculate prorated annual leave
+  const joinDate = await getEmployeeJoinDate(employeeId)
+  const proratedAnnual = calculateProratedAnnualLeave(joinDate)
+
+  // Insert with gender-based leave assignments
   await executeQuery(
-    `INSERT INTO leave_balance (employee_id, annual_leave, casual_leave, sick_leave, personal_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
-     VALUES ($1, $2, $3, $4, 0, $5, $6, $7, $8)
+    `INSERT INTO leave_balance (employee_id, employee_code, annual_leave, casual_leave, sick_leave, personal_leave, carried_forward, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
+     SELECT $1, e.employee_code, $2, $3, $4, 0, 0, $5,
+       CASE WHEN LOWER(TRIM(e.gender)) = 'female' THEN $6 ELSE 0 END,
+       CASE WHEN LOWER(TRIM(e.gender)) = 'male' THEN $7 ELSE 0 END,
+       $8
+     FROM employees e WHERE e.employee_id = $1
      ON CONFLICT (employee_id) DO NOTHING`,
-    [employeeId, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK, DEFAULT_MARRIAGE, DEFAULT_MATERNITY, DEFAULT_PATERNAL, DEFAULT_PILGRIMAGE]
+    [employeeId, proratedAnnual, DEFAULT_CASUAL, DEFAULT_SICK, DEFAULT_MARRIAGE, DEFAULT_MATERNITY, DEFAULT_PATERNAL, DEFAULT_PILGRIMAGE]
+  )
+}
+
+/** Create or update leave balance by employee_code (for CSV import).
+ * Gender-based leave assignment:
+ * - Female employees: maternity_leave only
+ * - Male employees: paternal_leave only
+ */
+export async function upsertLeaveBalanceByEmployeeCode(employeeCode, balances) {
+  const code = String(employeeCode || '').trim()
+  if (!code) throw new Error('Employee code is required')
+
+  // Calculate prorated annual leave if not explicitly provided
+  const joinDate = await getEmployeeJoinDateByCode(code)
+  const proratedAnnual = calculateProratedAnnualLeave(joinDate)
+
+  // Get employee gender for gender-based leave assignment
+  const genderRows = await executeQuery(
+    `SELECT LOWER(TRIM(gender)) as gender FROM employees WHERE employee_code = $1`,
+    [code]
+  )
+  const gender = genderRows[0]?.gender || ''
+  const isFemale = gender === 'female'
+  const isMale = gender === 'male'
+
+  const {
+    annual = proratedAnnual, // Use prorated annual leave if not provided
+    casual = DEFAULT_CASUAL,
+    sick = DEFAULT_SICK,
+    carried = 0,
+    marriage = DEFAULT_MARRIAGE,
+    // Gender-based defaults: maternity for female, paternal for male
+    maternity = isFemale ? DEFAULT_MATERNITY : 0,
+    paternal = isMale ? DEFAULT_PATERNAL : 0,
+    pilgrimage = DEFAULT_PILGRIMAGE
+  } = balances
+
+  return executeQuery(
+    `INSERT INTO leave_balance (employee_id, employee_code, annual_leave, casual_leave, sick_leave, personal_leave, carried_forward, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
+     SELECT e.employee_id, e.employee_code, $2, $3, $4, 0, $5, $6, $7, $8, $9
+     FROM employees e WHERE e.employee_code = $1
+     ON CONFLICT (employee_id) DO UPDATE SET
+       annual_leave = EXCLUDED.annual_leave,
+       casual_leave = EXCLUDED.casual_leave,
+       sick_leave = EXCLUDED.sick_leave,
+       carried_forward = EXCLUDED.carried_forward,
+       marriage_leave = EXCLUDED.marriage_leave,
+       maternity_leave = EXCLUDED.maternity_leave,
+       paternal_leave = EXCLUDED.paternal_leave,
+       pilgrimage_leave = EXCLUDED.pilgrimage_leave,
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING employee_id, employee_code, annual_leave, casual_leave, sick_leave, carried_forward, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave`,
+    [code, annual, casual, sick, carried, marriage, maternity, paternal, pilgrimage]
+  )
+}
+
+/** Update only carried_forward for an employee by employee_code.
+ * This is used for the one-time carried forward import.
+ * Does NOT modify other leave types.
+ */
+export async function updateCarriedForwardByEmployeeCode(employeeCode, carriedDays) {
+  const code = String(employeeCode || '').trim()
+  if (!code) throw new Error('Employee code is required')
+
+  const carried = Math.max(0, Math.floor(Number(carriedDays) || 0))
+
+  // First ensure the employee has a leave_balance row
+  await executeQuery(
+    `INSERT INTO leave_balance (employee_id, employee_code, annual_leave, casual_leave, sick_leave, personal_leave, carried_forward, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
+     SELECT e.employee_id, e.employee_code, $2, $3, $4, 0, $5, $6,
+       CASE WHEN LOWER(TRIM(e.gender)) = 'female' THEN $7 ELSE 0 END,
+       CASE WHEN LOWER(TRIM(e.gender)) = 'male' THEN $8 ELSE 0 END,
+       $9
+     FROM employees e WHERE e.employee_code = $1
+     ON CONFLICT (employee_id) DO NOTHING`,
+    [
+      code,
+      DEFAULT_ANNUAL,
+      DEFAULT_CASUAL,
+      DEFAULT_SICK,
+      0, // carried_forward - will be updated below
+      DEFAULT_MARRIAGE,
+      DEFAULT_MATERNITY,
+      DEFAULT_PATERNAL,
+      DEFAULT_PILGRIMAGE
+    ]
+  )
+
+  // Now update only carried_forward
+  return executeQuery(
+    `UPDATE leave_balance lb
+     SET carried_forward = $2,
+         updated_at = CURRENT_TIMESTAMP
+     FROM employees e
+     WHERE lb.employee_id = e.employee_id
+       AND e.employee_code = $1
+     RETURNING lb.employee_id, e.employee_code, lb.carried_forward, lb.annual_leave`,
+    [code, carried]
+  )
+}
+
+/** Get employee join date by employee code. */
+export async function getEmployeeJoinDateByCode(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) return null
+
+  const rows = await executeQuery(
+    'SELECT join_date FROM employees WHERE employee_code = $1',
+    [code]
+  )
+  return rows[0]?.join_date ?? null
+}
+
+/** Get employee gender by employee code. */
+export async function getEmployeeGenderByCode(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) return null
+
+  const rows = await executeQuery(
+    'SELECT LOWER(TRIM(gender)) as gender FROM employees WHERE employee_code = $1',
+    [code]
+  )
+  return rows[0]?.gender ?? null
+}
+
+/** Get all active employees for bulk leave allocation.
+ * Includes their current leave balance (if exists) and gender.
+ */
+export async function getAllActiveEmployeesForAllocation() {
+  return executeQuery(
+    `SELECT
+        e.employee_id,
+        e.employee_code,
+        LOWER(TRIM(e.gender)) as gender,
+        e.join_date,
+        COALESCE(lb.annual_leave, 0) as current_annual,
+        COALESCE(lb.carried_forward, 0) as current_carried,
+        COALESCE(lb.casual_leave, 0) as current_casual,
+        COALESCE(lb.sick_leave, 0) as current_sick,
+        COALESCE(lb.marriage_leave, 0) as current_marriage,
+        COALESCE(lb.maternity_leave, 0) as current_maternity,
+        COALESCE(lb.paternal_leave, 0) as current_paternal,
+        COALESCE(lb.pilgrimage_leave, 0) as current_pilgrimage
+     FROM employees e
+     LEFT JOIN leave_balance lb ON lb.employee_id = e.employee_id
+     WHERE e.is_active = true
+     ORDER BY e.employee_code`,
+    []
   )
 }
 
 export async function getLeaveBalance(employeeId) {
   await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
-    `SELECT lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave,
-            lb.marriage_leave, lb.maternity_leave, lb.paternal_leave, lb.pilgrimage_leave
+    `SELECT lb.employee_code, lb.annual_leave, COALESCE(lb.casual_leave, 10) AS casual_leave, lb.sick_leave, lb.personal_leave,
+            lb.carried_forward, lb.marriage_leave, lb.maternity_leave, lb.paternal_leave, lb.pilgrimage_leave
      FROM leave_balance lb WHERE lb.employee_id = $1`,
     [employeeId]
+  )
+}
+
+/** Get all leave balances with employee_code for HR overview. */
+export async function getAllLeaveBalances(limit = 100, offset = 0) {
+  return executeQuery(
+    `SELECT
+        lb.employee_code,
+        lb.annual_leave,
+        lb.casual_leave,
+        lb.sick_leave,
+        lb.personal_leave,
+        lb.carried_forward,
+        lb.marriage_leave,
+        lb.maternity_leave,
+        lb.paternal_leave,
+        lb.pilgrimage_leave,
+        lb.updated_at
+     FROM leave_balance lb
+     ORDER BY lb.employee_code
+     LIMIT $1 OFFSET $2`,
+    [limit, offset]
+  )
+}
+
+/** Get single employee leave balance by employee_code. */
+export async function getLeaveBalanceByEmployeeCode(employeeCode) {
+  return executeQuery(
+    `SELECT
+        lb.employee_code,
+        lb.annual_leave,
+        COALESCE(lb.casual_leave, 10) AS casual_leave,
+        lb.sick_leave,
+        lb.personal_leave,
+        lb.carried_forward,
+        lb.marriage_leave,
+        lb.maternity_leave,
+        lb.paternal_leave,
+        lb.pilgrimage_leave,
+        lb.updated_at
+     FROM leave_balance lb
+     WHERE lb.employee_code = $1`,
+    [employeeCode.trim()]
   )
 }
 
@@ -128,32 +567,47 @@ export async function setLeaveBalanceTotals(employeeId, annual, casual, sick) {
   )
 }
 
-/** HR: set all portal-managed leave totals including new types. */
+/** HR: set all portal-managed leave totals including new types.
+ * Respects gender-based assignments for maternity/paternal leave.
+ */
 export async function setAllLeaveBalanceTotals(employeeId, balances) {
+  // Get employee gender for gender-based leave assignment
+  const genderRows = await executeQuery(
+    `SELECT LOWER(TRIM(gender)) as gender FROM employees WHERE employee_id = $1`,
+    [employeeId]
+  )
+  const gender = genderRows[0]?.gender || ''
+  const isFemale = gender === 'female'
+  const isMale = gender === 'male'
+
   const {
     annual = DEFAULT_ANNUAL,
     casual = DEFAULT_CASUAL,
     sick = DEFAULT_SICK,
+    carried = 0,
     marriage = DEFAULT_MARRIAGE,
-    maternity = DEFAULT_MATERNITY,
-    paternal = DEFAULT_PATERNAL,
+    // If maternity/paternal not explicitly provided, use gender-based defaults
+    maternity = isFemale ? DEFAULT_MATERNITY : 0,
+    paternal = isMale ? DEFAULT_PATERNAL : 0,
     pilgrimage = DEFAULT_PILGRIMAGE
   } = balances
+
   await ensureLeaveBalanceRow(employeeId)
   return executeQuery(
     `UPDATE leave_balance SET
        annual_leave = $2,
        casual_leave = $3,
        sick_leave = $4,
-       marriage_leave = $5,
-       maternity_leave = $6,
-       paternal_leave = $7,
-       pilgrimage_leave = $8,
+       carried_forward = $5,
+       marriage_leave = $6,
+       maternity_leave = $7,
+       paternal_leave = $8,
+       pilgrimage_leave = $9,
        personal_leave = 0,
        updated_at = CURRENT_TIMESTAMP
      WHERE employee_id = $1
-     RETURNING annual_leave, casual_leave, sick_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave`,
-    [employeeId, annual, casual, sick, marriage, maternity, paternal, pilgrimage]
+     RETURNING annual_leave, casual_leave, sick_leave, carried_forward, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave`,
+    [employeeId, annual, casual, sick, carried, marriage, maternity, paternal, pilgrimage]
   )
 }
 
