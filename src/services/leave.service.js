@@ -2,8 +2,58 @@ import * as leaveRepo from '../repositories/leave.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
-import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
+import { getEmployeeIdByCode, findEmployeeByEmployeeId } from '../repositories/auth.repository.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
+
+/** External ICS Attendance System API Base URL */
+const ICS_API_BASE_URL = 'http://192.168.20.244:3002'
+
+/**
+ * Call external ICS Attendance System API to sync leave status.
+ * This is used when HOD approves/rejects a leave request.
+ * @param {Object} params - Leave sync parameters
+ * @param {string} params.employeeCode - Employee code
+ * @param {number} params.leaveId - Leave request ID from portal
+ * @param {string} params.status - 'Approved' or 'Rejected'
+ * @param {string} params.leaveType - Leave type (Casual, Sick, etc.)
+ * @param {string} params.startDate - Start date (YYYY-MM-DD)
+ * @param {string} params.endDate - End date (YYYY-MM-DD)
+ * @returns {Promise<Object>} External API response
+ */
+async function syncLeaveStatusToICS(params) {
+  const { employeeCode, leaveId, status, leaveType, startDate, endDate } = params
+
+  try {
+    const response = await fetch(`${ICS_API_BASE_URL}/leaves/update-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        emp_code: employeeCode,
+        portal_leave_id: leaveId,
+        status: status.toLowerCase(), // 'approved' or 'rejected'
+        leave_type: leaveType,
+        start_date: startDate,
+        end_date: endDate,
+        source: 'portal',
+        synced_at: new Date().toISOString()
+      }),
+      timeout: 10000
+    })
+
+    if (!response.ok) {
+      console.error(`ICS API Error: ${response.status} - ${response.statusText}`)
+      return { success: false, error: `External API returned ${response.status}` }
+    }
+
+    const data = await response.json()
+    console.log(`✅ Leave ${leaveId} status synced to ICS:`, data)
+    return { success: true, data }
+  } catch (error) {
+    console.error('❌ Failed to sync leave status to ICS:', error.message)
+    // Return failure but don't throw - we don't want to block the portal flow
+    return { success: false, error: error.message }
+  }
+}
 
 const defaultBalance = {
   annual: 14,
@@ -1020,7 +1070,7 @@ export async function createLeaveRequest(data) {
 
 /** Update leave request status. HR can approve/reject from Pending or Pending HR. HOD can set Pending -> Pending HR or Rejected. */
 export async function updateLeaveStatus(leaveRequestId, body) {
-  const { status } = body || {}
+  const { status, source } = body || {}
   const reqId = parseInt(leaveRequestId, 10)
   if (Number.isNaN(reqId)) return { error: 'Valid leave request ID is required', status: 400 }
   const eid = await resolveApproverEmployeeId(body || {})
@@ -1031,6 +1081,9 @@ export async function updateLeaveStatus(leaveRequestId, body) {
   const normalizedStatus = (status && String(status).trim()) || ''
   const leave = await leaveRepo.getLeaveRequestById(reqId)
   if (!leave) return { error: 'Leave request not found', status: 404 }
+
+  // Check if this is an ICS leave (requires only HOD approval, no HR)
+  const isIcsLeave = source === 'ics'
 
   const current = (leave.status || 'Pending').trim()
 
@@ -1046,6 +1099,21 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         const rej = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
         if (!rej || rej.length === 0) return { error: 'Could not update status', status: 400 }
       }
+
+      // Sync leave status to external ICS Attendance System (HR approval - non-blocking)
+      const empData = await findEmployeeByEmployeeId(leave.employee_id)
+      const employeeCode = empData?.employee_code || empData?.code
+      if (employeeCode) {
+        syncLeaveStatusToICS({
+          employeeCode,
+          leaveId: reqId,
+          status: normalizedStatus,
+          leaveType: leave.leave_type || 'Annual',
+          startDate: leave.start_date,
+          endDate: leave.end_date
+        }).catch(err => console.error('ICS sync error (non-blocking):', err?.message))
+      }
+
       const applicantId = parseInt(leave.employee_id, 10)
       if (!Number.isNaN(applicantId)) {
         notifSvc.notifySafe(notifSvc.notify({
@@ -1060,16 +1128,52 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       }
       return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
     }
-    // HOD can set Pending HR (forward to HR) or Rejected
-    if (normalizedStatus !== 'Pending HR' && normalizedStatus !== 'Rejected') {
-      return { error: 'HOD can set status to Pending HR (approve for next step) or Rejected', status: 400 }
+    // HOD can set Pending HR (forward to HR) or Rejected for portal leaves
+    // For ICS leaves, HOD can directly Approve or Reject (no HR needed)
+    const hodAllowedStatuses = isIcsLeave
+      ? ['Approved', 'Rejected']
+      : ['Pending HR', 'Rejected']
+
+    if (!hodAllowedStatuses.includes(normalizedStatus)) {
+      return {
+        error: isIcsLeave
+          ? 'HOD can directly approve or reject ICS leave requests'
+          : 'HOD can set status to Pending HR (forward to HR) or Rejected',
+        status: 400
+      }
     }
+
     const hodId = await reqRepo.getHodByDepartment(leave.department_id)
     if (hodId == null || hodId !== eid) {
       return { error: 'Only HOD of the applicant\'s department can approve or reject', status: 403 }
     }
-    const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
+
+    // For ICS leaves: directly set to Approved or Rejected
+    // For portal leaves: set to Pending HR (if approved) or Rejected
+    const effectiveStatus = isIcsLeave ? normalizedStatus : normalizedStatus
+    const result = await leaveRepo.updateLeaveRequestStatus(reqId, effectiveStatus, 'Pending')
     if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+
+    // Sync leave status to external ICS Attendance System (non-blocking)
+    // Get employee code for external API
+    const empData = await findEmployeeByEmployeeId(leave.employee_id)
+    const employeeCode = empData?.employee_code || empData?.code
+    if (employeeCode) {
+      // For ICS leaves: sync actual status (Approved/Rejected)
+      // For portal leaves: sync 'Approved' when forwarded to HR, 'Rejected' when rejected
+      const icsStatus = isIcsLeave ? normalizedStatus : (normalizedStatus === 'Pending HR' ? 'Approved' : 'Rejected')
+      syncLeaveStatusToICS({
+        employeeCode,
+        leaveId: reqId,
+        status: icsStatus,
+        leaveType: leave.leave_type || 'Annual',
+        startDate: leave.start_date,
+        endDate: leave.end_date
+      }).catch(err => console.error('ICS sync error (non-blocking):', err?.message))
+    } else {
+      console.warn(`⚠️ Could not find employee_code for employee_id ${leave.employee_id}, skipping ICS sync`)
+    }
+
     if (normalizedStatus === 'Pending HR' && isEmailConfigured()) {
       const transport = getEmailTransport()
       if (transport) {
@@ -1096,7 +1200,8 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         }
       }
     }
-    if (normalizedStatus === 'Pending HR') {
+    if (normalizedStatus === 'Pending HR' && !isIcsLeave) {
+      // Only notify HR for portal leaves (not ICS leaves)
       notifSvc.notifySafe(notifSvc.notifyMany(await notifRepo.getHrEmployeeIds(), {
         type: 'leave_pending_hr',
         title: 'Leave forwarded to HR',
@@ -1105,6 +1210,21 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         relatedEntityType: 'leave',
         relatedEntityId: reqId
       }))
+    }
+    if (normalizedStatus === 'Approved' && isIcsLeave) {
+      // Notify applicant when ICS leave is directly approved by HOD
+      const applicantIdApproved = parseInt(leave.employee_id, 10)
+      if (!Number.isNaN(applicantIdApproved)) {
+        notifSvc.notifySafe(notifSvc.notify({
+          recipientEmployeeId: applicantIdApproved,
+          type: 'leave_approved',
+          title: 'Leave approved',
+          body: `Your ICS leave request #${reqId} was approved by HOD.`,
+          url: '/leave',
+          relatedEntityType: 'leave',
+          relatedEntityId: reqId
+        }))
+      }
     }
     if (normalizedStatus === 'Rejected') {
       const applicantId = parseInt(leave.employee_id, 10)
@@ -1120,7 +1240,14 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         }))
       }
     }
-    return { message: normalizedStatus === 'Rejected' ? 'Leave request rejected' : 'Leave forwarded to HR', status: normalizedStatus }
+    // Return appropriate message based on leave source and status
+    let message
+    if (isIcsLeave) {
+      message = normalizedStatus === 'Rejected' ? 'ICS leave request rejected' : 'ICS leave request approved'
+    } else {
+      message = normalizedStatus === 'Rejected' ? 'Leave request rejected' : 'Leave forwarded to HR'
+    }
+    return { message, status: effectiveStatus }
   }
 
   if (current === 'Pending HR') {
@@ -1138,6 +1265,21 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending HR')
       if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
     }
+
+    // Sync leave status to external ICS Attendance System (HR final approval - non-blocking)
+    const empDataHr = await findEmployeeByEmployeeId(leave.employee_id)
+    const employeeCodeHr = empDataHr?.employee_code || empDataHr?.code
+    if (employeeCodeHr) {
+      syncLeaveStatusToICS({
+        employeeCode: employeeCodeHr,
+        leaveId: reqId,
+        status: normalizedStatus,
+        leaveType: leave.leave_type || 'Annual',
+        startDate: leave.start_date,
+        endDate: leave.end_date
+      }).catch(err => console.error('ICS sync error (non-blocking):', err?.message))
+    }
+
     const applicantIdHr = parseInt(leave.employee_id, 10)
     if (!Number.isNaN(applicantIdHr)) {
       notifSvc.notifySafe(notifSvc.notify({
@@ -1252,5 +1394,41 @@ export async function getPendingHod(employeeId) {
     lastName: r.last_name,
     email: r.email,
     departmentName: r.department_name
+  }))
+}
+
+/** Get pending leave requests for CEO approval.
+ * CEO approves HOD's Annual/Other leave requests (bypass HOD approval, direct to CEO)
+ */
+export async function getPendingCeo(employeeCode) {
+  const code = String(employeeCode || '').trim()
+  if (!code) return { error: 'Employee code is required', status: 400 }
+
+  // Check if requester is CEO
+  const emp = await findEmployeeByEmployeeCode(code)
+  if (!emp) return { error: 'Employee not found', status: 404 }
+
+  const isCeo = await reqRepo.isCeoMember(emp.employee_id || emp.id)
+  if (!isCeo) return { error: 'Only CEO can view this list', status: 403 }
+
+  const rows = await leaveRepo.getPendingCeoLeaves()
+  return rows.map(r => ({
+    id: r.leave_request_id,
+    reference: formatLeaveReference(r.leave_request_id, r.created_at),
+    employeeId: r.employee_id,
+    employeeCode: r.employee_code,
+    type: r.leave_type || 'Annual Leave',
+    startDate: r.start_date,
+    endDate: r.end_date,
+    days: parseInt(r.days || 0),
+    status: r.status || 'Pending CEO',
+    reason: r.reason || '',
+    date: r.created_at,
+    firstName: r.first_name,
+    lastName: r.last_name,
+    email: r.email,
+    departmentName: r.department_name,
+    isHodRequest: true,
+    requiresCeoApproval: true
   }))
 }

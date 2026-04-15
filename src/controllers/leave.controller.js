@@ -312,3 +312,16 @@ export async function getExternalLeaves(req, res) {
     })
   }
 }
+
+/** CEO: Get pending leave requests for CEO approval (HOD requests for Annual/Other leaves) */
+export async function getPendingCeo(req, res) {
+  try {
+    const { employeeCode } = req.params
+    const result = await leaveService.getPendingCeo(employeeCode)
+    if (result.error) return res.status(result.status || 500).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Pending CEO leaves error:', error)
+    res.status(500).json({ error: 'Failed to fetch CEO pending list' })
+  }
+}

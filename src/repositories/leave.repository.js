@@ -939,3 +939,44 @@ export async function getPendingHodLeaves(deptId, deptName, excludeEmployeeId) {
     [deptId, deptName, excludeEmployeeId]
   )
 }
+
+/** Get pending leaves for CEO approval (HOD's Annual/Other leave requests).
+ * CEO approves HOD's own leave requests for Annual and Other leave types.
+ */
+export async function getPendingCeoLeaves() {
+  return executeQuery(
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+        (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+        e.employee_code, e.first_name, e.last_name, e.email, d.department_name
+     FROM leave_requests lr
+     JOIN employees e ON lr.employee_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+     WHERE lr.status = 'Pending CEO'
+        OR (lr.status = 'Pending' 
+            AND lr.leave_type NOT IN ('Casual', 'Sick')
+            AND et.emp_type_name = 'HOD')
+     ORDER BY lr.created_at ASC`,
+    []
+  )
+}
+
+/** Get pending ICS leaves (Casual/Sick from Attendance System) for HR approval.
+ * These leaves come from external ICS system and need HR approval.
+ */
+export async function getPendingIcsLeaves() {
+  return executeQuery(
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+        (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+        e.employee_code, e.first_name, e.last_name, e.email, d.department_name,
+        'ics' AS source
+     FROM leave_requests lr
+     JOIN employees e ON lr.employee_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     WHERE lr.status = 'Pending HR'
+       AND lr.source = 'ics'
+       AND lr.leave_type IN ('Casual', 'Sick')
+     ORDER BY lr.created_at ASC`,
+    []
+  )
+}
