@@ -55,6 +55,8 @@ router.get('/tat/:reqId', requisitionController.getTat)
 router.put('/required-by-date/:reqId', requisitionController.updateRequiredByDate)
 // HOD: edit items (description, size, brand, qty, cost, remarks) only while in HOD bucket
 router.put('/:reqId/items', requisitionController.updateItemsByHod)
+// HOD: add a single item (only while in HOD bucket)
+router.post('/:reqId/items', requisitionController.addItemByHod)
 // HOD: delete a single item (only while in HOD bucket, at least 1 item must remain)
 router.delete('/:reqId/items/:itemId', requisitionController.deleteItemByHod)
 // Procurement: mark requisition complete (must be before GET /:reqId)

@@ -339,12 +339,30 @@ export async function createOldSalarySlips(slips) {
 }
 
 /** Get current salary from newest available source:
- *  1. payroll_slip (new payroll system)
- *  2. old_salary_slip (imported from SQL Server)
- *  3. salary_slip legacy via HR emp_id mapping
+ *  1. employee_gross_salary (primary source for loan/advance requisitions)
+ *  2. payroll_slip (new payroll system)
+ *  3. old_salary_slip (imported from SQL Server)
+ *  4. salary_slip legacy via HR emp_id mapping
  */
 export async function getCurrentSalary(employeeId) {
-  // 1. Try new payroll system first (payroll_slip)
+  // 1. Try employee_gross_salary table first (primary source)
+  const grossSalaryRecord = await salaryRepo.getEmployeeGrossSalary(employeeId)
+  if (grossSalaryRecord && grossSalaryRecord.gross_salary) {
+    const gross = parseFloat(grossSalaryRecord.gross_salary ?? 0)
+    return {
+      basicSalary: gross * 0.7,
+      gross_salary: gross,
+      allowances: 0,
+      bonuses: 0,
+      deductions: 0,
+      total: gross,
+      month: null,
+      source: 'employee_gross_salary',
+      updatedAt: grossSalaryRecord.updated_at || null
+    }
+  }
+
+  // 2. Try new payroll system (payroll_slip)
   const payrollSlip = await salaryRepo.getLatestPayrollSlip(employeeId)
   if (payrollSlip && payrollSlip.gross_salary) {
     return {
@@ -359,7 +377,7 @@ export async function getCurrentSalary(employeeId) {
     }
   }
 
-  // 2. Try old_salary_slip (imported from SQL Server)
+  // 3. Try old_salary_slip (imported from SQL Server)
   const oldSlip = await salaryRepo.getLatestOldSalarySlip(employeeId)
   if (oldSlip && oldSlip.gross_salary) {
     return {
@@ -374,7 +392,7 @@ export async function getCurrentSalary(employeeId) {
     }
   }
 
-  // 3. Fall back to legacy salary_slip via HR emp_id mapping
+  // 4. Fall back to legacy salary_slip via HR emp_id mapping
   const hrIds = await salaryRepo.getHrEmpIdsForEmployee(employeeId)
   if (hrIds.length > 0) {
     const s = await salaryRepo.getLegacyCurrentSalary(hrIds)

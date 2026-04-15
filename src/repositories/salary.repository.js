@@ -179,6 +179,26 @@ export async function getLatestOldSalarySlip(employeeId) {
   }
 }
 
+/** Get gross salary from employee_gross_salary table (primary source for requisition loan/advance). */
+export async function getEmployeeGrossSalary(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT g.employee_id, g.gross_salary, g.updated_at,
+              e.first_name, e.last_name, e.employee_code
+       FROM employee_gross_salary g
+       JOIN employees e ON e.employee_id = g.employee_id
+       WHERE g.employee_id = $1
+       LIMIT 1`,
+      [employeeId]
+    )
+    return rows[0] || null
+  } catch (e) {
+    if (e.code === '42P01') return null
+    if (e.code === '42703') return null
+    throw e
+  }
+}
+
 /** Get employee_salary_structure for one employee (for gross breakdown on payroll slip). */
 export async function getEmployeeSalaryStructure(employeeId) {
   try {

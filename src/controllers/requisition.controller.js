@@ -417,6 +417,17 @@ export async function deleteItemByHod(req, res) {
   }
 }
 
+export async function addItemByHod(req, res) {
+  try {
+    const result = await requisitionService.addItemByHod(req.params.reqId, req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Add item by HOD error:', error)
+    res.status(500).json({ error: 'Failed to add item' })
+  }
+}
+
 export async function updateRequiredByDate(req, res) {
   try {
     const result = await requisitionService.updateRequiredByDate(req.params.reqId, req.body)

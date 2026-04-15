@@ -290,8 +290,21 @@ function normalizeRequisitionItemForCreate(item) {
   return { ...item, itemEstCost: String(n) }
 }
 
+/** Categories that don't require a required by date (Loan & Advance Salary) */
+const REQUISITION_CATEGORIES_NO_DATE = ['Loan & Advance Salary']
+
+function isCategoryNoDate(category) {
+  if (category == null || category === '') return false
+  const c = String(category).trim().toLowerCase()
+  if (!c) return false
+  return REQUISITION_CATEGORIES_NO_DATE.some((cat) => cat.trim().toLowerCase() === c)
+}
+
 export async function createRequisition(body) {
   const { employeeId, location, material, requiredByDate, business, items, category } = body
+  const categoryTrimmed = category?.trim() || ''
+  const noDateCategory = isCategoryNoDate(categoryTrimmed)
+
   if (!employeeId) {
     return { error: 'employeeId is required', status: 400 }
   }
@@ -301,7 +314,8 @@ export async function createRequisition(body) {
   if (!material || typeof material !== 'string' || !String(material).trim()) {
     return { error: 'Material / Summary is required', status: 400 }
   }
-  if (!requiredByDate || typeof requiredByDate !== 'string' || !String(requiredByDate).trim()) {
+  // Required by date is optional for Loan & Advance Salary
+  if (!noDateCategory && (!requiredByDate || typeof requiredByDate !== 'string' || !String(requiredByDate).trim())) {
     return { error: 'Required by date is required', status: 400 }
   }
   const itemsList = Array.isArray(items) ? items : []
@@ -326,7 +340,6 @@ export async function createRequisition(body) {
   if (!category || typeof category !== 'string' || !category.trim()) {
     return { error: 'Category is required', status: 400 }
   }
-  const categoryTrimmed = category.trim()
   let allowedCategories = REQUISITION_CATEGORIES
   try {
     const { categories } = await getCategories()
@@ -337,7 +350,8 @@ export async function createRequisition(body) {
   }
 
   // Required by date must be at least 4 days from today (cannot select today or next 3 days)
-  if (requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())) {
+  // Skip this validation for Loan & Advance Salary category
+  if (!noDateCategory && requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())) {
     const minDate = new Date()
     minDate.setDate(minDate.getDate() + 4)
     const minStr = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, '0')}-${String(minDate.getDate()).padStart(2, '0')}`
@@ -780,7 +794,8 @@ export async function approveHod(body) {
   const bucket = nextKey === 'hr' ? 'hr' : 'committee'
   await notifyBucketChanged(requisitionId, bucket)
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
-  return { message: 'HOD approval recorded', status: nextKey === 'hr' ? 'Pending HR' : 'Pending Committee' }
+  const statusLabel = nextKey === 'hr' ? 'Pending HR' : 'Pending Committee'
+  return { message: 'HOD approval recorded', status: statusLabel }
 }
 
 export async function getPendingHR(employeeId) {
@@ -838,7 +853,9 @@ export async function approveHR(body) {
     return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
+  console.log('[approveHR] Flow check:', { useFlow, stagesLength: (await reqRepo.getFlowStages()).length })
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
+  console.log('[approveHR] Role check:', { ok, useFlow, eid })
   if (!ok) {
     return { error: 'Only HR can approve this stage. Check your Employee Type or Designation.', status: 403 }
   }
@@ -1308,6 +1325,40 @@ export async function deleteItemByHod(reqId, itemId) {
   if (!belongs) return { error: 'Item not found in this requisition', status: 404 }
   await reqRepo.deleteRequisitionItem(itemIdNum, reqIdNum)
   return { message: 'Item deleted' }
+}
+
+/** HOD only: add a single item to a requisition. Allowed only while in HOD bucket. */
+export async function addItemByHod(reqId, body) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const rows = await reqRepo.getRequisitionById(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const row = rows[0]
+  if (row.req_hod_approval === 1) {
+    return { error: 'Requisition already forwarded. Items can only be added while in HOD bucket.', status: 403 }
+  }
+  const { item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks } = body
+  if (!item_desc || String(item_desc).trim() === '') {
+    return { error: 'Item description is required', status: 400 }
+  }
+  const item = {
+    item_desc: String(item_desc).trim(),
+    item_size: item_size != null ? String(item_size).trim() || null : null,
+    item_brand: item_brand != null ? String(item_brand).trim() || null : null,
+    item_qty: item_qty != null ? parseInt(item_qty, 10) || 1 : 1,
+    item_est_cost: item_est_cost != null ? String(item_est_cost).trim() || null : null,
+    item_remarks: item_remarks != null ? String(item_remarks).trim() || null : null
+  }
+  // Validate cost if provided
+  if (item.item_est_cost && item.item_est_cost !== '') {
+    const n = parseNumericCostPkr(item.item_est_cost)
+    if (n == null) {
+      return { error: 'Estimated cost must be numeric (optional decimal).', status: 400 }
+    }
+    item.item_est_cost = String(n)
+  }
+  await reqRepo.insertRequisitionItem(reqIdNum, item)
+  return { message: 'Item added' }
 }
 
 function toDateOnlyString(val) {
