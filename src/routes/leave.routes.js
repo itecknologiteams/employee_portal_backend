@@ -24,4 +24,7 @@ router.get('/hr/deductions', leaveController.getHrDeductionLog)
 router.post('/request', leaveController.createLeaveRequest)
 router.put('/request/:leaveRequestId/status', leaveController.updateLeaveStatus)
 
+/** Proxy endpoint for external Attendance System API (casual/sick leaves) */
+router.post('/external-leaves', leaveController.getExternalLeaves)
+
 export default router

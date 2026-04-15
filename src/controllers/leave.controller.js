@@ -279,3 +279,36 @@ export async function checkRolloverEligibility(req, res) {
     res.status(500).json({ error: 'Failed to check rollover eligibility' })
   }
 }
+
+/** Proxy to external Attendance System API for casual/sick leaves */
+export async function getExternalLeaves(req, res) {
+  try {
+    const { emp_id, year } = req.body
+    
+    if (!emp_id || !year) {
+      return res.status(400).json({ error: 'emp_id and year are required' })
+    }
+
+    const EXTERNAL_API_URL = 'http://192.168.20.244:3002/leaves/view-allocated-leaves-by-emp'
+    
+    const response = await fetch(EXTERNAL_API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ emp_id, year }),
+      timeout: 10000
+    })
+
+    if (!response.ok) {
+      throw new Error(`External API returned ${response.status}`)
+    }
+
+    const data = await response.json()
+    res.json(data)
+  } catch (error) {
+    console.error('External leaves API error:', error)
+    res.status(500).json({ 
+      error: 'Failed to fetch external leaves',
+      message: error.message 
+    })
+  }
+}
