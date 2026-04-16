@@ -330,7 +330,10 @@ export async function createRequisition(body) {
   if (validItems.length > 0) {
     const deptIdForCheck = await reqRepo.getCreatorDepartment(employeeId)
     const hodIdForCheck = await reqRepo.getHodByDepartment(deptIdForCheck)
-    const creatorIsHodForItems = hodIdForCheck != null && hodIdForCheck === parseInt(employeeId, 10)
+    const creatorIsHodByDeptForItems = hodIdForCheck != null && hodIdForCheck === parseInt(employeeId, 10)
+    // Also check HOD by role (handles multi-dept HODs and role-based HODs)
+    const creatorIsHodByRoleForItems = deptIdForCheck != null && await reqRepo.isHodOfDepartment(parseInt(employeeId, 10), deptIdForCheck)
+    const creatorIsHodForItems = creatorIsHodByDeptForItems || creatorIsHodByRoleForItems
     const { employeeHasPermission } = await import('./auth.service.js')
     const canAddItems = creatorIsHodForItems || await employeeHasPermission(employeeId, 'requisition_can_add_items')
     if (!canAddItems) {
@@ -362,7 +365,10 @@ export async function createRequisition(body) {
 
   const deptId = await reqRepo.getCreatorDepartment(employeeId)
   const hodId = await reqRepo.getHodByDepartment(deptId)
-  const creatorIsHod = hodId != null && hodId === parseInt(employeeId, 10)
+  const creatorIsHodByDept = hodId != null && hodId === parseInt(employeeId, 10)
+  // Also check if creator has HOD role via employee_type or designation (handles multi-dept HODs and role-based HODs)
+  const creatorIsHodByRole = deptId != null && await reqRepo.isHodOfDepartment(parseInt(employeeId, 10), deptId)
+  const creatorIsHod = creatorIsHodByDept || creatorIsHodByRole
   const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
   const creatorIsCeo = await reqRepo.isCeoMember(employeeId)
 
@@ -1962,4 +1968,23 @@ export async function getById(reqId) {
       item_remarks: i.item_remarks
     }))
   }
+}
+
+/** Toggle hidden status of a requisition (soft delete/restore). Only SuperAdmin can hide/show. */
+export async function toggleRequisitionHiddenService(reqId, isHidden, actorEmployeeId) {
+  if (!reqId) throw new Error('Requisition ID is required')
+  if (actorEmployeeId == null) throw new Error('Employee ID is required')
+
+  const isSuperAdmin = await reqRepo.employeeHasPermission(actorEmployeeId, 'can_hide_requisitions')
+    || await reqRepo.isSuperAdmin(actorEmployeeId)
+
+  if (!isSuperAdmin) {
+    throw new Error('Only SuperAdmin can hide/unhide requisitions')
+  }
+
+  const result = await reqRepo.toggleRequisitionHidden(reqId, isHidden)
+  if (!result || result.length === 0) {
+    throw new Error('Requisition not found')
+  }
+  return { reqId, isHidden: result[0].is_hidden }
 }

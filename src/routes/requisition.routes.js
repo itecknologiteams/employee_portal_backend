@@ -69,6 +69,8 @@ router.post('/acknowledge-receipt', requisitionController.acknowledgeReceipt)
 // Creator: acknowledge to close ticket (after execution department)
 router.get('/pending/creator-acknowledge/:employeeCode', requisitionController.getPendingCreatorAcknowledge)
 router.post('/acknowledge-by-creator', requisitionController.acknowledgeByCreator)
+// SuperAdmin: toggle hidden status (soft delete/restore)
+router.post('/:reqId/hide', requisitionController.toggleHidden)
 router.get('/:reqId', requisitionController.getById)
 
 export default router

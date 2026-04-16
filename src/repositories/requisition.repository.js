@@ -16,33 +16,39 @@ export async function getRequisitionItemsByReqIds(reqIds) {
   )
 }
 
-export async function getTrackRecordsCount() {
+export async function getTrackRecordsCount(includeHidden = false) {
+  const whereClause = includeHidden ? '' : 'WHERE COALESCE(r.is_hidden, FALSE) = FALSE'
   const r = await executeQuery(`
     SELECT COUNT(*) AS total FROM requisition r
     JOIN employees e ON r.req_emp_id = e.employee_id
     LEFT JOIN departments d ON e.department_id = d.department_id
+    ${whereClause}
   `)
   return parseInt(r[0]?.total ?? 0, 10)
 }
 
-export async function getTrackRecordsAll(limit, offset) {
+export async function getTrackRecordsAll(limit, offset, includeHidden = false) {
+  const whereClause = includeHidden ? '' : 'WHERE COALESCE(r.is_hidden, FALSE) = FALSE'
   return executeQuery(`
     SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
     FROM requisition r
     JOIN employees e ON r.req_emp_id = e.employee_id
     LEFT JOIN departments d ON e.department_id = d.department_id
+    ${whereClause}
     ORDER BY r.req_created_at DESC
     LIMIT $1 OFFSET $2
   `, [limit, offset])
 }
 
-export async function getTrackRecordsByEmployee(employeeId, limit, offset, search) {
+export async function getTrackRecordsByEmployee(employeeId, limit, offset, search, includeHidden = false) {
   const hasSearch = search != null && String(search).trim() !== ''
   const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
+  const hiddenClause = includeHidden ? '' : 'AND COALESCE(r.is_hidden, FALSE) = FALSE'
   if (hasSearch) {
     return executeQuery(
       `SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
        AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2)
+       ${hiddenClause}
        ORDER BY r.req_created_at DESC
        LIMIT $3 OFFSET $4`,
       [employeeId, pattern, limit, offset]
@@ -50,23 +56,25 @@ export async function getTrackRecordsByEmployee(employeeId, limit, offset, searc
   }
   return executeQuery(
     `SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
+     ${hiddenClause}
      ORDER BY r.req_created_at DESC
      LIMIT $2 OFFSET $3`,
     [employeeId, limit, offset]
   )
 }
 
-export async function getTrackRecordsCountByEmployee(employeeId, search) {
+export async function getTrackRecordsCountByEmployee(employeeId, search, includeHidden = false) {
   const hasSearch = search != null && String(search).trim() !== ''
   const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
+  const hiddenClause = includeHidden ? '' : 'AND COALESCE(r.is_hidden, FALSE) = FALSE'
   if (hasSearch) {
     const r = await executeQuery(
-      'SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1 AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, \'\') ILIKE $2)',
+      `SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1 AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, \'\') ILIKE $2) ${hiddenClause}`,
       [employeeId, pattern]
     )
     return parseInt(r[0]?.total ?? 0, 10)
   }
-  const r = await executeQuery('SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1', [employeeId])
+  const r = await executeQuery(`SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1 ${hiddenClause}`, [employeeId])
   return parseInt(r[0]?.total ?? 0, 10)
 }
 
@@ -710,7 +718,7 @@ export async function getPendingAdminExecutionRequisitions() {
        LEFT JOIN departments d ON e.department_id = d.department_id
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id
        JOIN requisition_category c ON TRIM(COALESCE(c.name, '')) = TRIM(COALESCE(r.req_category, '')) AND c.execution_admin = 1
-       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 1 AND COALESCE(r.req_purchase_completed, 0) = 0
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE AND COALESCE(r.req_finance_approval, 0) = 1 AND COALESCE(r.req_purchase_completed, 0) = 0
        ORDER BY r.req_created_at ASC`
     )
   } catch (err) {
@@ -743,7 +751,7 @@ export async function getPendingHodAcknowledgeList(deptId, deptName) {
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE COALESCE(r.req_is_rejected, 0) = 0
+     WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND COALESCE(r.req_purchase_completed, 0) = 1
        AND COALESCE(r.req_hod_acknowledged, 0) = 0
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
@@ -784,7 +792,7 @@ export async function getPendingCreatorAcknowledgeList(employeeId) {
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-       WHERE r.req_emp_id = $1
+       WHERE r.req_emp_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE
          AND COALESCE(r.req_is_rejected, 0) = 0
          AND COALESCE(r.req_creator_acknowledged, 0) = 0
          AND (
@@ -858,6 +866,14 @@ export async function getRequisitionById(reqId) {
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE r.req_id = $1`,
     [reqId]
+  )
+}
+
+/** Toggle the is_hidden status for a requisition (soft delete/restore). */
+export async function toggleRequisitionHidden(reqId, isHidden) {
+  return executeQuery(
+    `UPDATE requisition SET is_hidden = $1, req_updated_at = CURRENT_TIMESTAMP WHERE req_id = $2 RETURNING req_id, is_hidden`,
+    [isHidden, reqId]
   )
 }
 
@@ -1152,7 +1168,7 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-       WHERE COALESCE(r.req_is_rejected, 0) = 0 `
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE `
     const params = [stageKey]
     // For finance stage, also include requisitions handed over via legacy method (backward compatibility)
     if (stageKey === 'finance') {
@@ -1295,7 +1311,7 @@ export async function getPendingHodRequisitions(deptId, deptName, excludeEmploye
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0)
+     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
        AND (
          (COALESCE(r.req_hod_approval, 0)::int = 0)
@@ -1315,7 +1331,7 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND (COALESCE(r.req_hod_approval, 0)::int = 0)
+     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE AND (COALESCE(r.req_hod_approval, 0)::int = 0)
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_created_at ASC`,
     [deptId, deptName]
@@ -1329,7 +1345,7 @@ export async function getApprovedByHodRequisitions(deptId, deptName) {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE (COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_is_rejected, 0)::int = 0)
+     WHERE (COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
      AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_hod_approval_date DESC NULLS LAST, r.req_created_at DESC`,
     [deptId, deptName]
@@ -1346,7 +1362,7 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-       WHERE COALESCE(r.req_is_rejected, 0) = 0
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
          AND COALESCE(r.req_purchase_completed, 0) = 0
          AND r.req_required_by_date IS NOT NULL
          AND (r.req_required_by_date::date <= CURRENT_DATE)
@@ -1361,7 +1377,7 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
 }
 
 export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
-  const whereClause = `(COALESCE(r.req_is_rejected, 0)::int = 0)
+  const whereClause = `(COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
      AND (
        ((COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_committee_approval, 0)::int = 0) AND r.req_emp_id != $1)
        OR
@@ -1397,7 +1413,7 @@ export async function getPendingCeoRequisitions() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_is_rejected = 0
+     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
      AND (
        -- Normal pending CEO approval
        (r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL))
@@ -1417,7 +1433,7 @@ export async function getPendingProcurementRequisitions() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_is_rejected = 0 AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
+     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
        AND (COALESCE(r.req_purchase_completed, 0) = 0)
      ORDER BY r.req_created_at ASC`
   )
@@ -1431,7 +1447,7 @@ export async function getPendingProcurementRequisitionsFallback() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_is_rejected = 0 AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
+     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
      ORDER BY r.req_created_at ASC`
   )
 }
@@ -1443,7 +1459,7 @@ export async function getPendingFinanceRequisitions() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE COALESCE(r.req_is_rejected, 0) = 0
+     WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND COALESCE(r.req_finance_approval, 0) = 0
        AND (r.req_handed_to_finance = 1 OR r.req_current_stage_key = 'finance')
      ORDER BY r.req_handed_to_finance_date ASC`
@@ -1632,4 +1648,45 @@ export async function getTatReportDataFallback(whereClause, params, limit, offse
      LIMIT $${params.length + 1} OFFSET $${params.length + 2}`,
     [...params, limit, offset]
   )
+}
+
+/** Check if an employee has a specific permission. */
+export async function employeeHasPermission(employeeId, permission) {
+  try {
+    const r = await executeQuery(
+      `SELECT COUNT(*) AS cnt FROM employee_permissions
+       WHERE employee_id = $1 AND permission = $2`,
+      [employeeId, permission]
+    )
+    return r && r[0] && parseInt(r[0].cnt, 10) > 0
+  } catch (err) {
+    return false
+  }
+}
+
+/** Check if an employee is SuperAdmin. */
+export async function isSuperAdmin(employeeId) {
+  try {
+    // Check from user_roles table
+    const r = await executeQuery(
+      `SELECT COUNT(*) AS cnt FROM user_roles
+       JOIN roles ON user_roles.role_id = roles.role_id
+       WHERE user_roles.employee_id = $1 AND LOWER(roles.role_name) = 'superadmin'`,
+      [employeeId]
+    )
+    if (r && r[0] && parseInt(r[0].cnt, 10) > 0) return true
+
+    // Fallback: check if employee_type contains 'super' or isAdmin flag
+    const r2 = await executeQuery(
+      `SELECT employee_type FROM employees WHERE employee_id = $1`,
+      [employeeId]
+    )
+    if (r2 && r2[0]) {
+      const type = String(r2[0].employee_type || '').toLowerCase()
+      return type.includes('super') || type.includes('admin')
+    }
+    return false
+  } catch (err) {
+    return false
+  }
 }

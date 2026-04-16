@@ -584,3 +584,23 @@ export async function getById(req, res) {
     res.status(500).json({ error: 'Failed to fetch requisition' })
   }
 }
+
+/** Toggle hidden status of a requisition (soft delete/restore). POST /requisitions/:reqId/hide */
+export async function toggleHidden(req, res) {
+  try {
+    const { reqId } = req.params
+    const { isHidden } = req.body
+    const actorEmployeeId = req.employee?.employeeId ?? req.employeeId ?? req.user?.employeeId ?? req.user?.id
+
+    if (typeof isHidden !== 'boolean') {
+      return res.status(400).json({ error: 'isHidden (boolean) is required in body' })
+    }
+
+    const result = await requisitionService.toggleRequisitionHiddenService(parseInt(reqId, 10), isHidden, actorEmployeeId)
+    res.json({ success: true, data: result })
+  } catch (error) {
+    console.error('Toggle hidden error:', error)
+    const statusCode = error.message?.includes('Only SuperAdmin') ? 403 : 500
+    res.status(statusCode).json({ error: error.message || 'Failed to toggle hidden status' })
+  }
+}
