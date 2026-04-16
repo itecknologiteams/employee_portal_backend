@@ -78,15 +78,27 @@ export async function getItemCountsByReqIds(reqIds) {
   )
 }
 
-export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, category) {
-  await executeQuery(
-    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null]
-  )
+export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, category, loanAdvanceType = null, loanAdvanceAmount = null, loanAdvanceReason = null, loanInstallmentMonths = null) {
+  // Use RETURNING clause to get the inserted row directly - eliminates race condition
+  const hasLoanFields = loanAdvanceType || loanAdvanceAmount || loanAdvanceReason || loanInstallmentMonths
+
+  if (hasLoanFields) {
+    const r = await executeQuery(
+      `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category,
+        loan_advance_type, loan_advance_amount, loan_advance_reason, loan_installment_months)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING req_id, req_reference_no`,
+      [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null,
+        loanAdvanceType || null, loanAdvanceAmount || null, loanAdvanceReason || null, loanInstallmentMonths || null]
+    )
+    return r[0]
+  }
+
   const r = await executeQuery(
-    'SELECT req_id, req_reference_no FROM requisition WHERE req_emp_id = $1 ORDER BY req_created_at DESC LIMIT 1',
-    [employeeId]
+    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING req_id, req_reference_no`,
+    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null]
   )
   return r[0]
 }
@@ -691,10 +703,12 @@ export async function updateRequiredByDate(reqId, dateVal) {
 export async function getPendingAdminExecutionRequisitions() {
   try {
     return executeQuery(
-      `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+      `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+        desg.desg_name AS designation_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
        JOIN requisition_category c ON TRIM(COALESCE(c.name, '')) = TRIM(COALESCE(r.req_category, '')) AND c.execution_admin = 1
        WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 1 AND COALESCE(r.req_purchase_completed, 0) = 0
        ORDER BY r.req_created_at ASC`
@@ -723,10 +737,12 @@ export async function updatePurchaseCompleted(reqId, completedByEmployeeId) {
 /** Requisitions completed by Procurement, pending HOD acknowledgment (same department as HOD). */
 export async function getPendingHodAcknowledgeList(deptId, deptName) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE COALESCE(r.req_is_rejected, 0) = 0
        AND COALESCE(r.req_purchase_completed, 0) = 1
        AND COALESCE(r.req_hod_acknowledged, 0) = 0
@@ -740,10 +756,12 @@ export async function getPendingHodAcknowledgeList(deptId, deptName) {
 /** Single requisition pending HOD acknowledgment (purchase completed, not yet acknowledged). */
 export async function getRequisitionForHodAcknowledge(reqId) {
   return executeQuery(
-    `SELECT r.req_id, r.req_emp_id, r.req_creator_role, e.department_id, d.department_name
+    `SELECT r.req_id, r.req_emp_id, r.req_creator_role, e.department_id, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE r.req_id = $1 AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
     [reqId]
   )
@@ -760,10 +778,12 @@ export async function updateHodAcknowledged(reqId, acknowledgedByEmployeeId) {
 export async function getPendingCreatorAcknowledgeList(employeeId) {
   try {
     return executeQuery(
-      `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+      `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+        desg.desg_name AS designation_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
        WHERE r.req_emp_id = $1
          AND COALESCE(r.req_is_rejected, 0) = 0
          AND COALESCE(r.req_creator_acknowledged, 0) = 0
@@ -831,9 +851,11 @@ export async function approveFinance(requisitionId, employeeId, quotationIndex) 
 
 export async function getRequisitionById(reqId) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE r.req_id = $1`,
     [reqId]
   )
@@ -1124,10 +1146,12 @@ export async function getFirstStageKey(categoryName) {
 export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) {
   const { departmentId, departmentName, excludeEmployeeId } = opts
   try {
-    let q = `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    let q = `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+        desg.desg_name AS designation_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
        WHERE COALESCE(r.req_is_rejected, 0) = 0 `
     const params = [stageKey]
     // For finance stage, also include requisitions handed over via legacy method (backward compatibility)
@@ -1266,9 +1290,11 @@ export async function getEmployeeDept(employeeId) {
 /** HOD pending: (1) awaiting HOD approval (including when HOD is creator), (2) from Procurement – complete, awaiting HOD acknowledgment. */
 export async function getPendingHodRequisitions(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0)
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
        AND (
@@ -1284,9 +1310,11 @@ export async function getPendingHodRequisitions(deptId, deptName, excludeEmploye
 /** Fallback when req_purchase_completed / req_hod_acknowledged columns do not exist. */
 export async function getPendingHodRequisitionsFallback(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND (COALESCE(r.req_hod_approval, 0)::int = 0)
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_created_at ASC`,
@@ -1296,9 +1324,11 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
 
 export async function getApprovedByHodRequisitions(deptId, deptName) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_is_rejected, 0)::int = 0)
      AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_hod_approval_date DESC NULLS LAST, r.req_created_at DESC`,
@@ -1310,10 +1340,12 @@ export async function getApprovedByHodRequisitions(deptId, deptName) {
 export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName) {
   try {
     return await executeQuery(
-      `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+      `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+        desg.desg_name AS designation_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
        WHERE COALESCE(r.req_is_rejected, 0) = 0
          AND COALESCE(r.req_purchase_completed, 0) = 0
          AND r.req_required_by_date IS NOT NULL
@@ -1335,15 +1367,19 @@ export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
        OR
        (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'Committee')
      )`
-  const sqlWithStage = `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+  const sqlWithStage = `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE ${whereClause}
      AND (r.req_current_stage_key IS NULL OR r.req_current_stage_key = 'committee')
      ORDER BY r.req_created_at ASC`
-  const sqlWithoutStage = `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+  const sqlWithoutStage = `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE ${whereClause}
      ORDER BY r.req_created_at ASC`
   try {
@@ -1356,10 +1392,12 @@ export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
 
 export async function getPendingCeoRequisitions() {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE r.req_is_rejected = 0 
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE r.req_is_rejected = 0
      AND (
        -- Normal pending CEO approval
        (r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL))
@@ -1374,9 +1412,11 @@ export async function getPendingCeoRequisitions() {
 /** Requisitions forwarded to Procurement (HOD+Committee+CEO approved), not yet marked complete by Procurement. */
 export async function getPendingProcurementRequisitions() {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE r.req_is_rejected = 0 AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
        AND (COALESCE(r.req_purchase_completed, 0) = 0)
      ORDER BY r.req_created_at ASC`
@@ -1386,9 +1426,11 @@ export async function getPendingProcurementRequisitions() {
 /** Fallback when req_purchase_completed column does not exist (pre-migration). */
 export async function getPendingProcurementRequisitionsFallback() {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE r.req_is_rejected = 0 AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
      ORDER BY r.req_created_at ASC`
   )
@@ -1396,10 +1438,12 @@ export async function getPendingProcurementRequisitionsFallback() {
 
 export async function getPendingFinanceRequisitions() {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE COALESCE(r.req_is_rejected, 0) = 0 
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE COALESCE(r.req_is_rejected, 0) = 0
        AND COALESCE(r.req_finance_approval, 0) = 0
        AND (r.req_handed_to_finance = 1 OR r.req_current_stage_key = 'finance')
      ORDER BY r.req_handed_to_finance_date ASC`
@@ -1466,9 +1510,11 @@ export async function getEmployeeDeptForReport(employeeId) {
 
 export async function getReportAllRequisitionsHod(deptId, deptNameLower) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_created_at DESC`,
     [deptId, deptNameLower]
@@ -1477,9 +1523,11 @@ export async function getReportAllRequisitionsHod(deptId, deptNameLower) {
 
 export async function getReportAllRequisitions() {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, d.department_name
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      ORDER BY r.req_created_at DESC`
   )
 }

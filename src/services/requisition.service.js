@@ -301,7 +301,7 @@ function isCategoryNoDate(category) {
 }
 
 export async function createRequisition(body) {
-  const { employeeId, location, material, requiredByDate, business, items, category } = body
+  const { employeeId, location, material, requiredByDate, business, items, category, loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths } = body
   const categoryTrimmed = category?.trim() || ''
   const noDateCategory = isCategoryNoDate(categoryTrimmed)
 
@@ -376,7 +376,8 @@ export async function createRequisition(body) {
     creatorRole = 'HOD'
   }
 
-  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, categoryTrimmed)
+  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, categoryTrimmed,
+    loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths)
   const reqId = created.req_id
   const refNo = created.req_reference_no
 
@@ -403,8 +404,58 @@ export async function createRequisition(body) {
     /* requisition_category table may not exist yet */
   }
 
+  // Check if this is a Loan & Advance Salary category (must go to HR, not normal flow)
+  const isLoanAdvanceCategory = isCategoryHrAfterHod(categoryTrimmed)
+  
   // Auto-advance based on creator role
-  if (creatorIsCeo) {
+  // Special handling for Loan & Advance Salary: always go to HR (skip Committee/CEO/Procurement)
+  if (isLoanAdvanceCategory) {
+    // Loan & Advance Salary: skip all normal stages and go directly to HR
+    const stages = await reqRepo.getFlowStages()
+    const hasHrStage = stages.some((s) => (s.stage_key || '').toLowerCase() === 'hr')
+    
+    if (hasHrStage) {
+      // For HOD/Committee/CEO/Finance/Procurement creators: skip their normal auto-advance and go to HR
+      if (creatorIsCeo || creatorIsCommittee || creatorIsHod) {
+        // Mark as approved by their role but route to HR
+        if (creatorIsCeo) await reqRepo.autoAdvanceCeoRequisition(reqId)
+        else if (creatorIsCommittee) await reqRepo.autoAdvanceCommitteeRequisition(reqId)
+        else if (creatorIsHod) await reqRepo.autoAdvanceHodRequisition(reqId)
+      }
+      
+      await setCurrentStageIfFlowEnabled(reqId, 'hr')
+      await notifyBucketChanged(reqId, 'hr')
+      notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr', deptId))
+    } else {
+      // No HR stage in flow - fall back to normal auto-advance
+      if (creatorIsCeo) {
+        await reqRepo.autoAdvanceCeoRequisition(reqId)
+        await setCurrentStageIfFlowEnabled(reqId, 'procurement')
+        await notifyBucketChanged(reqId, 'procurement')
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptId))
+      } else if (creatorIsCommittee) {
+        await reqRepo.autoAdvanceCommitteeRequisition(reqId)
+        await setCurrentStageIfFlowEnabled(reqId, 'ceo')
+        await notifyBucketChanged(reqId, 'ceo')
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', deptId))
+      } else if (creatorIsHod) {
+        await reqRepo.autoAdvanceHodRequisition(reqId)
+        await setCurrentStageIfFlowEnabled(reqId, 'committee')
+        await notifyBucketChanged(reqId, 'committee')
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'committee', deptId))
+      } else if (categoryFlowBucket) {
+        await setCurrentStageIfFlowEnabled(reqId, categoryFlowBucket)
+        await notifyBucketChanged(reqId, categoryFlowBucket)
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, categoryFlowBucket, deptId))
+      } else {
+        const firstKey = await reqRepo.getFirstStageKey(categoryTrimmed).catch(() => 'hod')
+        const bucket = firstKey || 'hod'
+        await setCurrentStageIfFlowEnabled(reqId, bucket)
+        await notifyBucketChanged(reqId, bucket)
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucket, deptId))
+      }
+    }
+  } else if (creatorIsCeo) {
     await reqRepo.autoAdvanceCeoRequisition(reqId)
     await setCurrentStageIfFlowEnabled(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
