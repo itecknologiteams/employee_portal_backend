@@ -3,6 +3,9 @@ import * as leaveController from '../controllers/leave.controller.js'
 
 const router = express.Router()
 
+// Leave Types
+router.get('/types', leaveController.getLeaveTypes)
+
 router.get('/balance/:employeeCode', leaveController.getLeaveBalance)
 router.get('/balance-with-code/:employeeCode', leaveController.getLeaveBalanceWithCode)
 router.get('/calculate-annual-leave/:employeeCode', leaveController.calculateAnnualLeave)

@@ -214,37 +214,6 @@ export async function getHistory(employeeId, query = {}) {
   return { data, pagination: { page, limit, total, totalPages } }
 }
 
-export async function getTrackRecords(query) {
-  const page = Math.max(1, parseInt(query.page, 10) || 1)
-  const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
-  const offset = (page - 1) * limit
-  const total = await reqRepo.getTrackRecordsCount()
-  const totalPages = Math.max(1, Math.ceil(total / limit))
-  const rows = await reqRepo.getTrackRecordsAll(limit, offset)
-  const reqIds = rows.map(r => r.req_id)
-  const itemCounts = reqIds.length ? await reqRepo.getItemCountsByReqIds(reqIds) : []
-  const countByReq = Object.fromEntries((itemCounts || []).map(c => [c.req_id, parseInt(c.cnt, 10)]))
-  const data = rows.map(req => {
-    const status = getRequisitionStatus(req)
-    return {
-      requisitionId: req.req_id,
-      referenceNo: req.req_reference_no,
-      employeeId: req.req_emp_id,
-      creatorName: [req.first_name, req.last_name].filter(Boolean).join(' ').trim() || null,
-      creatorEmail: req.email || null,
-      departmentName: req.department_name || null,
-      category: req.req_category || null,
-      createdAt: req.req_created_at,
-      requiredByDate: req.req_required_by_date || null,
-      status,
-      pendingAt: getPendingAt(status),
-      isRejected: req.req_is_rejected === 1,
-      itemCount: countByReq[req.req_id] ?? 0
-    }
-  })
-  return { data, pagination: { page, limit, total, totalPages } }
-}
-
 export async function getTrackRecordsByEmployee(employeeId, query) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -620,14 +589,15 @@ export async function getReportAll(employeeId) {
   const deptId = emp?.department_id ?? null
   const deptNameLower = emp?.department_name_lower ?? ''
   const youAreHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
-  const [isCommittee, isCeo] = await Promise.all([
+  const [isCommittee, isCeo, isSuperAdmin] = await Promise.all([
     reqRepo.isCommitteeMember(eid),
-    reqRepo.isCeoMember(eid)
+    reqRepo.isCeoMember(eid),
+    reqRepo.isSuperAdmin(eid)
   ])
-  const canView = youAreHod || isCommittee || isCeo
+  const canView = youAreHod || isCommittee || isCeo || isSuperAdmin
   if (!canView) return []
 
-  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo
+  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo && !isSuperAdmin
   const rows = hodOnlyFilter
     ? await reqRepo.getReportAllRequisitionsHod(deptId, deptNameLower)
     : await reqRepo.getReportAllRequisitions()
@@ -1987,4 +1957,23 @@ export async function toggleRequisitionHiddenService(reqId, isHidden, actorEmplo
     throw new Error('Requisition not found')
   }
   return { reqId, isHidden: result[0].is_hidden }
+}
+
+export async function getTrackRecords(query = {}, includeHidden = false) {
+  const page = Math.max(1, parseInt(query.page || query.pageNumber || 1, 10))
+  const limit = Math.max(1, Math.min(100, parseInt(query.limit || query.pageSize || 20, 10)))
+  const offset = (page - 1) * limit
+
+  const [countRows, rows] = await Promise.all([
+    reqRepo.getTrackRecordsCount(includeHidden),
+    reqRepo.getTrackRecordsAll(limit, offset, includeHidden)
+  ])
+
+  const total = parseInt(countRows?.[0]?.total ?? 0, 10)
+  const data = await attachItemsToRequisitions(rows || [])
+
+  return {
+    data,
+    pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 }
+  }
 }

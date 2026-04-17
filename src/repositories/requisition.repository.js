@@ -1,4 +1,4 @@
-import { executeQuery, executeTransaction } from '../../config/database.js'
+﻿import { executeQuery, executeTransaction } from '../../config/database.js'
 import { resolveEmailsPreferCrmForCodes } from '../utils/requisitionEmailRecipients.js'
 
 export async function getRequisitionsByEmployeeId(employeeId) {
@@ -770,7 +770,7 @@ export async function getRequisitionForHodAcknowledge(reqId) {
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_id = $1 AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
+     WHERE r.req_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
     [reqId]
   )
 }
@@ -1531,7 +1531,8 @@ export async function getReportAllRequisitionsHod(deptId, deptNameLower) {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+     WHERE COALESCE(r.is_hidden, FALSE) = FALSE
+       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_created_at DESC`,
     [deptId, deptNameLower]
   )
@@ -1544,6 +1545,7 @@ export async function getReportAllRequisitions() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE COALESCE(r.is_hidden, FALSE) = FALSE
      ORDER BY r.req_created_at DESC`
   )
 }
@@ -1584,7 +1586,7 @@ export async function getPendingHodCount(deptId, deptNameLower) {
     `SELECT COUNT(*) AS c FROM requisition r
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     WHERE r.req_is_rejected = 0 AND (r.req_hod_approval = 0 OR r.req_hod_approval IS NULL)
+     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE AND (r.req_hod_approval = 0 OR r.req_hod_approval IS NULL)
      AND (e.department_id = $1 OR (LOWER(TRIM(d.department_name)) = $2 AND $2 != ''))`,
     [deptId, deptNameLower]
   )
@@ -1593,14 +1595,14 @@ export async function getPendingHodCount(deptId, deptNameLower) {
 
 export async function getPendingCommitteeCount() {
   const r = await executeQuery(
-    `SELECT COUNT(*) AS c FROM requisition WHERE req_is_rejected = 0 AND req_hod_approval = 1 AND (req_committee_approval = 0 OR req_committee_approval IS NULL)`
+    `SELECT COUNT(*) AS c FROM requisition WHERE req_is_rejected = 0 AND COALESCE(is_hidden, FALSE) = FALSE AND req_hod_approval = 1 AND (req_committee_approval = 0 OR req_committee_approval IS NULL)`
   )
   return parseInt(r[0]?.c || 0, 10)
 }
 
 export async function getPendingCeoCount() {
   const r = await executeQuery(
-    `SELECT COUNT(*) AS c FROM requisition WHERE req_is_rejected = 0 AND req_hod_approval = 1 AND req_committee_approval = 1 AND (req_ceo_approval = 0 OR req_ceo_approval IS NULL)`
+    `SELECT COUNT(*) AS c FROM requisition WHERE req_is_rejected = 0 AND COALESCE(is_hidden, FALSE) = FALSE AND req_hod_approval = 1 AND req_committee_approval = 1 AND (req_ceo_approval = 0 OR req_ceo_approval IS NULL)`
   )
   return parseInt(r[0]?.c || 0, 10)
 }

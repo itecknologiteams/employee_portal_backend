@@ -1,5 +1,6 @@
-import * as requisitionService from '../services/requisition.service.js'
+﻿import * as requisitionService from '../services/requisition.service.js'
 import * as requisitionEmailDiagnosticsService from '../services/requisitionEmailDiagnostics.service.js'
+import * as reqRepo from '../repositories/requisition.repository.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 
 function sendResult(result, res, fallbackMessage) {
@@ -141,7 +142,7 @@ export async function getDebug(req, res) {
   }
 }
 
-/** GET /email-diagnostics?req=123 | ?ref=REF — SuperAdmin or requisition_email_diagnostics permission */
+/** GET /email-diagnostics?req=123 | ?ref=REF ΓÇö SuperAdmin or requisition_email_diagnostics permission */
 export async function getEmailDiagnostics(req, res) {
   try {
     const user = req.session?.user
@@ -602,5 +603,25 @@ export async function toggleHidden(req, res) {
     console.error('Toggle hidden error:', error)
     const statusCode = error.message?.includes('Only SuperAdmin') ? 403 : 500
     res.status(statusCode).json({ error: error.message || 'Failed to toggle hidden status' })
+  }
+}
+
+/** SuperAdmin: Get all requisitions including hidden ones. GET /requisitions/admin/all */
+export async function getAllRequisitionsForAdmin(req, res) {
+  try {
+    const actorEmployeeId = req.employee?.employeeId ?? req.employeeId ?? req.user?.employeeId ?? req.user?.id
+
+    // Check if user is SuperAdmin or has can_hide_requisitions permission
+    const isSuperAdmin = await reqRepo.employeeHasPermission(actorEmployeeId, 'can_hide_requisitions')
+      || await reqRepo.isSuperAdmin(actorEmployeeId)
+    if (!isSuperAdmin) {
+      return res.status(403).json({ error: 'Only SuperAdmin can access all requisitions including hidden' })
+    }
+
+    const result = await requisitionService.getTrackRecords(req.query, true)
+    res.json(result)
+  } catch (error) {
+    console.error('Get all requisitions for admin error:', error)
+    res.status(500).json({ error: error.message || 'Failed to fetch requisitions' })
   }
 }

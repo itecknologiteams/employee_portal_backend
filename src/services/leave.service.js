@@ -781,6 +781,7 @@ export async function getLeaveRequests(employeeId) {
   return result.map(r => ({
     id: r.leave_request_id,
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
+    leaveTypeId: r.leave_type_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
     endDate: r.end_date,
@@ -957,14 +958,46 @@ export async function hrEditDeduction(deductionId, body) {
 }
 
 export async function createLeaveRequest(data) {
-  const { employeeId, leaveType, startDate, endDate, reason } = data
+  const { employeeId, leaveTypeId, leaveType, startDate, endDate, reason } = data
 
-  // Normalize and validate leave type
-  const normalizedType = getNormalizedLeaveType(leaveType)
-  if (!isPortalRequestableLeaveType(leaveType)) {
+  // Support both leaveTypeId (preferred) and legacy leaveType
+  let finalLeaveTypeId = leaveTypeId
+  let normalizedTypeName = null
+
+  if (!finalLeaveTypeId && leaveType) {
+    // Legacy: lookup leaveTypeId from leaveType name
+    normalizedTypeName = getNormalizedLeaveType(leaveType)
+    const typeRows = await leaveRepo.getLeaveTypeIdByName(normalizedTypeName)
+    if (typeRows && typeRows.length > 0) {
+      finalLeaveTypeId = typeRows[0].leave_type_id
+    }
+  }
+
+  if (!finalLeaveTypeId) {
     return {
-      error:
-        'Invalid leave type. Allowed types: Annual Leave, Marriage Leave, Maternity Leave, Paternal Leave, Pilgrimage Leave. Casual and sick leave are managed through the Attendance system.',
+      error: 'leaveTypeId is required. Available types: 1=Casual, 2=Sick, 3=Annual, 4=Marriage, 5=Maternity, 6=Paternal, 7=Pilgrimage',
+      status: 400
+    }
+  }
+
+  // Get leave type details for validation
+  const leaveTypeDetails = await leaveRepo.getLeaveTypeById(finalLeaveTypeId)
+  if (!leaveTypeDetails) {
+    return { error: 'Invalid leave type ID', status: 400 }
+  }
+
+  // Check if leave type is active
+  if (!leaveTypeDetails.is_active) {
+    return { error: 'This leave type is currently inactive', status: 400 }
+  }
+
+  normalizedTypeName = normalizedTypeName || leaveTypeDetails.leave_type_name
+
+  // Check if leave type is requestable through portal (exclude Casual/Sick for portal)
+  const portalRequestableIds = [3, 4, 5, 6, 7] // Annual, Marriage, Maternity, Paternal, Pilgrimage
+  if (!portalRequestableIds.includes(parseInt(finalLeaveTypeId, 10))) {
+    return {
+      error: 'Invalid leave type for portal request. Allowed types: Annual(3), Marriage(4), Maternity(5), Paternal(6), Pilgrimage(7). Casual(1) and Sick(2) are managed through the Attendance system.',
       status: 400
     }
   }
@@ -976,14 +1009,14 @@ export async function createLeaveRequest(data) {
   const eid = parseEmployeeId(employeeId)
   if (eid != null) {
     const bal = await getLeaveBalance(eid)
-    const balanceKey = getLeaveBalanceKey(leaveType)
+    const balanceKey = getLeaveBalanceKey(normalizedTypeName)
     if (!balanceKey) {
       return { error: 'Could not determine leave balance type', status: 400 }
     }
 
     if (days > bal[balanceKey]) {
       return {
-        error: `Insufficient ${normalizedType} balance. You have ${bal[balanceKey]} day(s) available; this request needs ${days} calendar day(s).`,
+        error: `Insufficient ${normalizedTypeName} balance. You have ${bal[balanceKey]} day(s) available; this request needs ${days} calendar day(s).`,
         status: 400
       }
     }
@@ -1001,7 +1034,7 @@ export async function createLeaveRequest(data) {
       if (isSenior) initialStatus = 'Pending HR'
     }
   }
-  const result = await leaveRepo.createLeaveRequest(employeeId, normalizedType, startDate, endDate, reason, initialStatus)
+  const result = await leaveRepo.createLeaveRequest(employeeId, finalLeaveTypeId, startDate, endDate, reason, initialStatus)
   const leaveRequestId = result[0].leave_request_id
 
   if (isEmailConfigured()) {
@@ -1009,27 +1042,27 @@ export async function createLeaveRequest(data) {
     if (transport) {
       try {
         const to = getLeaveNotificationEmail()
-        const subject = `New Leave Request - ${normalizedType}`
+        const subject = `New Leave Request - ${normalizedTypeName}`
         const body = [
           `Leave Request ID: ${leaveRequestId}`,
           `Employee ID: ${employeeId}`,
-          `Leave Type: ${leaveType || '???'}`,
+          `Leave Type: ${normalizedTypeName || '???'}`,
           `Start Date: ${startDate || '???'}`,
           `End Date: ${endDate || '???'}`,
           '',
           'Reason:',
           reason ? String(reason).trim() : '???'
         ].join('\n')
-        console.log('???? [Leave] Sending to:', to, '| Subject:', subject)
+        console.log('📧 [Leave] Sending to:', to, '| Subject:', subject)
         await transport.sendMail({
           from: EMAIL_FROM,
           to,
           subject,
           text: body
         })
-        console.log('???? [Leave] SENT OK ???', to)
+        console.log('📧 [Leave] SENT OK ✅', to)
       } catch (err) {
-        console.error('???? [Leave] FAILED ???', to, '| Error:', err.message)
+        console.error('📧 [Leave] FAILED ❌', to, '| Error:', err.message)
       }
     }
   }
@@ -1064,7 +1097,9 @@ export async function createLeaveRequest(data) {
 
   return {
     message: 'Leave request submitted successfully',
-    leaveRequestId
+    leaveRequestId,
+    leaveTypeId: finalLeaveTypeId,
+    leaveType: normalizedTypeName
   }
 }
 
@@ -1318,6 +1353,7 @@ export async function getHrList(employeeId, query = {}) {
     id: r.leave_request_id,
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
+    leaveTypeId: r.leave_type_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
     endDate: r.end_date,
@@ -1352,6 +1388,7 @@ export async function getPendingHr(employeeId) {
     id: r.leave_request_id,
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
+    leaveTypeId: r.leave_type_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
     endDate: r.end_date,
@@ -1383,6 +1420,7 @@ export async function getPendingHod(employeeId) {
     id: r.leave_request_id,
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
+    leaveTypeId: r.leave_type_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
     endDate: r.end_date,
@@ -1417,6 +1455,7 @@ export async function getPendingCeo(employeeCode) {
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
     employeeCode: r.employee_code,
+    leaveTypeId: r.leave_type_id,
     type: r.leave_type || 'Annual Leave',
     startDate: r.start_date,
     endDate: r.end_date,

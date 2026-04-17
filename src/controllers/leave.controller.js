@@ -1,5 +1,26 @@
 import * as leaveService from '../services/leave.service.js'
+import * as leaveRepo from '../repositories/leave.repository.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
+
+/** GET /types - Get all active leave types */
+export async function getLeaveTypes(req, res) {
+  try {
+    const types = await leaveRepo.getAllLeaveTypes()
+    res.json({
+      leaveTypes: types.map(t => ({
+        id: t.leave_type_id,
+        name: t.leave_type_name,
+        description: t.description,
+        isActive: t.is_active,
+        createdAt: t.created_at,
+        updatedAt: t.updated_at
+      }))
+    })
+  } catch (error) {
+    console.error('Get leave types error:', error)
+    res.status(500).json({ error: 'Failed to fetch leave types' })
+  }
+}
 
 export async function getLeaveBalance(req, res) {
   try {
@@ -29,12 +50,12 @@ export async function getLeaveRequests(req, res) {
 
 export async function createLeaveRequest(req, res) {
   try {
-    const { employeeCode, leaveType, startDate, endDate, reason } = req.body
+    const { employeeCode, leaveTypeId, leaveType, startDate, endDate, reason } = req.body
     if (!employeeCode) return res.status(400).json({ error: 'employeeCode is required' })
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
     const result = await leaveService.createLeaveRequest({
-      employeeId, leaveType, startDate, endDate, reason
+      employeeId, leaveTypeId, leaveType, startDate, endDate, reason
     })
     if (result.error) return res.status(result.status || 400).json({ error: result.error })
     res.json(result)

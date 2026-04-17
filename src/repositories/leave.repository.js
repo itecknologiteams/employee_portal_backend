@@ -848,31 +848,34 @@ export async function setAnnualDaysDeducted(leaveRequestId, days) {
 
 export async function getLeaveRequests(employeeId) {
   return executeQuery(
-    `SELECT lr.leave_request_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) as days, lr.status, lr.reason, lr.created_at
-     FROM leave_requests lr WHERE lr.employee_id = $1 ORDER BY lr.created_at DESC`,
+     FROM leave_requests lr
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+     WHERE lr.employee_id = $1 ORDER BY lr.created_at DESC`,
     [employeeId]
   )
 }
 
-export async function createLeaveRequest(employeeId, leaveType, startDate, endDate, reason, initialStatus = 'Pending') {
+export async function createLeaveRequest(employeeId, leaveTypeId, startDate, endDate, reason, initialStatus = 'Pending') {
   return executeQuery(
-    `INSERT INTO leave_requests (employee_id, leave_type, start_date, end_date, reason, status, created_at)
+    `INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, reason, status, created_at)
      VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
      RETURNING leave_request_id`,
-    [employeeId, leaveType, startDate, endDate, reason, initialStatus]
+    [employeeId, leaveTypeId, startDate, endDate, reason, initialStatus]
   )
 }
 
 /** Get single leave request by id (for status update). */
 export async function getLeaveRequestById(leaveRequestId) {
   const rows = await executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         COALESCE(lr.annual_days_deducted, 0) AS annual_days_deducted,
         e.department_id
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
      WHERE lr.leave_request_id = $1`,
     [leaveRequestId]
   )
@@ -890,12 +893,13 @@ export async function updateLeaveRequestStatus(leaveRequestId, newStatus, requir
 /** Leave requests pending HR approval (status = 'Pending HR'). */
 export async function getPendingHrLeaves() {
   return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         e.first_name, e.last_name, e.email, d.department_name
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
      WHERE lr.status = 'Pending HR'
      ORDER BY lr.created_at ASC`,
     []
@@ -911,12 +915,13 @@ export async function countAllLeavesForHr() {
 /** All leave requests for HR list with pagination: every department, with applicant and department and status. */
 export async function getAllLeavesForHr(limit, offset) {
   return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         e.first_name, e.last_name, e.email, d.department_name
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
      ORDER BY lr.created_at DESC
      LIMIT $1 OFFSET $2`,
     [limit, offset]
@@ -926,12 +931,13 @@ export async function getAllLeavesForHr(limit, offset) {
 /** Leave requests pending HOD approval: same department as HOD, status 'Pending', exclude HOD's own. */
 export async function getPendingHodLeaves(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         e.first_name, e.last_name, e.email, d.department_name
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
      WHERE lr.status = 'Pending'
        AND lr.employee_id != $3
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
@@ -945,16 +951,17 @@ export async function getPendingHodLeaves(deptId, deptName, excludeEmployeeId) {
  */
 export async function getPendingCeoLeaves() {
   return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         e.employee_code, e.first_name, e.last_name, e.email, d.department_name
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
      INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
      WHERE lr.status = 'Pending CEO'
-        OR (lr.status = 'Pending' 
-            AND lr.leave_type NOT IN ('Casual', 'Sick')
+        OR (lr.status = 'Pending'
+            AND lr.leave_type_id NOT IN (1, 2)
             AND et.emp_type_name = 'HOD')
      ORDER BY lr.created_at ASC`,
     []
@@ -966,17 +973,47 @@ export async function getPendingCeoLeaves() {
  */
 export async function getPendingIcsLeaves() {
   return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type, lr.start_date, lr.end_date,
+    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         e.employee_code, e.first_name, e.last_name, e.email, d.department_name,
         'ics' AS source
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
      WHERE lr.status = 'Pending HR'
        AND lr.source = 'ics'
-       AND lr.leave_type IN ('Casual', 'Sick')
+       AND lr.leave_type_id IN (1, 2)
      ORDER BY lr.created_at ASC`,
+    []
+  )
+}
+
+/** Get leave type by ID. */
+export async function getLeaveTypeById(leaveTypeId) {
+  const rows = await executeQuery(
+    `SELECT leave_type_id, leave_type_name, description, is_active, created_at, updated_at
+     FROM leave_types WHERE leave_type_id = $1`,
+    [leaveTypeId]
+  )
+  return rows[0] || null
+}
+
+/** Get leave type ID by name (case-insensitive). */
+export async function getLeaveTypeIdByName(leaveTypeName) {
+  const rows = await executeQuery(
+    `SELECT leave_type_id, leave_type_name, description, is_active
+     FROM leave_types WHERE LOWER(TRIM(leave_type_name)) = LOWER(TRIM($1))`,
+    [leaveTypeName]
+  )
+  return rows
+}
+
+/** Get all leave types. */
+export async function getAllLeaveTypes() {
+  return executeQuery(
+    `SELECT leave_type_id, leave_type_name, description, is_active, created_at, updated_at
+     FROM leave_types WHERE is_active = true ORDER BY leave_type_id`,
     []
   )
 }

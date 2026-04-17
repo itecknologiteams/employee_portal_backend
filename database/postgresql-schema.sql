@@ -74,11 +74,39 @@ CREATE TABLE IF NOT EXISTS leave_balance (
 );
 CREATE INDEX IF NOT EXISTS idx_leave_balance_employee_code ON leave_balance(employee_code);
 
+-- Create Leave Types Table (Master table for leave types)
+CREATE TABLE IF NOT EXISTS leave_types (
+    leave_type_id SERIAL PRIMARY KEY,
+    leave_type_name VARCHAR(50) NOT NULL UNIQUE,
+    description TEXT,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Insert default leave types
+INSERT INTO leave_types (leave_type_id, leave_type_name, description, is_active) VALUES
+    (1, 'Casual', 'Casual leave for personal matters', true),
+    (2, 'Sick', 'Sick leave for medical reasons', true),
+    (3, 'Annual', 'Annual leave entitlement', true),
+    (4, 'Marriage', 'Marriage leave', true),
+    (5, 'Maternity', 'Maternity leave for female employees', true),
+    (6, 'Paternal', 'Paternal leave for male employees', true),
+    (7, 'Pilgrimage', 'Leave for religious pilgrimage', true)
+ON CONFLICT (leave_type_id) DO UPDATE SET
+    leave_type_name = EXCLUDED.leave_type_name,
+    description = EXCLUDED.description,
+    is_active = EXCLUDED.is_active;
+
+-- Create index on leave_types
+CREATE INDEX IF NOT EXISTS idx_leave_types_name ON leave_types(leave_type_name);
+
 -- Create Leave Requests Table
 CREATE TABLE IF NOT EXISTS leave_requests (
     leave_request_id SERIAL PRIMARY KEY,
     employee_id INTEGER NOT NULL,
-    leave_type VARCHAR(50) NOT NULL,
+    leave_type_id INTEGER REFERENCES leave_types(leave_type_id) ON DELETE RESTRICT,
+    leave_type VARCHAR(50), -- Kept for backward compatibility during migration
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
     reason TEXT,
@@ -86,6 +114,9 @@ CREATE TABLE IF NOT EXISTS leave_requests (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (employee_id) REFERENCES employees(employee_id) ON DELETE CASCADE
 );
+
+-- Create index on leave_type_id
+CREATE INDEX IF NOT EXISTS idx_leave_requests_type_id ON leave_requests(leave_type_id);
 
 -- HR manual leave deduction audit log
 CREATE TABLE IF NOT EXISTS leave_deduction_log (
@@ -166,6 +197,11 @@ $$ language 'plpgsql';
 -- Create trigger for employees table
 DROP TRIGGER IF EXISTS update_employees_updated_at ON employees;
 CREATE TRIGGER update_employees_updated_at BEFORE UPDATE ON employees
+    FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
+
+-- Create trigger for leave_types table
+DROP TRIGGER IF EXISTS update_leave_types_updated_at ON leave_types;
+CREATE TRIGGER update_leave_types_updated_at BEFORE UPDATE ON leave_types
     FOR EACH ROW EXECUTE FUNCTION update_updated_at_column();
 
 -- Insert sample department

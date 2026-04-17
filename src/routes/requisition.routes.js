@@ -71,6 +71,12 @@ router.get('/pending/creator-acknowledge/:employeeCode', requisitionController.g
 router.post('/acknowledge-by-creator', requisitionController.acknowledgeByCreator)
 // SuperAdmin: toggle hidden status (soft delete/restore)
 router.post('/:reqId/hide', requisitionController.toggleHidden)
+
+// SuperAdmin: get all requisitions including hidden ones
+router.get('/admin/all', requisitionController.getAllRequisitionsForAdmin)
 router.get('/:reqId', requisitionController.getById)
 
+
 export default router
+
+
