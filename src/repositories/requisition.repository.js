@@ -979,7 +979,7 @@ export async function getRequisitionCategoryByName(name) {
   return rows[0] || null
 }
 
-/** Admin: create requisition category; insert default stage behaviors (skip) for all flow stages. */
+/** Admin: create requisition category; insert stage behaviors based on flags. */
 export async function createRequisitionCategory(name, flags = {}) {
   const n = String(name).trim()
   if (!n) throw new Error('Category name is required')
@@ -1011,15 +1011,9 @@ export async function createRequisitionCategory(name, flags = {}) {
   )
   const cat = rows[0]
   if (cat) {
+    // Sync stage behaviors based on flags (instead of default 'skip' for all)
     try {
-      const stages = await getFlowStages()
-      for (const s of stages || []) {
-        await executeQuery(
-          `INSERT INTO requisition_category_stage (category_id, flow_stage_id, behavior)
-           VALUES ($1, $2, 'skip') ON CONFLICT (category_id, flow_stage_id) DO NOTHING`,
-          [cat.id, s.id]
-        )
-      }
+      await syncCategoryStageBehaviors(cat.id)
     } catch (e) {
       if (e.code !== '42P01') throw e
     }
@@ -1027,7 +1021,9 @@ export async function createRequisitionCategory(name, flags = {}) {
   return cat
 }
 
-/** Admin: update requisition category by id. flags may include form_layout (JSON array). */
+/** Admin: update requisition category by id. flags may include form_layout (JSON array).
+ *  Also syncs stage behaviors to requisition_category_stage table.
+ */
 export async function updateRequisitionCategory(id, name, flags = {}) {
   const { form_layout: formLayout, ...restFlags } = flags
   const rows = await executeQuery(
@@ -1067,7 +1063,19 @@ export async function updateRequisitionCategory(id, name, flags = {}) {
       formLayout !== undefined ? (Array.isArray(formLayout) ? JSON.stringify(formLayout) : (typeof formLayout === 'string' ? formLayout : JSON.stringify(formLayout))) : null
     ]
   )
-  return rows[0] || null
+  const updated = rows[0] || null
+
+  // Sync stage behaviors when flags are updated
+  if (updated) {
+    try {
+      await syncCategoryStageBehaviors(id)
+    } catch (syncErr) {
+      console.error('Failed to sync category stage behaviors:', syncErr.message)
+      // Don't fail the update if sync fails
+    }
+  }
+
+  return updated
 }
 
 /** Admin: delete requisition category (and its stage rows). Requisitions with this category keep req_category text. */
@@ -1075,6 +1083,63 @@ export async function deleteRequisitionCategory(id) {
   await executeQuery('DELETE FROM requisition_category_stage WHERE category_id = $1', [id])
   const rows = await executeQuery('DELETE FROM requisition_category WHERE id = $1 RETURNING id', [id])
   return rows.length > 0
+}
+
+/** Sync category flags (hod_approval, committee_review, ceo_approve, etc.) to stage behaviors.
+ *  Call after updating category flags to ensure requisition_category_stage matches.
+ */
+export async function syncCategoryStageBehaviors(categoryId) {
+  // Get the category flags
+  const catRows = await executeQuery('SELECT * FROM requisition_category WHERE id = $1', [categoryId])
+  if (!catRows.length) return
+  const cat = catRows[0]
+
+  // Get all flow stages
+  const stages = await getFlowStages()
+  if (!stages.length) return
+
+  // Map stage keys to their required flag
+  const stageFlagMap = {
+    'hod': cat.hod_approval === 1 || cat.hod_for_info === 1,
+    'hr': cat.hr_finance === 1,
+    'committee': cat.committee_review === 1,
+    'ceo': cat.ceo_approve === 1,
+    'admin': cat.department_admin === 1,
+    'procurement': cat.department_procurement === 1
+    // finance is determined by req_handed_to_finance or category flow
+  }
+
+  // For each stage, set behavior to 'approval' if flag is enabled, 'skip' if disabled
+  for (const stage of stages) {
+    const stageKey = stage.stage_key
+    const flagEnabled = stageFlagMap[stageKey]
+
+    // Default behavior is 'skip' unless flag is enabled
+    let behavior = 'skip'
+    if (flagEnabled) {
+      // Special case: hod_for_info uses 'for_info' behavior
+      if (stageKey === 'hod' && cat.hod_for_info === 1 && cat.hod_approval !== 1) {
+        behavior = 'for_info'
+      } else {
+        behavior = 'approval'
+      }
+    }
+
+    // Update or insert the stage behavior
+    await executeQuery(
+      `INSERT INTO requisition_category_stage (category_id, flow_stage_id, behavior)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (category_id, flow_stage_id)
+       DO UPDATE SET behavior = EXCLUDED.behavior`,
+      [categoryId, stage.id, behavior]
+    )
+  }
+
+  // Clear the behavior cache for this category
+  const cacheKey = (cat.name || '').trim().toLowerCase()
+  if (cacheKey) {
+    _categoryBehaviorCache.delete(cacheKey)
+  }
 }
 
 // ---------- DB-driven flow (with short TTL cache to avoid repeated identical queries) ----------
