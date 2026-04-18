@@ -166,18 +166,18 @@ export async function autoAdvanceCommitteeRequisition(reqId) {
   )
 }
 
-export async function autoAdvanceHodRequisition(reqId) {
+export async function autoAdvanceHodRequisition(reqId, approverEmployeeId) {
   return executeQuery(
-    `UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_creator_role = 'HOD' WHERE req_id = $1`,
-    [reqId]
+    `UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_hod_approved_by = $2, req_creator_role = 'HOD' WHERE req_id = $1`,
+    [reqId, approverEmployeeId]
   )
 }
 
 /** Set HOD approval only (for category flow: hod_for_info – no creator role change). */
-export async function setHodApprovalForInfoOnly(reqId) {
+export async function setHodApprovalForInfoOnly(reqId, approverEmployeeId) {
   return executeQuery(
-    'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
-    [reqId]
+    'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_hod_approved_by = $2 WHERE req_id = $1',
+    [reqId, approverEmployeeId]
   )
 }
 
@@ -598,10 +598,10 @@ export async function updateRequisitionItem(itemId, reqId, payload) {
   )
 }
 
-export async function approveHod(requisitionId) {
+export async function approveHod(requisitionId, approverEmployeeId) {
   return executeQuery(
-    'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
-    [requisitionId]
+    'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_hod_approved_by = $2 WHERE req_id = $1',
+    [requisitionId, approverEmployeeId]
   )
 }
 
@@ -1158,7 +1158,9 @@ export async function getFirstStageKey(categoryName) {
   return stages[0]?.stage_key || 'hod'
 }
 
-/** Requisitions at a given current stage. For hod: optional departmentId, departmentName, excludeEmployeeId. */
+/** Requisitions at a given current stage. For hod: optional departmentId, departmentName, excludeEmployeeId.
+ *  Also includes requisitions where req_current_stage_key is NULL but the approval state matches the expected bucket.
+ */
 export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) {
   const { departmentId, departmentName, excludeEmployeeId } = opts
   try {
@@ -1170,12 +1172,38 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id
        WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE `
     const params = [stageKey]
-    // For finance stage, also include requisitions handed over via legacy method (backward compatibility)
+
+    // Build the bucket matching logic
+    // When req_current_stage_key is set, use it directly
+    // When NULL, infer from approval state
+    let bucketCondition = ''
     if (stageKey === 'finance') {
-      q += ` AND (r.req_current_stage_key = $1 OR (r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0))`
+      // Finance: explicit stage key OR handed to finance flag
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0))`
+    } else if (stageKey === 'hod') {
+      // HOD: explicit stage key OR (no HOD approval AND no downstream approvals AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
+    } else if (stageKey === 'committee') {
+      // Committee: explicit stage key OR (HOD approved AND Committee not approved AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_committee_approval, 0) = 0))`
+    } else if (stageKey === 'ceo') {
+      // CEO: explicit stage key OR (HOD+Committee approved AND CEO not approved AND stage is NULL AND not forwarded)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL) AND COALESCE(r.req_procurement_ack, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
+    } else if (stageKey === 'procurement') {
+      // Procurement: explicit stage key OR (All 3 approved AND not completed AND not handed to finance AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1 AND COALESCE(r.req_purchase_completed, 0) = 0 AND COALESCE(r.req_handed_to_finance, 0) = 0))`
+    } else if (stageKey === 'hr') {
+      // HR: explicit stage key OR (HOD approved AND HR not approved AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_hr_approval, 0) = 0))`
+    } else if (stageKey === 'admin') {
+      // Admin: explicit stage key only (no legacy fallback for admin)
+      bucketCondition = ` AND r.req_current_stage_key = $1`
     } else {
-      q += ` AND r.req_current_stage_key = $1`
+      // Default: explicit stage key only
+      bucketCondition = ` AND r.req_current_stage_key = $1`
     }
+    q += bucketCondition
+
     if (stageKey === 'hod' && (departmentId != null || (departmentName != null && String(departmentName).trim() !== ''))) {
       q += ` AND (e.department_id = $2 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $3 AND $3 != ''))`
       params.push(departmentId ?? null, (departmentName || '').trim().toLowerCase())
@@ -1314,8 +1342,13 @@ export async function getPendingHodRequisitions(deptId, deptName, excludeEmploye
      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
        AND (
-         (COALESCE(r.req_hod_approval, 0)::int = 0)
+         -- Awaiting HOD approval (not yet forwarded - no downstream approvals)
+         (COALESCE(r.req_hod_approval, 0)::int = 0
+          AND COALESCE(r.req_committee_approval, 0)::int = 0
+          AND COALESCE(r.req_ceo_approval, 0)::int = 0
+          AND COALESCE(r.req_finance_approval, 0)::int = 0)
          OR
+         -- From Procurement – complete, awaiting HOD acknowledgment
          ( (COALESCE(r.req_purchase_completed, 0) = 1) AND (COALESCE(r.req_hod_acknowledged, 0) = 0) )
        )
      ORDER BY r.req_created_at ASC`,
@@ -1331,8 +1364,13 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE AND (COALESCE(r.req_hod_approval, 0)::int = 0)
+     WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+       -- Awaiting HOD approval (not yet forwarded - no downstream approvals)
+       AND COALESCE(r.req_hod_approval, 0)::int = 0
+       AND COALESCE(r.req_committee_approval, 0)::int = 0
+       AND COALESCE(r.req_ceo_approval, 0)::int = 0
+       AND COALESCE(r.req_finance_approval, 0)::int = 0
      ORDER BY r.req_created_at ASC`,
     [deptId, deptName]
   )
@@ -1341,10 +1379,13 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
 export async function getApprovedByHodRequisitions(deptId, deptName) {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
-      desg.desg_name AS designation_name
+      desg.desg_name AS designation_name,
+      hod_approver.employee_code AS hod_approver_employee_code,
+      hod_approver.employee_id AS hod_approver_id
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     LEFT JOIN employees hod_approver ON r.req_hod_approved_by = hod_approver.employee_id
      WHERE (COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
      AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
      ORDER BY r.req_hod_approval_date DESC NULLS LAST, r.req_created_at DESC`,
@@ -1352,7 +1393,29 @@ export async function getApprovedByHodRequisitions(deptId, deptName) {
   )
 }
 
-/** Creator-dept requisitions whose required-by date is today or past, not completed — HOD may extend deadline (same as Committee). */
+/** Get all HOD-approved requisitions for a department.
+ *  Shows ALL requisitions where HOD has approved (req_hod_approval = 1)
+ *  regardless of which specific HOD or employee type performed the approval.
+ *  Excludes requisitions created by the current user (excludeEmployeeId).
+ */
+export async function getAllHodApprovedRequisitions(deptId, deptName, excludeEmployeeId) {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE (COALESCE(r.req_hod_approval, 0)::int = 1)
+       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+       AND r.req_emp_id != $3
+     ORDER BY r.req_hod_approval_date DESC NULLS LAST, r.req_created_at DESC`,
+    [deptId, deptName, excludeEmployeeId]
+  )
+}
+
+/** Creator-dept requisitions whose required-by date is today or past, not completed — HOD may extend deadline.
+ *  Only includes requisitions still in HOD bucket (not yet forwarded) OR completed pending HOD acknowledgment.
+ */
 export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName) {
   try {
     return await executeQuery(
@@ -1367,6 +1430,13 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
          AND r.req_required_by_date IS NOT NULL
          AND (r.req_required_by_date::date <= CURRENT_DATE)
          AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+         AND (
+           -- Still in HOD bucket (not yet forwarded to Committee/CEO/etc)
+           (r.req_current_stage_key = 'hod' OR r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0)
+           OR
+           -- Completed, pending HOD acknowledgment
+           (COALESCE(r.req_purchase_completed, 0) = 0 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_current_stage_key IS NULL)
+         )
        ORDER BY r.req_required_by_date ASC NULLS LAST, r.req_created_at ASC`,
       [deptId, deptName]
     )
@@ -1415,8 +1485,10 @@ export async function getPendingCeoRequisitions() {
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
      AND (
-       -- Normal pending CEO approval
-       (r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL))
+       -- Normal pending CEO approval (HOD+Committee approved, CEO not approved, not forwarded)
+       (r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL)
+        AND COALESCE(r.req_procurement_ack, 0) = 0
+        AND COALESCE(r.req_finance_approval, 0) = 0)
        OR
        -- Completed requisitions created by CEO awaiting acknowledgment
        (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'CEO')
@@ -1433,8 +1505,12 @@ export async function getPendingProcurementRequisitions() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
+     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
+       AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
        AND (COALESCE(r.req_purchase_completed, 0) = 0)
+       -- Not yet handed over to finance (still in Procurement bucket)
+       AND COALESCE(r.req_handed_to_finance, 0) = 0
+       AND COALESCE(r.req_finance_approval, 0) = 0
      ORDER BY r.req_created_at ASC`
   )
 }
@@ -1447,7 +1523,11 @@ export async function getPendingProcurementRequisitionsFallback() {
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
+     WHERE r.req_is_rejected = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
+       AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1
+       -- Not yet handed over to finance (still in Procurement bucket)
+       AND COALESCE(r.req_handed_to_finance, 0) = 0
+       AND COALESCE(r.req_finance_approval, 0) = 0
      ORDER BY r.req_created_at ASC`
   )
 }
@@ -1463,6 +1543,40 @@ export async function getPendingFinanceRequisitions() {
        AND COALESCE(r.req_finance_approval, 0) = 0
        AND (r.req_handed_to_finance = 1 OR r.req_current_stage_key = 'finance')
      ORDER BY r.req_handed_to_finance_date ASC`
+  )
+}
+
+/** Get all Committee-approved requisitions (for Committee "My Approved" view).
+ *  Excludes requisitions created by the current user (excludeEmployeeId).
+ */
+export async function getApprovedByCommitteeRequisitions(excludeEmployeeId) {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE (COALESCE(r.req_committee_approval, 0)::int = 1)
+       AND r.req_emp_id != $1
+     ORDER BY r.req_committee_approval_date DESC NULLS LAST, r.req_created_at DESC`,
+    [excludeEmployeeId]
+  )
+}
+
+/** Get all CEO-approved requisitions (for CEO "My Approved" view).
+ *  Excludes requisitions created by the current user (excludeEmployeeId).
+ */
+export async function getApprovedByCeoRequisitions(excludeEmployeeId) {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE (COALESCE(r.req_ceo_approval, 0)::int = 1)
+       AND r.req_emp_id != $1
+     ORDER BY r.req_ceo_approval_date DESC NULLS LAST, r.req_created_at DESC`,
+    [excludeEmployeeId]
   )
 }
 

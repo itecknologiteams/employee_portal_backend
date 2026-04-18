@@ -132,19 +132,22 @@ function isCategoryHrAfterHod(category) {
   return REQUISITION_CATEGORIES_HR_AFTER_HOD.some((cat) => cat.trim().toLowerCase() === c)
 }
 
-/** Set req_current_stage_key when DB-driven flow is enabled. stageKey: string = set as-is; null + categoryName = first stage for category. */
-async function setCurrentStageIfFlowEnabled(reqId, stageKey, categoryNameForFirst) {
+/** Set req_current_stage_key to track current bucket. Always updates the stage key. */
+async function setCurrentStage(reqId, stageKey, categoryNameForFirst) {
   try {
-    const stages = await reqRepo.getFlowStages()
-    if (!stages || stages.length === 0) return
+    // Determine the stage key to set
     let key = stageKey
     if (key == null && categoryNameForFirst) {
-      key = await reqRepo.getFirstStageKey(categoryNameForFirst)
+      // Try to get from flow config if available
+      const stages = await reqRepo.getFlowStages().catch(() => [])
+      if (stages && stages.length > 0) {
+        key = await reqRepo.getFirstStageKey(categoryNameForFirst).catch(() => 'hod')
+      }
     }
-    if (key == null) key = stages[0]?.stage_key || 'hod'
+    if (key == null) key = 'hod'
     await reqRepo.setRequisitionCurrentStage(reqId, key)
   } catch (_) {
-    /* flow tables may not exist */
+    /* column may not exist - ignore */
   }
 }
 
@@ -371,7 +374,9 @@ export async function createRequisition(body) {
   try {
     const cat = await reqRepo.getRequisitionCategoryByName(categoryTrimmed)
     if (cat && cat.hod_for_info === 1 && cat.hod_approval === 0 && !creatorIsHod && !creatorIsCommittee && !creatorIsCeo) {
-      await reqRepo.setHodApprovalForInfoOnly(reqId)
+      // For HOD "For Info" categories, the system auto-approves on behalf of HOD
+      // Pass null for approver since no specific HOD performed this action
+      await reqRepo.setHodApprovalForInfoOnly(reqId, null)
       // Use DB-driven next stage after HOD (e.g. Stationary → procurement, Vehicle Repair → committee)
       categoryFlowBucket = await reqRepo.getNextStageKey(categoryTrimmed, 'hod') || 'committee'
     }
@@ -395,65 +400,65 @@ export async function createRequisition(body) {
         // Mark as approved by their role but route to HR
         if (creatorIsCeo) await reqRepo.autoAdvanceCeoRequisition(reqId)
         else if (creatorIsCommittee) await reqRepo.autoAdvanceCommitteeRequisition(reqId)
-        else if (creatorIsHod) await reqRepo.autoAdvanceHodRequisition(reqId)
+        else if (creatorIsHod) await reqRepo.autoAdvanceHodRequisition(reqId, parseInt(employeeId, 10))
       }
       
-      await setCurrentStageIfFlowEnabled(reqId, 'hr')
+      await setCurrentStage(reqId, 'hr')
       await notifyBucketChanged(reqId, 'hr')
       notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr', deptId))
     } else {
       // No HR stage in flow - fall back to normal auto-advance
       if (creatorIsCeo) {
         await reqRepo.autoAdvanceCeoRequisition(reqId)
-        await setCurrentStageIfFlowEnabled(reqId, 'procurement')
+        await setCurrentStage(reqId, 'procurement')
         await notifyBucketChanged(reqId, 'procurement')
         notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptId))
       } else if (creatorIsCommittee) {
         await reqRepo.autoAdvanceCommitteeRequisition(reqId)
-        await setCurrentStageIfFlowEnabled(reqId, 'ceo')
+        await setCurrentStage(reqId, 'ceo')
         await notifyBucketChanged(reqId, 'ceo')
         notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', deptId))
       } else if (creatorIsHod) {
-        await reqRepo.autoAdvanceHodRequisition(reqId)
-        await setCurrentStageIfFlowEnabled(reqId, 'committee')
+        await reqRepo.autoAdvanceHodRequisition(reqId, parseInt(employeeId, 10))
+        await setCurrentStage(reqId, 'committee')
         await notifyBucketChanged(reqId, 'committee')
         notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'committee', deptId))
       } else if (categoryFlowBucket) {
-        await setCurrentStageIfFlowEnabled(reqId, categoryFlowBucket)
+        await setCurrentStage(reqId, categoryFlowBucket)
         await notifyBucketChanged(reqId, categoryFlowBucket)
         notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, categoryFlowBucket, deptId))
       } else {
         const firstKey = await reqRepo.getFirstStageKey(categoryTrimmed).catch(() => 'hod')
         const bucket = firstKey || 'hod'
-        await setCurrentStageIfFlowEnabled(reqId, bucket)
+        await setCurrentStage(reqId, bucket)
         await notifyBucketChanged(reqId, bucket)
         notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucket, deptId))
       }
     }
   } else if (creatorIsCeo) {
     await reqRepo.autoAdvanceCeoRequisition(reqId)
-    await setCurrentStageIfFlowEnabled(reqId, 'procurement')
+    await setCurrentStage(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptId))
   } else if (creatorIsCommittee) {
     await reqRepo.autoAdvanceCommitteeRequisition(reqId)
-    await setCurrentStageIfFlowEnabled(reqId, 'ceo')
+    await setCurrentStage(reqId, 'ceo')
     await notifyBucketChanged(reqId, 'ceo')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', deptId))
   } else if (creatorIsHod) {
-    await reqRepo.autoAdvanceHodRequisition(reqId)
-    await setCurrentStageIfFlowEnabled(reqId, 'committee')
+    await reqRepo.autoAdvanceHodRequisition(reqId, parseInt(employeeId, 10))
+    await setCurrentStage(reqId, 'committee')
     await notifyBucketChanged(reqId, 'committee')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'committee', deptId))
   } else if (categoryFlowBucket) {
-    await setCurrentStageIfFlowEnabled(reqId, categoryFlowBucket)
+    await setCurrentStage(reqId, categoryFlowBucket)
     await notifyBucketChanged(reqId, categoryFlowBucket)
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, categoryFlowBucket, deptId))
   } else {
     // Normal employee: use DB flow so IT Equipments etc go to HOD first; Specialized/General Proc/Devices go to Committee first.
     const firstKey = await reqRepo.getFirstStageKey(categoryTrimmed).catch(() => 'hod')
     const bucket = firstKey || 'hod'
-    await setCurrentStageIfFlowEnabled(reqId, bucket)
+    await setCurrentStage(reqId, bucket)
     await notifyBucketChanged(reqId, bucket)
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucket, deptId))
   }
@@ -631,31 +636,26 @@ export async function getPendingHod(employeeId) {
   const allRows = []
   const seenReqIds = new Set()
 
-  const flowStages = await reqRepo.getFlowStages().catch(() => [])
-
   for (const dept of hodDepartments) {
     const deptId = dept.department_id
     const deptName = (dept.department_name || '').trim().toLowerCase()
 
     let rows = []
     try {
-      if (flowStages && flowStages.length > 0) {
-        const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName })
-        let ackList = []
-        try {
-          ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
-        } catch (_) {}
-        const byStageIds = new Set((byStage || []).map(r => r.req_id))
-        const merged = [...(byStage || [])]
-        for (const r of ackList || []) {
-          if (!byStageIds.has(r.req_id)) merged.push(r)
-        }
-        rows = merged
-      } else {
-        rows = await reqRepo.getPendingHodRequisitions(deptId, deptName, eid)
+      // Always use stage-based query to get only HOD bucket requisitions
+      const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName })
+      let ackList = []
+      try {
+        ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
+      } catch (_) {}
+      const byStageIds = new Set((byStage || []).map(r => r.req_id))
+      const merged = [...(byStage || [])]
+      for (const r of ackList || []) {
+        if (!byStageIds.has(r.req_id)) merged.push(r)
       }
+      rows = merged
     } catch (err) {
-      if (err.code === '42703') rows = await reqRepo.getPendingHodRequisitionsFallback(deptId, deptName, eid)
+      if (err.code === '42703') rows = []
       else throw err
     }
 
@@ -692,7 +692,42 @@ export async function getApprovedByHod(employeeId) {
   const isHodForDept = await reqRepo.isHodOfDepartment(eid, deptId)
   if (!isHodForDept) return []
 
-  const rows = await reqRepo.getApprovedByHodRequisitions(deptId, deptName)
+  // Get ALL requisitions where HOD has approved (req_hod_approval = 1)
+  // Simple filter: HOD approved + same department
+  // Exclude requisitions created by the current user
+  const rows = await reqRepo.getAllHodApprovedRequisitions(deptId, deptName, eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+  return list
+}
+
+export async function getApprovedByCommittee(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const isCommittee = await reqRepo.isCommitteeMember(employeeId)
+  if (!isCommittee) return []
+
+  // Get ALL requisitions where Committee has approved (req_committee_approval = 1)
+  // All departments - Committee oversees all HODs
+  // Exclude requisitions created by the current user
+  const rows = await reqRepo.getApprovedByCommitteeRequisitions(eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+  return list
+}
+
+export async function getApprovedByCeo(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const isCeo = await reqRepo.isCeoMember(employeeId)
+  if (!isCeo) return []
+
+  // Get ALL requisitions where CEO has approved (req_ceo_approval = 1)
+  // All departments - CEO oversees Committee and all HODs
+  // Exclude requisitions created by the current user
+  const rows = await reqRepo.getApprovedByCeoRequisitions(eid)
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
@@ -739,7 +774,7 @@ export async function approveHod(body) {
 
   // For no-BOQ categories (Loan, Event, Vehicle Maintenance, etc.): approve without BOQ, advance by flow only
   if (noBoqCategory) {
-    await reqRepo.approveHod(requisitionId)
+    await reqRepo.approveHod(requisitionId, approverEid)
     const stages = await reqRepo.getFlowStages()
     const hasHrStage = stages.some((s) => (s.stage_key || '').toLowerCase() === 'hr')
     let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hod') : null
@@ -752,7 +787,7 @@ export async function approveHod(body) {
       const hodIdx = stages.findIndex((s) => s.stage_key === 'hod')
       nextKey = (hodIdx >= 0 && hodIdx < stages.length - 1) ? stages[hodIdx + 1].stage_key : 'committee'
     }
-    await setCurrentStageIfFlowEnabled(requisitionId, nextKey)
+    await setCurrentStage(requisitionId, nextKey)
     const bucket = nextKey === 'hr' ? 'hr' : (nextKey === 'committee' ? 'committee' : nextKey)
     await notifyBucketChanged(requisitionId, bucket)
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
@@ -815,9 +850,9 @@ export async function approveHod(body) {
     }
   }
 
-  await reqRepo.approveHod(requisitionId)
+  await reqRepo.approveHod(requisitionId, approverEid)
   const nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hod') : null
-  await setCurrentStageIfFlowEnabled(requisitionId, nextKey || 'committee')
+  await setCurrentStage(requisitionId, nextKey || 'committee')
   const bucket = nextKey === 'hr' ? 'hr' : 'committee'
   await notifyBucketChanged(requisitionId, bucket)
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
@@ -831,9 +866,8 @@ export async function getPendingHR(employeeId) {
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
   if (!ok) return []
-  const rows = useFlow
-    ? await reqRepo.getPendingRequisitionsByCurrentStage('hr')
-    : []
+  // Always filter by current stage key to show only HR bucket requisitions
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('hr')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({ ...req, status: 'Pending HR', items: items.filter(i => i.req_id === req.req_id) }))
@@ -846,9 +880,8 @@ export async function getPendingAdmin(employeeId) {
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'admin') : await reqRepo.isAdminMember(eid)
   if (!ok) return []
-  const rows = useFlow
-    ? await reqRepo.getPendingRequisitionsByCurrentStage('admin')
-    : []
+  // Always filter by current stage key to show only Admin bucket requisitions
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('admin')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({ ...req, status: 'Pending Admin', items: items.filter(i => i.req_id === req.req_id) }))
@@ -861,11 +894,8 @@ export async function getPendingCommittee(employeeId) {
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'committee') : await reqRepo.isCommitteeMember(eid)
   if (!ok) return []
-  let rows = useFlow
-    ? await reqRepo.getPendingRequisitionsByCurrentStage('committee')
-    : await reqRepo.getPendingCommitteeRequisitions(eid)
-  // Exclude any reqs that are in HR bucket (e.g. Loan & Advance Salary) – must not show in Committee list
-  rows = (rows || []).filter((r) => r.req_current_stage_key !== 'hr')
+  // Always filter by current stage key to show only Committee bucket requisitions
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('committee')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({ ...req, status: 'Pending Committee', items: items.filter(i => i.req_id === req.req_id) }))
@@ -919,7 +949,7 @@ export async function approveHR(body) {
     }
     nextKey = total < 50000 ? 'finance' : 'ceo'
   }
-  await setCurrentStageIfFlowEnabled(reqId, nextKey || 'committee')
+  await setCurrentStage(reqId, nextKey || 'committee')
   await notifyBucketChanged(reqId, nextKey || 'committee')
   const bucketAfterHr = nextKey || 'committee'
   const deptIdHr = reqRow[0]?.department_id
@@ -989,7 +1019,7 @@ export async function approveCommittee(body) {
 
   // When category flow defines next stage after committee (e.g. Devices/Accessories → Finance, not CEO), respect it.
   if (nextKeyFromFlow && nextKeyFromFlow !== 'ceo') {
-    await setCurrentStageIfFlowEnabled(reqId, nextKeyFromFlow)
+    await setCurrentStage(reqId, nextKeyFromFlow)
     await notifyBucketChanged(reqId, nextKeyFromFlow)
     const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKeyFromFlow, deptRow[0]?.department_id))
@@ -1002,14 +1032,14 @@ export async function approveCommittee(body) {
   const totalAfterCommittee = computeCommitteeApprovedLineTotalPKR(itemsAfter)
   if (totalAfterCommittee < REQUISITION_CEO_MIN_AMOUNT_PKR) {
     await reqRepo.approveCeo(reqId)
-    await setCurrentStageIfFlowEnabled(reqId, 'procurement')
+    await setCurrentStage(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
     return { message: `Committee approval recorded; forwarded to Procurement (line total under ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR — CEO stage skipped)`, status: 'Forwarded to Procurement' }
   }
 
   const nextKey = nextKeyFromFlow || 'ceo'
-  await setCurrentStageIfFlowEnabled(reqId, nextKey)
+  await setCurrentStage(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKey, reqRow[0]?.department_id))
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
@@ -1021,7 +1051,7 @@ async function applyCeoSkipToProcurementIfUnderThreshold(reqId) {
   const lineTotal = computeCommitteeApprovedLineTotalPKR(lineItems)
   if (lineTotal >= REQUISITION_CEO_MIN_AMOUNT_PKR) return false
   await reqRepo.approveCeo(reqId)
-  await setCurrentStageIfFlowEnabled(reqId, 'procurement')
+  await setCurrentStage(reqId, 'procurement')
   await notifyBucketChanged(reqId, 'procurement')
   const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptRow[0]?.department_id))
@@ -1059,9 +1089,8 @@ export async function getPendingCeo(employeeId) {
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'ceo') : await reqRepo.isCeoMember(eid)
   if (!ok) return []
-  let rows = useFlow
-    ? await reqRepo.getPendingRequisitionsByCurrentStage('ceo')
-    : await reqRepo.getPendingCeoRequisitions()
+  // Always filter by current stage key to show only CEO bucket requisitions
+  let rows = await reqRepo.getPendingRequisitionsByCurrentStage('ceo')
   const repaired = []
   for (const r of rows) {
     const hodOk = Number(r.req_hod_approval) === 1
@@ -1120,7 +1149,7 @@ export async function approveCeo(body) {
   const useFlow = stages && stages.length > 0
   const nextKeyFromFlow = categoryName && useFlow ? await reqRepo.getNextStageKey(categoryName, 'ceo') : null
   const nextKey = nextKeyFromFlow ?? (isCategoryHrAfterHod(categoryName) ? 'finance' : 'procurement')
-  await setCurrentStageIfFlowEnabled(reqId, nextKey)
+  await setCurrentStage(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
   const statusLabel = nextKey === 'finance' ? 'Pending Finance' : nextKey === 'admin' ? 'Pending Admin' : 'Forwarded to Procurement'
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKey, reqRow[0]?.department_id))
@@ -1168,16 +1197,8 @@ export async function getPendingProcurement(employeeId) {
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'procurement') : await reqRepo.isProcurementMember(eid)
   if (!ok) return []
-  let rows
-  try {
-    rows = useFlow
-      ? await reqRepo.getPendingRequisitionsByCurrentStage('procurement')
-      : await reqRepo.getPendingProcurementRequisitions()
-  } catch (err) {
-    if (err.code === '42703') {
-      rows = await reqRepo.getPendingProcurementRequisitionsFallback()
-    } else throw err
-  }
+  // Always filter by current stage key to show only Procurement bucket requisitions
+  let rows = await reqRepo.getPendingRequisitionsByCurrentStage('procurement')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
@@ -1683,7 +1704,7 @@ export async function handoverFinance(body) {
     return { error: 'Add all 3 quotation images before handing over to Finance', status: 400 }
   }
   await reqRepo.handoverToFinance(reqId)
-  await setCurrentStageIfFlowEnabled(reqId, 'finance')
+  await setCurrentStage(reqId, 'finance')
   await notifyBucketChanged(reqId, 'finance')
   const deptHandover = await reqRepo.getRequisitionAndDepartment(reqId)
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'finance', deptHandover[0]?.department_id))
@@ -1704,12 +1725,8 @@ export async function getPendingFinance(employeeId) {
     ok = await reqRepo.isFinanceHod(eid)
   }
   if (!ok) return []
-  // Use flow query if stages exist and has finance stage, otherwise use legacy query
-  const flowStages = await reqRepo.getFlowStages()
-  const hasFinanceStage = flowStages.some(s => s.stage_key === 'finance')
-  const rows = (useFlow && hasFinanceStage)
-    ? await reqRepo.getPendingRequisitionsByCurrentStage('finance')
-    : await reqRepo.getPendingFinanceRequisitions()
+  // Always filter by current stage key to show only Finance bucket requisitions
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('finance')
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({
