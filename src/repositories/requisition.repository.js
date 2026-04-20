@@ -1,4 +1,4 @@
-﻿import { executeQuery, executeTransaction } from '../../config/database.js'
+import { executeQuery, executeTransaction } from '../../config/database.js'
 import { resolveEmailsPreferCrmForCodes } from '../utils/requisitionEmailRecipients.js'
 
 export async function getRequisitionsByEmployeeId(employeeId) {
@@ -173,7 +173,7 @@ export async function autoAdvanceHodRequisition(reqId, approverEmployeeId) {
   )
 }
 
-/** Set HOD approval only (for category flow: hod_for_info – no creator role change). */
+/** Set HOD approval only (for category flow: hod_for_info ? no creator role change). */
 export async function setHodApprovalForInfoOnly(reqId, approverEmployeeId) {
   return executeQuery(
     'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_hod_approved_by = $2 WHERE req_id = $1',
@@ -562,7 +562,7 @@ export async function rejectRequisition(requisitionId, reason) {
     )
   } catch (err) {
     if (err.code === '42703') {
-      // Either req_current_stage_key or req_rejection_reason column missing — fall back
+      // Either req_current_stage_key or req_rejection_reason column missing ? fall back
       return executeQuery('UPDATE requisition SET req_is_rejected = 1 WHERE req_id = $1', [requisitionId])
     }
     throw err
@@ -630,7 +630,7 @@ export async function approveAdmin(requisitionId) {
   }
 }
 
-/** Legacy: HOD → Procurement without Committee. No longer called from service (Committee is always in path after HOD for BOQ categories). */
+/** Legacy: HOD ? Procurement without Committee. No longer called from service (Committee is always in path after HOD for BOQ categories). */
 export async function approveHodDirectToProcurement(requisitionId) {
   try {
     return executeQuery(
@@ -937,7 +937,7 @@ export async function getRequisitionCommentsByReqIds(reqIds) {
   }
 }
 
-/** Get creator (requester) email and name for a requisition – for acknowledgment notifications. */
+/** Get creator (requester) email and name for a requisition ? for acknowledgment notifications. */
 export async function getCreatorEmailByReqId(reqId) {
   try {
     const rows = await executeQuery(
@@ -1246,23 +1246,41 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
       // Finance: explicit stage key OR handed to finance flag
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'hod') {
-      // HOD: explicit stage key OR (no HOD approval AND no downstream approvals AND stage is NULL)
-      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
+      // HOD: explicit stage key (but NOT reverted items ? those go to getPendingHodRevertedRequisitions)
+      //      OR (no HOD approval AND no downstream approvals AND stage is NULL AND not reverted)
+      bucketCondition = ` AND COALESCE(r.has_been_reverted, 0) = 0 AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'committee') {
-      // Committee: explicit stage key OR (HOD approved AND Committee not approved AND stage is NULL)
-      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_committee_approval, 0) = 0))`
+      // Committee: explicit stage key only (category flow determines if Committee is needed)
+      bucketCondition = ` AND r.req_current_stage_key = $1`
     } else if (stageKey === 'ceo') {
       // CEO: explicit stage key OR (HOD+Committee approved AND CEO not approved AND stage is NULL AND not forwarded)
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL) AND COALESCE(r.req_procurement_ack, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'procurement') {
       // Procurement: explicit stage key OR (All 3 approved AND not completed AND not handed to finance AND stage is NULL)
-      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND r.req_ceo_approval = 1 AND COALESCE(r.req_purchase_completed, 0) = 0 AND COALESCE(r.req_handed_to_finance, 0) = 0))`
+      // Also include requisitions that were handed to finance and approved (finance_approval=1, stage=NULL)
+      bucketCondition = ` AND (
+        r.req_current_stage_key = $1
+        OR (
+          r.req_current_stage_key IS NULL
+          AND r.req_hod_approval = 1
+          AND r.req_committee_approval = 1
+          AND r.req_ceo_approval = 1
+          AND COALESCE(r.req_purchase_completed, 0) = 0
+          AND COALESCE(r.req_handed_to_finance, 0) = 0
+        )
+        OR (
+          r.req_current_stage_key IS NULL
+          AND r.req_finance_approval = 1
+          AND COALESCE(r.req_procurement_ack, 0) = 0
+          AND COALESCE(r.req_purchase_completed, 0) = 0
+        )
+      )`
     } else if (stageKey === 'hr') {
       // HR: explicit stage key OR (HOD approved AND HR not approved AND stage is NULL)
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_hr_approval, 0) = 0))`
     } else if (stageKey === 'admin') {
-      // Admin: explicit stage key only (no legacy fallback for admin)
-      bucketCondition = ` AND r.req_current_stage_key = $1`
+      // Admin: explicit stage key OR (finance approved AND admin not approved AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_finance_approval = 1 AND COALESCE(r.req_admin_approval, 0) = 0))`
     } else {
       // Default: explicit stage key only
       bucketCondition = ` AND r.req_current_stage_key = $1`
@@ -1396,7 +1414,7 @@ export async function getEmployeeDept(employeeId) {
   return r[0]
 }
 
-/** HOD pending: (1) awaiting HOD approval (including when HOD is creator), (2) from Procurement – complete, awaiting HOD acknowledgment. */
+/** HOD pending: (1) awaiting HOD approval (including when HOD is creator), (2) from Procurement ? complete, awaiting HOD acknowledgment. */
 export async function getPendingHodRequisitions(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
@@ -1413,7 +1431,7 @@ export async function getPendingHodRequisitions(deptId, deptName, excludeEmploye
           AND COALESCE(r.req_ceo_approval, 0)::int = 0
           AND COALESCE(r.req_finance_approval, 0)::int = 0)
          OR
-         -- From Procurement – complete, awaiting HOD acknowledgment
+         -- From Procurement ? complete, awaiting HOD acknowledgment
          ( (COALESCE(r.req_purchase_completed, 0) = 1) AND (COALESCE(r.req_hod_acknowledged, 0) = 0) )
        )
      ORDER BY r.req_created_at ASC`,
@@ -1478,7 +1496,7 @@ export async function getAllHodApprovedRequisitions(deptId, deptName, excludeEmp
   )
 }
 
-/** Creator-dept requisitions whose required-by date is today or past, not completed — HOD may extend deadline.
+/** Creator-dept requisitions whose required-by date is today or past, not completed ? HOD may extend deadline.
  *  Only includes requisitions still in HOD bucket (not yet forwarded) OR completed pending HOD acknowledgment.
  */
 export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName) {
@@ -1507,6 +1525,36 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
     )
   } catch (err) {
     if (err.code === '42703' || err.code === '42P01') return []
+    throw err
+  }
+}
+
+
+
+/**
+ * Get reverted requisitions for HOD that need review/resolution.
+ * These are requisitions that were reverted back to HOD from a later stage
+ * and have not yet been resolved by the HOD.
+ */
+export async function getPendingHodRevertedRequisitions(deptId, deptName) {
+  try {
+    return await executeQuery(
+      `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+        desg.desg_name AS designation_name
+       FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
+         AND COALESCE(r.req_purchase_completed, 0) = 0
+         AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+         AND r.has_been_reverted = 1
+         AND r.req_current_stage_key = 'hod'
+         AND r.revert_resolved_at IS NULL
+       ORDER BY r.reverted_at DESC`,
+      [deptId, deptName]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
     throw err
   }
 }
@@ -1645,7 +1693,7 @@ export async function getApprovedByCeoRequisitions(excludeEmployeeId) {
   )
 }
 
-/** Req is in Procurement bucket (by flow) and can be acknowledged by Procurement. Use current_stage_key so all flow paths (e.g. Committee→Procurement or HOD→…→CEO→Procurement) work. */
+/** Req is in Procurement bucket (by flow) and can be acknowledged by Procurement. Use current_stage_key so all flow paths (e.g. Committee?Procurement or HOD???CEO?Procurement) work. */
 export async function getRequisitionForProcurementAck(reqId) {
   try {
     return await executeQuery(
@@ -1871,3 +1919,172 @@ export async function isSuperAdmin(employeeId) {
     return false
   }
 }
+
+/** ================= REVERT & REVIEW FEATURE ================= */
+
+/**
+ * Check if a specific stage has already reverted a requisition.
+ * Each stage can only revert once.
+ * @param {number} reqId - Requisition ID
+ * @param {string} stage - Stage to check (e.g., 'procurement', 'finance')
+ * @returns {Promise<boolean>} - True if this stage has already reverted
+ */
+export async function hasStageReverted(reqId, stage) {
+  const result = await executeQuery(
+    `SELECT has_been_reverted, reverted_from_stage
+     FROM requisition
+     WHERE req_id = $1 AND has_been_reverted = 1 AND reverted_from_stage = $2`,
+    [reqId, stage]
+  )
+  return result && result.length > 0
+}
+
+/**
+ * Revert a requisition back to HOD for review/corrections.
+ * This clears all approvals and moves the requisition back to HOD bucket.
+ * @param {number} reqId - Requisition ID
+ * @param {string} fromStage - Stage triggering the revert (e.g., 'procurement', 'finance')
+ * @param {number} revertedByEmployeeId - Employee ID of the person reverting
+ * @param {string} comment - Explanation for why it's being reverted
+ * @returns {Promise<Object|null>} - Updated requisition or null if failed
+ */
+export async function revertRequisitionToHod(reqId, fromStage, revertedByEmployeeId, comment) {
+  // First, clear all approvals after the stage using the database function
+  await executeQuery(`SELECT clear_approvals_after_stage($1, $2)`, [reqId, fromStage])
+
+  // Then update the requisition with revert information
+  const result = await executeQuery(
+    `UPDATE requisition SET
+       has_been_reverted = 1,
+       reverted_from_stage = $2,
+       reverted_to_stage = 'hod',
+       reverted_by_employee_id = $3,
+       reverted_at = NOW(),
+       revert_comment = $4,
+       req_current_stage_key = 'hod',
+       resubmit_skip_stages = TRUE
+     WHERE req_id = $1
+     RETURNING req_id, req_reference_no, req_current_stage_key, has_been_reverted, reverted_from_stage`,
+    [reqId, fromStage, revertedByEmployeeId, comment]
+  )
+
+  return result && result[0] ? result[0] : null
+}
+
+/** Alias for getHodDepartmentsForEmployee ? used by revert feature service. */
+export async function getHodDepartments(employeeId) {
+  return getHodDepartmentsForEmployee(employeeId)
+}
+
+/**
+ * Mark a requisition as resubmitted after HOD corrections.
+ * Clears revert tracking flags, sets HOD approval, restores intermediate approvals for target stage bypass.
+ */
+export async function resubmitRequisitionAfterRevert(reqId, targetStage) {
+  // Build dynamic SQL based on target stage to restore intermediate approvals
+  let approvalSetClause = `
+    req_hod_approval = 1,
+    req_hod_approval_date = CURRENT_TIMESTAMP
+  `
+
+  // For procurement target: ensure Committee and CEO are marked approved (bypass them)
+  if (targetStage === 'procurement') {
+    approvalSetClause += `,
+    req_committee_approval = 1,
+    req_committee_approval_date = COALESCE(req_committee_approval_date, CURRENT_TIMESTAMP),
+    req_ceo_approval = 1,
+    req_ceo_approval_date = COALESCE(req_ceo_approval_date, CURRENT_TIMESTAMP),
+    req_procurement_ack = 0,
+    req_procurement_ack_date = NULL,
+    req_procurement_ack_by = NULL
+    `
+  }
+  // For finance target: ensure Committee, CEO, Procurement are marked approved (bypass all)
+  else if (targetStage === 'finance') {
+    approvalSetClause += `,
+    req_committee_approval = 1,
+    req_committee_approval_date = COALESCE(req_committee_approval_date, CURRENT_TIMESTAMP),
+    req_ceo_approval = 1,
+    req_ceo_approval_date = COALESCE(req_ceo_approval_date, CURRENT_TIMESTAMP),
+    req_procurement_ack = 1,
+    req_procurement_ack_date = COALESCE(req_procurement_ack_date, CURRENT_TIMESTAMP),
+    req_finance_approval = 0,
+    req_finance_approval_date = NULL,
+    req_finance_approved_by = NULL
+    `
+  }
+  // For CEO target: ensure Committee is marked approved (bypass it)
+  else if (targetStage === 'ceo') {
+    approvalSetClause += `,
+    req_committee_approval = 1,
+    req_committee_approval_date = COALESCE(req_committee_approval_date, CURRENT_TIMESTAMP),
+    req_ceo_approval = 0,
+    req_ceo_approval_date = NULL
+    `
+  }
+  // For committee target: just HOD approved (normal flow), reset committee
+  else if (targetStage === 'committee') {
+    approvalSetClause += `,
+    req_committee_approval = 0,
+    req_committee_approval_date = NULL
+    `
+  }
+  // For HR target: HOD approved, reset HR approval
+  else if (targetStage === 'hr') {
+    approvalSetClause += `,
+    req_hr_approval = 0,
+    req_hr_approval_date = NULL
+    `
+  }
+  // For admin target: ensure all prior stages approved, reset admin approval
+  else if (targetStage === 'admin') {
+    approvalSetClause += `,
+    req_admin_approval = 0,
+    req_admin_approval_date = NULL
+    `
+  }
+
+  return executeQuery(
+    `UPDATE requisition SET
+       revert_resolved_at = NOW(),
+       resubmit_skip_stages = FALSE,
+       has_been_reverted = 0,
+       reverted_from_stage = NULL,
+       reverted_to_stage = NULL,
+       reverted_by_employee_id = NULL,
+       reverted_at = NULL,
+       revert_comment = NULL,
+       ${approvalSetClause},
+       req_current_stage_key = $2
+     WHERE req_id = $1
+     RETURNING req_id, req_reference_no, req_current_stage_key`,
+    [reqId, targetStage]
+  )
+}
+
+/**
+ * Get requisitions that were reverted and are pending creator acknowledgment
+ * (has_been_reverted=1, not yet resolved, created by employeeId).
+ */
+export async function getMyRevertedRequisitionsList(employeeId) {
+  try {
+    return executeQuery(
+      `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+         desg.desg_name AS designation_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+       WHERE r.req_emp_id = $1
+         AND r.has_been_reverted = 1
+         AND r.revert_resolved_at IS NULL
+         AND COALESCE(r.req_is_rejected, 0) = 0
+       ORDER BY r.reverted_at DESC`,
+      [employeeId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
+}
+

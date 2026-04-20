@@ -289,3 +289,464 @@ export function buildRequisitionEmailHtml(opts) {
 </body>
 </html>`
 }
+
+
+/**
+ * Build plain-text email for requisition reverted to HOD for review.
+ * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, fromStage, revertComment, items }
+ * @returns {string}
+ */
+export function buildRequisitionRevertedPlainText(opts) {
+  const refNo = opts.refNo || 'â€”'
+  const creatorName = opts.creatorName || 'â€”'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = (opts.departmentName || '').trim()
+  const fromStage = (opts.fromStage || '').trim()
+  const revertComment = (opts.revertComment || '').trim()
+  const items = Array.isArray(opts.items) ? opts.items : []
+  const portalUrl = getPortalUrl()
+
+  const lines = [
+    'â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€',
+    '  EMPLOYEE PORTAL â€“ Requisition Reverted for Review',
+    'â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€',
+    '',
+    `Requisition ${refNo} has been reverted from ${fromStage} back to HOD for corrections.`,
+    '',
+    `Creator: ${creatorName}`,
+    `Required by date: ${requiredBy}`,
+  ]
+  if (departmentName) lines.push(`Department: ${departmentName}`)
+  lines.push('')
+  if (revertComment) {
+    lines.push('Comments from ' + fromStage + ':')
+    lines.push(revertComment)
+    lines.push('')
+  }
+  lines.push('ACTION REQUIRED: Please review the comments, make the necessary corrections, and resubmit.')
+  lines.push('NOTE: When resubmitted, this requisition will skip intermediate stages and return directly to ' + fromStage + '.')
+  lines.push('')
+
+  if (items.length > 0) {
+    lines.push(`Items (${items.length}):`)
+    items.forEach((it, i) => {
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'No description'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      lines.push(`  ${i + 1}. ${desc} â€” Qty: ${qty}${extra ? ` (${extra})` : ''}`)
+    })
+  }
+
+  lines.push('', 'Please review and take action in the portal.', '', `View in portal: ${portalUrl}`, '')
+  return lines.join('\n').trim()
+}
+
+/**
+ * Build HTML email for requisition reverted to HOD for review.
+ * @param {Object} opts - { title, refNo, creatorName, requiredBy, departmentName, fromStage, revertComment, items }
+ * @returns {string}
+ */
+export function buildRequisitionRevertedHtml(opts) {
+  const portalUrl = getPortalUrl()
+  const title = opts.title || 'Requisition Reverted for Review'
+  const refNo = opts.refNo || 'â€”'
+  const creatorName = opts.creatorName || 'â€”'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = opts.departmentName || ''
+  const fromStage = opts.fromStage || ''
+  const revertComment = opts.revertComment || ''
+  const items = Array.isArray(opts.items) ? opts.items : []
+
+  const summaryRows = [
+    { label: 'Reference', value: refNo },
+    { label: 'Created by', value: creatorName },
+    { label: 'Required by', value: requiredBy },
+    { label: 'Reverted from', value: fromStage }
+  ]
+  if (departmentName) summaryRows.push({ label: 'Department', value: departmentName })
+
+  const summaryHtml = summaryRows.map((r) =>
+    `<tr><td style="padding:8px 12px 8px 0;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:8px 0;font-size:14px;font-weight:600;color:#111827;font-family:Arial,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`
+  ).join('')
+
+  let itemsHtml = ''
+  if (items.length > 0) {
+    const rows = items.map((it, i) => {
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'â€”'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      return `<tr><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${i + 1}</td><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(desc)}</td><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${qty}</td><td style="padding:6px 10px;font-size:12px;color:#6b7280;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(extra)}</td></tr>`
+    }).join('')
+    itemsHtml = `<table style="width:100%;border-collapse:collapse;margin-top:8px;">${rows}</table>`
+  } else {
+    itemsHtml = '<p style="font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">No items listed.</p>'
+  }
+
+  const commentSection = revertComment
+    ? `<div style="margin:16px 0;padding:12px;background:#fffbeb;border-left:4px solid #f59e0b;border-radius:6px;">
+        <div style="font-size:12px;font-weight:700;color:#92400e;font-family:Arial,sans-serif;margin-bottom:6px;">Comments from ${escapeHtml(fromStage)}:</div>
+        <div style="font-size:13px;color:#78350f;font-family:Arial,sans-serif;">${escapeHtml(revertComment)}</div>
+       </div>`
+    : ''
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.05);">
+          <tr>
+            <td style="padding:24px 24px 16px;border-bottom:1px solid #e5e7eb;">
+              <h2 style="margin:0;font-size:18px;font-weight:700;color:#111827;font-family:Arial,sans-serif;">${escapeHtml(title)}</h2>
+              <p style="margin:8px 0 0;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">Requisition ${escapeHtml(refNo)} needs your attention</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 24px;">
+              <div style="background:#fef3c7;border:1px solid #fbbf24;border-radius:8px;padding:12px;margin-bottom:16px;">
+                <div style="font-size:14px;font-weight:600;color:#92400e;font-family:Arial,sans-serif;">
+                  âš ï¸ ACTION REQUIRED: Please review and make corrections
+                </div>
+                <div style="font-size:12px;color:#78350f;font-family:Arial,sans-serif;margin-top:4px;">
+                  When resubmitted, this will skip intermediate stages and return directly to ${escapeHtml(fromStage)}.
+                </div>
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:12px;">
+                <tbody>${summaryHtml}</tbody>
+              </table>
+              ${commentSection}
+              <div style="margin:16px 0 8px;">
+                <div style="font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;margin-bottom:6px;">Items</div>
+                ${itemsHtml}
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:20px;">
+                <tr>
+                  <td align="center">
+                    <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:12px 20px;background:#f59e0b;color:#ffffff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;font-family:Arial,sans-serif;">Review in Portal</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+}
+
+/**
+ * Build HTML email for requisition resubmitted after HOD corrections.
+ * @param {Object} opts - { title, refNo, creatorName, requiredBy, departmentName, targetStage, items }
+ * @returns {string}
+ */
+export function buildRequisitionResubmittedHtml(opts) {
+  const portalUrl = getPortalUrl()
+  const title = opts.title || 'Requisition Resubmitted After Correction'
+  const refNo = opts.refNo || '—'
+  const creatorName = opts.creatorName || '—'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = opts.departmentName || ''
+  const targetStage = opts.targetStage || ''
+  const items = Array.isArray(opts.items) ? opts.items : []
+
+  const summaryRows = [
+    { label: 'Reference', value: refNo },
+    { label: 'Created by', value: creatorName },
+    { label: 'Required by', value: requiredBy },
+    { label: 'Returning to', value: targetStage }
+  ]
+  if (departmentName) summaryRows.push({ label: 'Department', value: departmentName })
+
+  const summaryHtml = summaryRows.map((r) =>
+    `<tr><td style="padding:8px 12px 8px 0;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:8px 0;font-size:14px;font-weight:600;color:#111827;font-family:Arial,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`
+  ).join('')
+
+  let itemsHtml = ''
+  if (items.length > 0) {
+    const rows = items.map((it, i) => {
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || '—'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      return `<tr><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${i + 1}</td><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(desc)}</td><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${qty}</td><td style="padding:6px 10px;font-size:12px;color:#6b7280;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(extra)}</td></tr>`
+    }).join('')
+    itemsHtml = `<table style="width:100%;border-collapse:collapse;margin-top:8px;"><tr style="background:#f3f4f6;"><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">#</td><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">Description</td><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">Qty</td><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">Details</td></tr>${rows}</table>`
+  } else {
+    itemsHtml = '<p style="font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">No items listed.</p>'
+  }
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.05);">
+          <tr>
+            <td style="padding:24px 24px 16px;border-bottom:1px solid #e5e7eb;background:#10b981;">
+              <h2 style="margin:0;font-size:18px;font-weight:700;color:#ffffff;font-family:Arial,sans-serif;">${escapeHtml(title)}</h2>
+              <p style="margin:8px 0 0;font-size:13px;color:#d1fae5;font-family:Arial,sans-serif;">Requisition ${escapeHtml(refNo)} has been corrected and resubmitted by HOD</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 24px;">
+              <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:8px;padding:12px;margin-bottom:16px;">
+                <div style="font-size:14px;font-weight:600;color:#065f46;font-family:Arial,sans-serif;">
+                  ✅ HOD has corrected and resubmitted this requisition
+                </div>
+                <div style="font-size:12px;color:#047857;font-family:Arial,sans-serif;margin-top:4px;">
+                  Intermediate stages were skipped. This requisition is returning directly to ${escapeHtml(targetStage)}.
+                </div>
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:12px;">
+                <tbody>${summaryHtml}</tbody>
+              </table>
+              <div style="margin:16px 0 8px;">
+                <div style="font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;margin-bottom:6px;">Items</div>
+                ${itemsHtml}
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:20px;">
+                <tr>
+                  <td align="center">
+                    <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:12px 20px;background:#10b981;color:#ffffff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;font-family:Arial,sans-serif;">Review in Portal</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+}
+
+/**
+ * Build plain-text email for rejection notification (sent to creator).
+ * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, rejectedByStage, rejectionReason, items }
+ * @returns {string}
+ */
+export function buildRequisitionRejectedPlainText(opts) {
+  const refNo = opts.refNo || '—'
+  const creatorName = opts.creatorName || '—'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = (opts.departmentName || '').trim()
+  const rejectedByStage = (opts.rejectedByStage || '').trim()
+  const rejectionReason = (opts.rejectionReason || '').trim()
+  const items = Array.isArray(opts.items) ? opts.items : []
+  const portalUrl = getPortalUrl()
+
+  const lines = [
+    '────────────────────────────────────────',
+    '  EMPLOYEE PORTAL – Requisition Rejected',
+    '────────────────────────────────────────',
+    '',
+    `Requisition ${refNo} has been rejected at the ${rejectedByStage} stage.`,
+    '',
+    `Creator: ${creatorName}`,
+    `Required by date: ${requiredBy}`,
+  ]
+  if (departmentName) lines.push(`Department: ${departmentName}`)
+  lines.push('')
+  if (rejectionReason) {
+    lines.push(`Reason for rejection (from ${rejectedByStage}):`)
+    lines.push(rejectionReason)
+    lines.push('')
+  }
+  lines.push('If you have questions, please contact your HOD or the approving stage.')
+  lines.push('')
+
+  if (items.length > 0) {
+    lines.push(`Items (${items.length}):`)
+    items.forEach((it, i) => {
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'No description'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      lines.push(`  ${i + 1}. ${desc} — Qty: ${qty}${extra ? ` (${extra})` : ''}`)
+    })
+  }
+
+  lines.push('', `View in portal: ${portalUrl}`, '')
+  return lines.join('\n').trim()
+}
+
+/**
+ * Build HTML email for rejection notification (sent to creator).
+ * @param {Object} opts - { title, refNo, creatorName, requiredBy, departmentName, rejectedByStage, rejectionReason, items }
+ * @returns {string}
+ */
+export function buildRequisitionRejectedHtml(opts) {
+  const portalUrl = getPortalUrl()
+  const title = opts.title || 'Requisition Rejected'
+  const refNo = opts.refNo || '—'
+  const creatorName = opts.creatorName || '—'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = opts.departmentName || ''
+  const rejectedByStage = opts.rejectedByStage || ''
+  const rejectionReason = opts.rejectionReason || ''
+  const items = Array.isArray(opts.items) ? opts.items : []
+
+  const summaryRows = [
+    { label: 'Reference', value: refNo },
+    { label: 'Created by', value: creatorName },
+    { label: 'Required by', value: requiredBy },
+    { label: 'Rejected at', value: rejectedByStage }
+  ]
+  if (departmentName) summaryRows.push({ label: 'Department', value: departmentName })
+
+  const summaryHtml = summaryRows.map((r) =>
+    `<tr><td style="padding:8px 12px 8px 0;font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">${escapeHtml(r.label)}</td><td style="padding:8px 0;font-size:14px;font-weight:600;color:#111827;font-family:Arial,sans-serif;">${escapeHtml(String(r.value))}</td></tr>`
+  ).join('')
+
+  const reasonSection = rejectionReason
+    ? `<div style="margin:16px 0;padding:12px;background:#fef2f2;border-left:4px solid #ef4444;border-radius:6px;">
+        <div style="font-size:12px;font-weight:700;color:#991b1b;font-family:Arial,sans-serif;margin-bottom:6px;">Reason from ${escapeHtml(rejectedByStage)}:</div>
+        <div style="font-size:13px;color:#7f1d1d;font-family:Arial,sans-serif;">${escapeHtml(rejectionReason)}</div>
+       </div>`
+    : ''
+
+  let itemsHtml = ''
+  if (items.length > 0) {
+    const rows = items.map((it, i) => {
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || '—'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      return `<tr><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${i + 1}</td><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(desc)}</td><td style="padding:6px 10px;font-size:13px;color:#111827;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${qty}</td><td style="padding:6px 10px;font-size:12px;color:#6b7280;font-family:Arial,sans-serif;border-bottom:1px solid #e5e7eb;">${escapeHtml(extra)}</td></tr>`
+    }).join('')
+    itemsHtml = `<table style="width:100%;border-collapse:collapse;margin-top:8px;"><tr style="background:#f3f4f6;"><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">#</td><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">Description</td><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">Qty</td><td style="padding:8px 10px;font-size:12px;font-weight:700;color:#374151;">Details</td></tr>${rows}</table>`
+  } else {
+    itemsHtml = '<p style="font-size:13px;color:#6b7280;font-family:Arial,sans-serif;">No items listed.</p>'
+  }
+
+  return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(title)}</title>
+</head>
+<body style="margin:0;padding:0;background:#f3f4f6;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="640" cellspacing="0" cellpadding="0" border="0" style="background:#ffffff;border-radius:8px;overflow:hidden;box-shadow:0 4px 6px rgba(0,0,0,0.05);">
+          <tr>
+            <td style="padding:24px 24px 16px;border-bottom:1px solid #e5e7eb;background:#ef4444;">
+              <h2 style="margin:0;font-size:18px;font-weight:700;color:#ffffff;font-family:Arial,sans-serif;">${escapeHtml(title)}</h2>
+              <p style="margin:8px 0 0;font-size:13px;color:#fecaca;font-family:Arial,sans-serif;">Requisition ${escapeHtml(refNo)} has been rejected</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 24px;">
+              <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:12px;margin-bottom:16px;">
+                <div style="font-size:14px;font-weight:600;color:#991b1b;font-family:Arial,sans-serif;">
+                  ❌ Your requisition has been rejected at the ${escapeHtml(rejectedByStage)} stage
+                </div>
+                <div style="font-size:12px;color:#7f1d1d;font-family:Arial,sans-serif;margin-top:4px;">
+                  If you believe this is a mistake, please contact your HOD or the ${escapeHtml(rejectedByStage)} team.
+                </div>
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-bottom:12px;">
+                <tbody>${summaryHtml}</tbody>
+              </table>
+              ${reasonSection}
+              <div style="margin:16px 0 8px;">
+                <div style="font-size:12px;font-weight:700;color:#374151;font-family:Arial,sans-serif;margin-bottom:6px;">Items in this requisition</div>
+                ${itemsHtml}
+              </div>
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="margin-top:20px;">
+                <tr>
+                  <td align="center">
+                    <a href="${escapeAttr(portalUrl)}" style="display:inline-block;padding:12px 20px;background:#6b7280;color:#ffffff;text-decoration:none;border-radius:6px;font-size:14px;font-weight:600;font-family:Arial,sans-serif;">View Requisition History</a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>`
+}
+
+/**
+ * Build plain-text email for requisition resubmitted after revert.
+ * @param {Object} opts - { refNo, creatorName, requiredBy, departmentName, targetStage, items }
+ * @returns {string}
+ */
+export function buildRequisitionResubmittedPlainText(opts) {
+  const refNo = opts.refNo || 'â€”'
+  const creatorName = opts.creatorName || 'â€”'
+  const requiredBy = opts.requiredBy || 'Not set'
+  const departmentName = (opts.departmentName || '').trim()
+  const targetStage = (opts.targetStage || '').trim()
+  const items = Array.isArray(opts.items) ? opts.items : []
+  const portalUrl = getPortalUrl()
+
+  const lines = [
+    'â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€',
+    '  EMPLOYEE PORTAL â€“ Requisition Resubmitted',
+    'â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€',
+    '',
+    `Requisition ${refNo} has been corrected by HOD and resubmitted.`,
+    '',
+    `This requisition is now returning directly to ${targetStage} (intermediate stages were skipped).`,
+    '',
+    `Creator: ${creatorName}`,
+    `Required by date: ${requiredBy}`,
+  ]
+  if (departmentName) lines.push(`Department: ${departmentName}`)
+  lines.push('')
+
+  if (items.length > 0) {
+    lines.push(`Items (${items.length}):`)
+    items.forEach((it, i) => {
+      const productDesc = (it.item_product_description || '').trim()
+      const desc = productDesc || (it.item_desc || '').trim() || 'No description'
+      const qty = it.item_qty != null ? it.item_qty : 1
+      const size = (it.item_size || '').trim()
+      const brand = (it.item_brand || '').trim()
+      const cost = it.item_est_cost != null ? `Est. PKR ${it.item_est_cost}` : ''
+      const extra = [size, brand, cost].filter(Boolean).join(' · ')
+      lines.push(`  ${i + 1}. ${desc} â€” Qty: ${qty}${extra ? ` (${extra})` : ''}`)
+    })
+  }
+
+  lines.push('', 'Please review and take action in the portal.', '', `View in portal: ${portalUrl}`, '')
+  return lines.join('\n').trim()
+}

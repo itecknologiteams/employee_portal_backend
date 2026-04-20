@@ -74,8 +74,23 @@ router.post('/acknowledge-by-creator', requisitionController.acknowledgeByCreato
 // SuperAdmin: toggle hidden status (soft delete/restore)
 router.post('/:reqId/hide', requisitionController.toggleHidden)
 
-// SuperAdmin: get all requisitions including hidden ones
+// SuperAdmin: get all requisitions including hidden ones (must be before GET /:reqId)
 router.get('/admin/all', requisitionController.getAllRequisitionsForAdmin)
+
+// ================= REVERT & REVIEW FEATURE ROUTES =================
+
+// POST /requisition/revert - Revert a requisition back to HOD for review
+router.post('/revert', requisitionController.revertForReview)
+
+// POST /requisition/resubmit - Resubmit a requisition after HOD corrections (skips intermediate stages)
+router.post('/resubmit', requisitionController.resubmitAfterRevert)
+
+// GET /requisition/pending/hod-reverted/:employeeCode - Get requisitions reverted to HOD for correction
+router.get('/pending/hod-reverted/:employeeCode', requisitionController.getPendingHodReverted)
+
+// GET /requisition/my-reverted/:employeeCode - Get reverted requisitions for a specific employee (creator view)
+router.get('/my-reverted/:employeeCode', requisitionController.getMyRevertedRequisitions)
+
 router.get('/:reqId', requisitionController.getById)
 
 

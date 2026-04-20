@@ -651,3 +651,75 @@ export async function getAllRequisitionsForAdmin(req, res) {
     res.status(500).json({ error: error.message || 'Failed to fetch requisitions' })
   }
 }
+
+
+/** ================= REVERT & REVIEW FEATURE CONTROLLERS ================= */
+
+/**
+ * POST /requisition/revert
+ * Revert a requisition back to HOD for review/corrections.
+ */
+export async function revertForReview(req, res) {
+  try {
+    const result = await requisitionService.revertForReview(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Revert for review error:', error)
+    res.status(500).json({ error: error.message || 'Failed to revert requisition' })
+  }
+}
+
+/**
+ * POST /requisition/resubmit
+ * Resubmit a requisition after HOD has made corrections.
+ * This skips intermediate stages and returns directly to the stage that triggered the revert.
+ */
+export async function resubmitAfterRevert(req, res) {
+  try {
+    const result = await requisitionService.resubmitAfterRevert(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Resubmit after revert error:', error)
+    res.status(500).json({ error: error.message || 'Failed to resubmit requisition' })
+  }
+}
+
+/**
+ * GET /requisition/pending/hod-reverted
+ * Get requisitions that have been reverted to HOD for correction.
+ * Accessible only by HOD users.
+ */
+export async function getPendingHodReverted(req, res) {
+  try {
+    const employeeCode = req.params.employeeCode || req.query.employeeCode
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+
+    const result = await requisitionService.getPendingHodReverted(employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Get pending HOD reverted error:', error)
+    res.status(500).json({ error: 'Failed to fetch reverted requisitions' })
+  }
+}
+
+/**
+ * GET /requisition/my-reverted/:employeeCode
+ * Get reverted requisitions for a specific employee (creator view).
+ */
+export async function getMyRevertedRequisitions(req, res) {
+  try {
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+
+    const result = await requisitionService.getMyRevertedRequisitions(employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Get my reverted requisitions error:', error)
+    res.status(500).json({ error: 'Failed to fetch reverted requisitions' })
+  }
+}

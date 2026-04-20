@@ -25,6 +25,8 @@ async function rejectWithReason(requisitionId, reason, approverEid, stageKey) {
   if (reason && String(reason).trim()) {
     await reqRepo.insertRequisitionComment(requisitionId, stageKey, `[Rejection reason] ${String(reason).trim()}`, approverEid)
   }
+  // Email the creator about the rejection
+  await notifyRequisitionRejected(requisitionId, stageKey, reason || '')
 }
 
 async function resolveApproverEmployeeId(body) {
@@ -34,6 +36,18 @@ async function resolveApproverEmployeeId(body) {
   }
   if (body?.approvedByEmployeeCode != null && String(body.approvedByEmployeeCode).trim() !== '') {
     return await getEmployeeIdByCode(String(body.approvedByEmployeeCode).trim())
+  }
+  // Support for revert operation fields
+  if (body?.revertedByEmployeeId != null && String(body.revertedByEmployeeId).trim() !== '') {
+    const eid = parseEmployeeId(String(body.revertedByEmployeeId))
+    if (eid != null) return eid
+  }
+  if (body?.revertedByEmployeeCode != null && String(body.revertedByEmployeeCode).trim() !== '') {
+    return await getEmployeeIdByCode(String(body.revertedByEmployeeCode).trim())
+  }
+  // Support for HOD resubmit after revert
+  if (body?.hodEmployeeCode != null && String(body.hodEmployeeCode).trim() !== '') {
+    return await getEmployeeIdByCode(String(body.hodEmployeeCode).trim())
   }
   return null
 }
@@ -174,6 +188,72 @@ async function notifyBucketChanged(requisitionId, newBucket) {
   }
 }
 
+async function notifyRequisitionReverted(requisitionId, fromStage, revertComment) {
+  if (!requisitionId) return
+  let queued = false
+  if (isBullMQEnabled()) {
+    try {
+      const q = getQueue()
+      await q.add('requisition-reverted', { requisitionId, fromStage, revertComment })
+      queued = true
+    } catch (e) {
+      console.error('BullMQ requisition-reverted add failed:', e?.message)
+    }
+  }
+  if (!queued) {
+    try {
+      const { handleRequisitionReverted } = await import('../../workers/requisition-reminder-worker.js')
+      await handleRequisitionReverted({ requisitionId, fromStage, revertComment })
+    } catch (e2) {
+      console.error('Fallback reverted email failed:', e2?.message)
+    }
+  }
+}
+
+async function notifyRequisitionResubmitted(requisitionId, targetStage) {
+  if (!requisitionId || !targetStage) return
+  let queued = false
+  if (isBullMQEnabled()) {
+    try {
+      const q = getQueue()
+      await q.add('requisition-resubmitted', { requisitionId, targetStage })
+      queued = true
+    } catch (e) {
+      console.error('BullMQ requisition-resubmitted add failed:', e?.message)
+    }
+  }
+  if (!queued) {
+    try {
+      const { handleRequisitionResubmitted } = await import('../../workers/requisition-reminder-worker.js')
+      await handleRequisitionResubmitted({ requisitionId, targetStage })
+    } catch (e2) {
+      console.error('Fallback resubmitted email failed:', e2?.message)
+    }
+  }
+}
+
+async function notifyRequisitionRejected(requisitionId, rejectedByStage, rejectionReason) {
+  if (!requisitionId) return
+  let queued = false
+  if (isBullMQEnabled()) {
+    try {
+      const q = getQueue()
+      await q.add('requisition-rejected', { requisitionId, rejectedByStage, rejectionReason })
+      queued = true
+    } catch (e) {
+      console.error('BullMQ requisition-rejected add failed:', e?.message)
+    }
+  }
+  if (!queued) {
+    try {
+      const { handleRequisitionRejected } = await import('../../workers/requisition-reminder-worker.js')
+      await handleRequisitionRejected({ requisitionId, rejectedByStage, rejectionReason })
+    } catch (e2) {
+      console.error('Fallback rejected email failed:', e2?.message)
+    }
+  }
+}
+
 export async function getHistory(employeeId, query = {}) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -299,15 +379,19 @@ export async function createRequisition(body) {
       (Number(qty) > 0)
     return hasData
   })
+
+  // Compute creator HOD/Committee/CEO status once for reuse
+  const deptId = await reqRepo.getCreatorDepartment(employeeId)
+  const hodId = await reqRepo.getHodByDepartment(deptId)
+  const creatorIsHodByDept = hodId != null && hodId === parseInt(employeeId, 10)
+  const creatorIsHodByRole = deptId != null && await reqRepo.isHodOfDepartment(parseInt(employeeId, 10), deptId)
+  const creatorIsHod = creatorIsHodByDept || creatorIsHodByRole
+  const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
+  const creatorIsCeo = await reqRepo.isCeoMember(employeeId)
+
   if (validItems.length > 0) {
-    const deptIdForCheck = await reqRepo.getCreatorDepartment(employeeId)
-    const hodIdForCheck = await reqRepo.getHodByDepartment(deptIdForCheck)
-    const creatorIsHodByDeptForItems = hodIdForCheck != null && hodIdForCheck === parseInt(employeeId, 10)
-    // Also check HOD by role (handles multi-dept HODs and role-based HODs)
-    const creatorIsHodByRoleForItems = deptIdForCheck != null && await reqRepo.isHodOfDepartment(parseInt(employeeId, 10), deptIdForCheck)
-    const creatorIsHodForItems = creatorIsHodByDeptForItems || creatorIsHodByRoleForItems
     const { employeeHasPermission } = await import('./auth.service.js')
-    const canAddItems = creatorIsHodForItems || await employeeHasPermission(employeeId, 'requisition_can_add_items')
+    const canAddItems = creatorIsHod || await employeeHasPermission(employeeId, 'requisition_can_add_items')
     if (!canAddItems) {
       return { error: 'You do not have permission to add items to requisitions. Contact Administration for "Can add items" access.', status: 403 }
     }
@@ -334,15 +418,6 @@ export async function createRequisition(body) {
       return { error: 'Required by date must be at least 4 days from today. You cannot select today or the next 3 days.', status: 400 }
     }
   }
-
-  const deptId = await reqRepo.getCreatorDepartment(employeeId)
-  const hodId = await reqRepo.getHodByDepartment(deptId)
-  const creatorIsHodByDept = hodId != null && hodId === parseInt(employeeId, 10)
-  // Also check if creator has HOD role via employee_type or designation (handles multi-dept HODs and role-based HODs)
-  const creatorIsHodByRole = deptId != null && await reqRepo.isHodOfDepartment(parseInt(employeeId, 10), deptId)
-  const creatorIsHod = creatorIsHodByDept || creatorIsHodByRole
-  const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
-  const creatorIsCeo = await reqRepo.isCeoMember(employeeId)
 
   // Determine creator role for acknowledgment routing
   let creatorRole = null
@@ -642,18 +717,8 @@ export async function getPendingHod(employeeId) {
 
     let rows = []
     try {
-      // Always use stage-based query to get only HOD bucket requisitions
-      const byStage = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName })
-      let ackList = []
-      try {
-        ackList = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
-      } catch (_) {}
-      const byStageIds = new Set((byStage || []).map(r => r.req_id))
-      const merged = [...(byStage || [])]
-      for (const r of ackList || []) {
-        if (!byStageIds.has(r.req_id)) merged.push(r)
-      }
-      rows = merged
+      // Only show requisitions actually in the HOD bucket — ack list is served separately by getPendingHodAcknowledge
+      rows = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName }) || []
     } catch (err) {
       if (err.code === '42703') rows = []
       else throw err
@@ -675,6 +740,44 @@ export async function getPendingHod(employeeId) {
   }
 
   allRows.sort((a, b) => new Date(a.req_created_at) - new Date(b.req_created_at))
+
+  const reqIds = allRows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return allRows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+
+export async function getPendingHodReverted(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+
+  // Get ALL departments this employee is HOD of (handles multi-department HODs)
+  const hodDepartments = await reqRepo.getHodDepartmentsForEmployee(eid)
+  if (hodDepartments.length === 0) return []
+
+  const allRows = []
+  const seenReqIds = new Set()
+
+  for (const dept of hodDepartments) {
+    const deptId = dept.department_id
+    const deptName = (dept.department_name || '').trim().toLowerCase()
+
+    let rows = []
+    try {
+      rows = await reqRepo.getPendingHodRevertedRequisitions(deptId, deptName)
+    } catch (err) {
+      if (err.code !== '42703') throw err
+    }
+
+    for (const r of rows || []) {
+      if (r.req_id != null && !seenReqIds.has(r.req_id)) {
+        seenReqIds.add(r.req_id)
+        allRows.push(r)
+      }
+    }
+  }
+
+  allRows.sort((a, b) => new Date(b.req_created_at) - new Date(a.req_created_at))
 
   const reqIds = allRows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
@@ -852,11 +955,18 @@ export async function approveHod(body) {
 
   await reqRepo.approveHod(requisitionId, approverEid)
   const nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hod') : null
-  await setCurrentStage(requisitionId, nextKey || 'committee')
-  const bucket = nextKey === 'hr' ? 'hr' : 'committee'
-  await notifyBucketChanged(requisitionId, bucket)
-  notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, bucket, deptIdForReq))
-  const statusLabel = nextKey === 'hr' ? 'Pending HR' : 'Pending Committee'
+  const resolvedNext = nextKey || 'committee'
+  await setCurrentStage(requisitionId, resolvedNext)
+  if (VALID_BUCKETS.includes(resolvedNext)) {
+    await notifyBucketChanged(requisitionId, resolvedNext)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, resolvedNext, deptIdForReq))
+  }
+  const statusLabel = resolvedNext === 'hr' ? 'Pending HR'
+    : resolvedNext === 'committee' ? 'Pending Committee'
+    : resolvedNext === 'ceo' ? 'Pending CEO'
+    : resolvedNext === 'procurement' ? 'Forwarded to Procurement'
+    : resolvedNext === 'finance' ? 'Pending Finance'
+    : `Pending ${resolvedNext}`
   return { message: 'HOD approval recorded', status: statusLabel }
 }
 
@@ -910,9 +1020,7 @@ export async function approveHR(body) {
     return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
   const useFlow = (await reqRepo.getFlowStages()).length > 0
-  console.log('[approveHR] Flow check:', { useFlow, stagesLength: (await reqRepo.getFlowStages()).length })
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
-  console.log('[approveHR] Role check:', { ok, useFlow, eid })
   if (!ok) {
     return { error: 'Only HR can approve this stage. Check your Employee Type or Designation.', status: 403 }
   }
@@ -1187,7 +1295,21 @@ export async function approveAdmin(body) {
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveAdmin(reqId)
+  // approveAdmin repo call already sets req_current_stage_key = NULL (done).
+  // Notify creator that the ticket is ready for acknowledgment.
   notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Admin:', e?.message))
+  const creatorAdm = await notifRepo.getRequisitionCreatorId(reqId)
+  if (creatorAdm) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: creatorAdm,
+      type: 'requisition_ready_for_receipt',
+      title: 'Admin approved your requisition',
+      body: 'Your requisition has been approved by Admin. Please acknowledge in the portal.',
+      url: '/requisition/acknowledgment',
+      relatedEntityType: 'requisition',
+      relatedEntityId: reqId
+    }))
+  }
   return { message: 'Admin approval recorded', status: 'Completed' }
 }
 
@@ -1317,7 +1439,9 @@ export async function updateItemsByHod(reqId, body) {
   const rows = await reqRepo.getRequisitionById(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
-  if (row.req_hod_approval === 1) {
+  // Allow editing if: (1) not yet approved by HOD, OR (2) was reverted back to HOD
+  const canEdit = row.req_hod_approval !== 1 || row.has_been_reverted === 1
+  if (!canEdit) {
     return { error: 'Requisition already forwarded. Items can only be edited while in HOD bucket.', status: 403 }
   }
   const items = Array.isArray(body.items) ? body.items : []
@@ -1362,7 +1486,8 @@ export async function deleteItemByHod(reqId, itemId) {
   const rows = await reqRepo.getRequisitionById(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
-  if (row.req_hod_approval === 1) {
+  const canDelete = row.req_hod_approval !== 1 || row.has_been_reverted === 1
+  if (!canDelete) {
     return { error: 'Requisition already forwarded. Items can only be deleted while in HOD bucket.', status: 403 }
   }
   const existingItems = await reqRepo.getRequisitionItems(reqIdNum)
@@ -1382,7 +1507,8 @@ export async function addItemByHod(reqId, body) {
   const rows = await reqRepo.getRequisitionById(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found', status: 404 }
   const row = rows[0]
-  if (row.req_hod_approval === 1) {
+  const canAdd = row.req_hod_approval !== 1 || row.has_been_reverted === 1
+  if (!canAdd) {
     return { error: 'Requisition already forwarded. Items can only be added while in HOD bucket.', status: 403 }
   }
   const { item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks } = body
@@ -1784,12 +1910,13 @@ export async function approveFinance(body) {
     return { error: 'approvedQuotationIndex must be 1, 2, or 3 (for requisitions with quotations)', status: 400 }
   }
   await reqRepo.approveFinance(reqId, eid, idx)
-  try {
-    const stages = await reqRepo.getFlowStages()
-    if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
-  } catch (_) {}
   const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
   if (isLoan) {
+    // Loan category: skip procurement, go directly to creator acknowledgment
+    try {
+      const stages = await reqRepo.getFlowStages()
+      if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
+    } catch (_) {}
     notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Finance (Loan):', e?.message))
     const cid = await notifRepo.getRequisitionCreatorId(reqId)
     if (cid) {
@@ -1804,6 +1931,8 @@ export async function approveFinance(body) {
       }))
     }
   } else {
+    // Normal category: set stage to procurement so it appears in their bucket
+    await setCurrentStage(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptFin[0]?.department_id))
   }
@@ -1948,10 +2077,14 @@ export async function getById(reqId) {
       item_id: i.item_id,
       req_id: i.req_id,
       item_desc: i.item_desc,
+      item_product_description: i.item_product_description ?? null,
       item_size: i.item_size,
       item_brand: i.item_brand,
       item_qty: i.item_qty,
+      hod_item_qty: i.hod_item_qty ?? null,
       item_est_cost: i.item_est_cost,
+      hod_item_est_cost: i.hod_item_est_cost ?? null,
+      committee_approved_qty: i.committee_approved_qty ?? null,
       item_remarks: i.item_remarks
     }))
   }
@@ -1981,16 +2114,200 @@ export async function getTrackRecords(query = {}, includeHidden = false) {
   const limit = Math.max(1, Math.min(100, parseInt(query.limit || query.pageSize || 20, 10)))
   const offset = (page - 1) * limit
 
-  const [countRows, rows] = await Promise.all([
+  const [total, rows] = await Promise.all([
     reqRepo.getTrackRecordsCount(includeHidden),
     reqRepo.getTrackRecordsAll(limit, offset, includeHidden)
   ])
-
-  const total = parseInt(countRows?.[0]?.total ?? 0, 10)
   const data = await attachItemsToRequisitions(rows || [])
 
   return {
     data,
     pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 }
   }
+}
+
+/** ================= REVERT & REVIEW FEATURE ================= */
+
+/** Legacy (non-flow) stage permission check for revert. */
+async function _checkStagePermissionLegacy(eid, stage) {
+  switch (stage) {
+    case 'hod': return false // HOD cannot revert from the HOD stage
+    case 'hr': return reqRepo.isHrMember(eid)
+    case 'committee': return reqRepo.isCommitteeMember(eid)
+    case 'ceo': return reqRepo.isCeoMember(eid)
+    case 'procurement': return reqRepo.isProcurementMember(eid)
+    case 'finance': return reqRepo.isFinanceHod(eid)
+    case 'admin': return reqRepo.isAdminMember(eid)
+    default: return false
+  }
+}
+
+/**
+ * Revert a requisition back to HOD for review/corrections.
+ * This allows approvers at any stage to send the requisition back to HOD
+ * with comments for corrections. HOD can then resubmit, skipping intermediate stages.
+ *
+ * @param {Object} body - Request body
+ * @param {number} body.requisitionId - Requisition ID
+ * @param {string} body.fromStage - Stage triggering the revert (e.g., 'procurement', 'finance')
+ * @param {number} body.revertedByEmployeeId - Employee ID of the person reverting
+ * @param {string} body.comment - Explanation for why it's being reverted
+ */
+export async function revertForReview(body) {
+  const { requisitionId, fromStage, comment } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId(body)
+
+  if (reqId == null || Number.isNaN(reqId)) {
+    return { error: 'Valid requisitionId is required', status: 400 }
+  }
+
+  if (!fromStage || !VALID_BUCKETS.includes(fromStage)) {
+    return { error: `Valid fromStage is required. Must be one of: ${VALID_BUCKETS.join(', ')}`, status: 400 }
+  }
+
+  if (eid == null) {
+    return { error: 'Valid revertedByEmployeeId or revertedByEmployeeCode is required', status: 400 }
+  }
+
+  // Verify the employee has permission for this stage
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const canRevert = useFlow
+    ? await reqRepo.isEmployeeTypeForStage(eid, fromStage)
+    : await _checkStagePermissionLegacy(eid, fromStage)
+
+  if (!canRevert) {
+    return { error: `You do not have permission to revert from ${fromStage} stage`, status: 403 }
+  }
+
+  // Check if THIS STAGE has already reverted (one revert per stage allowed)
+  const stageAlreadyReverted = await reqRepo.hasStageReverted(reqId, fromStage)
+  if (stageAlreadyReverted) {
+    return { error: `This requisition has already been reverted from ${fromStage}. Each stage can only revert once.`, status: 409 }
+  }
+
+  // Get creator info for notification
+  const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+  const requisition = await reqRepo.getRequisitionById(reqId)
+  const refNo = requisition?.[0]?.req_reference_no || `#${reqId}`
+
+  // Perform the revert
+  const result = await reqRepo.revertRequisitionToHod(reqId, fromStage, eid, comment)
+  if (!result) {
+    return { error: 'Failed to revert requisition', status: 500 }
+  }
+
+  // Add comment record with special prefix for revert
+  if (comment && String(comment).trim()) {
+    await reqRepo.insertRequisitionComment(reqId, fromStage, `[Revert for Review] ${String(comment).trim()}`, eid)
+  }
+
+  // Send notifications
+  // 1. Notify the HOD of the creator's department (revert-specific email)
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (reqRow?.[0]?.department_id) {
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hod', reqRow[0].department_id))
+    await notifyRequisitionReverted(reqId, fromStage, comment)
+  }
+
+  // 2. Notify the creator via in-app
+  if (creatorId) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: creatorId,
+      type: 'requisition_reverted_for_review',
+      title: `Requisition ${refNo} - Needs Correction`,
+      body: `Your requisition has been sent back to HOD for review/corrections from ${fromStage}. Reason: ${comment}`,
+      url: '/requisition/history',
+      relatedEntityType: 'requisition',
+      relatedEntityId: reqId
+    }))
+  }
+
+  return {
+    message: 'Requisition reverted to HOD for review',
+    status: 'Reverted to HOD for Review',
+    revertedFrom: fromStage,
+    revertedTo: 'hod',
+    referenceNo: result.req_reference_no,
+    note: 'HOD can now make corrections and resubmit. The requisition will skip intermediate stages and return directly to ' + fromStage
+  }
+}
+
+/**
+ * Resubmit a requisition after HOD has made corrections.
+ * Clears the revert state, restores HOD approval, and moves the requisition
+ * directly back to the stage that triggered the revert (skipping intermediates).
+ */
+export async function resubmitAfterRevert(body) {
+  const { requisitionId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId(body)
+
+  if (reqId == null || Number.isNaN(reqId)) {
+    return { error: 'Valid requisitionId is required', status: 400 }
+  }
+  if (eid == null) {
+    return { error: 'Valid approvedByEmployeeId or approvedByEmployeeCode is required', status: 400 }
+  }
+
+  // Fetch the requisition to confirm it is in a reverted state
+  const rows = await reqRepo.getRequisitionById(reqId)
+  if (!rows.length) return { error: 'Requisition not found', status: 404 }
+  const row = rows[0]
+
+  if (!row.has_been_reverted || row.revert_resolved_at) {
+    return { error: 'Requisition is not in a reverted state or has already been resubmitted', status: 409 }
+  }
+  if (row.req_is_rejected === 1) {
+    return { error: 'Cannot resubmit a rejected requisition', status: 400 }
+  }
+
+  // Verify that the actor is HOD of the requisition's department
+  const reqDept = await reqRepo.getRequisitionAndDepartment(reqId)
+  const deptId = reqDept[0]?.department_id
+  const isHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
+  if (!isHod) {
+    return { error: 'Only the HOD of the requestor department can resubmit after a revert', status: 403 }
+  }
+
+  // Target stage: the stage that originally triggered the revert
+  const targetStage = row.reverted_from_stage || 'committee'
+
+  const result = await reqRepo.resubmitRequisitionAfterRevert(reqId, targetStage)
+  if (!result || !result.length) {
+    return { error: 'Failed to resubmit requisition', status: 500 }
+  }
+
+  // Log the resubmit as a comment
+  await reqRepo.insertRequisitionComment(reqId, 'hod', '[Resubmitted after Revert] HOD resubmitted after corrections', eid)
+
+  // Notify the target stage bucket (resubmit-specific email)
+  await notifyRequisitionResubmitted(reqId, targetStage)
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, targetStage, deptId))
+
+  return {
+    message: `Requisition resubmitted successfully and returned to ${targetStage}`,
+    status: `Pending ${targetStage.charAt(0).toUpperCase() + targetStage.slice(1)}`,
+    targetStage,
+    referenceNo: result[0].req_reference_no
+  }
+}
+
+/**
+ * Get reverted requisitions for a specific employee (creator view).
+ * Shows the creator their own requisitions that have been sent back to HOD.
+ */
+export async function getMyRevertedRequisitions(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+
+  const rows = await reqRepo.getMyRevertedRequisitionsList(eid)
+  const reqIds = (rows || []).map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+
+  return (rows || []).map(req => ({
+    ...req,
+    status: 'Reverted to HOD for Correction',
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
 }

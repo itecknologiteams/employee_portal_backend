@@ -1,7 +1,19 @@
 import { executeQuery } from '../config/database.js'
 import { getConnection, getQueue, getReminderRedisKey } from '../config/bullmq.js'
 import { sendRequisitionReminder } from '../config/email.js'
-import { buildRequisitionEmailHtml, buildRequisitionEmailPlainText, buildRequisitionReminderPlainText, buildRequisitionBucketChangedPlainText, getPortalUrl } from '../config/requisition-email-template.js'
+import {
+  buildRequisitionEmailHtml,
+  buildRequisitionEmailPlainText,
+  buildRequisitionReminderPlainText,
+  buildRequisitionBucketChangedPlainText,
+  buildRequisitionRevertedPlainText,
+  buildRequisitionRevertedHtml,
+  buildRequisitionResubmittedPlainText,
+  buildRequisitionResubmittedHtml,
+  buildRequisitionRejectedPlainText,
+  buildRequisitionRejectedHtml,
+  getPortalUrl
+} from '../config/requisition-email-template.js'
 import {
   getRequisitionBucket,
   getEmailsForBucket,
@@ -443,6 +455,195 @@ export async function handleRequisitionReminder3DayTest(data) {
 }
 
 /**
+ * Send email when a requisition is reverted to HOD for correction.
+ * Notifies HOD of the creator's department.
+ * data: { requisitionId, fromStage, revertComment, hodDeptIds }
+ */
+export async function handleRequisitionReverted(data) {
+  const { requisitionId, fromStage, revertComment } = data
+  if (!requisitionId) {
+    console.warn('[BullMQ] requisition-reverted: missing requisitionId')
+    return
+  }
+  let row
+  try {
+    const rows = await executeQuery(
+      `SELECT r.req_id, r.req_emp_id, r.req_reference_no, r.req_required_by_date, r.req_material,
+              e.first_name, e.last_name, e.department_id, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE r.req_id = $1`,
+      [requisitionId]
+    )
+    row = rows[0]
+  } catch (err) {
+    console.error('[BullMQ] requisition-reverted: fetch failed', err.message)
+    return
+  }
+  if (!row) {
+    console.warn('[BullMQ] requisition-reverted: requisition not found', requisitionId)
+    return
+  }
+  const creatorDeptIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+  let toEmails = await getEmailsForBucket('hod', creatorDeptIds)
+  if (!toEmails.length && process.env.TEST_REMINDER_EMAIL) {
+    toEmails = [process.env.TEST_REMINDER_EMAIL.trim()]
+  }
+  if (!toEmails.length) {
+    console.log('[BullMQ] requisition-reverted:', row.req_reference_no || requisitionId, '– no HOD email found')
+    return
+  }
+
+  const refNo = row.req_reference_no || '#' + requisitionId
+  const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
+  const departmentName = (await getDepartmentNamesForIds(creatorDeptIds)) || row.department_name || ''
+  const requiredBy = row.req_required_by_date
+    ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'Not set'
+  let items = []
+  try {
+    items = await executeQuery(
+      'SELECT item_desc, item_product_description, item_qty, item_size, item_brand, item_est_cost FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+      [requisitionId]
+    ) || []
+  } catch (_) {}
+
+  const stageLabel = fromStage ? fromStage.charAt(0).toUpperCase() + fromStage.slice(1) : 'Approver'
+  const subject = `Requisition ${refNo} – Reverted for Correction (from ${stageLabel})`
+  const body = buildRequisitionRevertedPlainText({ refNo, creatorName, requiredBy, departmentName, fromStage: stageLabel, revertComment, items })
+  const html = buildRequisitionRevertedHtml({ title: `Requisition Reverted for Correction`, refNo, creatorName, requiredBy, departmentName, fromStage: stageLabel, revertComment, items })
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'requisition_reverted', ref: refNo, fromStage } })
+  console.log('[BullMQ] requisition-reverted: email sent to', toEmails.join(','), 'for req', requisitionId)
+}
+
+/**
+ * Send email when a reverted requisition is resubmitted by HOD after corrections.
+ * Notifies the target stage bucket (e.g., Procurement, Finance, Committee).
+ * data: { requisitionId, targetStage }
+ */
+export async function handleRequisitionResubmitted(data) {
+  const { requisitionId, targetStage } = data
+  if (!requisitionId || !targetStage) {
+    console.warn('[BullMQ] requisition-resubmitted: missing requisitionId or targetStage')
+    return
+  }
+  const validBuckets = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin']
+  if (!validBuckets.includes(targetStage)) {
+    console.warn('[BullMQ] requisition-resubmitted: invalid targetStage', targetStage)
+    return
+  }
+  let row
+  try {
+    const rows = await executeQuery(
+      `SELECT r.req_id, r.req_emp_id, r.req_reference_no, r.req_required_by_date, r.req_material,
+              e.first_name, e.last_name, e.department_id, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE r.req_id = $1`,
+      [requisitionId]
+    )
+    row = rows[0]
+  } catch (err) {
+    console.error('[BullMQ] requisition-resubmitted: fetch failed', err.message)
+    return
+  }
+  if (!row) {
+    console.warn('[BullMQ] requisition-resubmitted: requisition not found', requisitionId)
+    return
+  }
+  const creatorDeptIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+  let toEmails = await getEmailsForBucket(targetStage, targetStage === 'hod' ? creatorDeptIds : row.department_id)
+  if (!toEmails.length && process.env.TEST_REMINDER_EMAIL) {
+    toEmails = [process.env.TEST_REMINDER_EMAIL.trim()]
+  }
+  if (!toEmails.length) {
+    console.log('[BullMQ] requisition-resubmitted:', row.req_reference_no || requisitionId, '– no recipient for stage', targetStage)
+    return
+  }
+
+  const refNo = row.req_reference_no || '#' + requisitionId
+  const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
+  const departmentName = (await getDepartmentNamesForIds(creatorDeptIds)) || row.department_name || ''
+  const requiredBy = row.req_required_by_date
+    ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'Not set'
+  let items = []
+  try {
+    items = await executeQuery(
+      'SELECT item_desc, item_product_description, item_qty, item_size, item_brand, item_est_cost FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+      [requisitionId]
+    ) || []
+  } catch (_) {}
+
+  const stageLabel = targetStage.charAt(0).toUpperCase() + targetStage.slice(1)
+  const subject = `Requisition ${refNo} – Corrected & Resubmitted (returning to ${stageLabel})`
+  const body = buildRequisitionResubmittedPlainText({ refNo, creatorName, requiredBy, departmentName, targetStage: stageLabel, items })
+  const html = buildRequisitionResubmittedHtml({ title: 'Requisition Resubmitted After Correction', refNo, creatorName, requiredBy, departmentName, targetStage: stageLabel, items })
+  await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html, meta: { event: 'requisition_resubmitted', ref: refNo, targetStage } })
+  console.log('[BullMQ] requisition-resubmitted: email sent to', toEmails.join(','), 'for req', requisitionId)
+}
+
+/**
+ * Send email to the requisition creator when their requisition is rejected.
+ * data: { requisitionId, rejectedByStage, rejectionReason }
+ */
+export async function handleRequisitionRejected(data) {
+  const { requisitionId, rejectedByStage, rejectionReason } = data
+  if (!requisitionId) {
+    console.warn('[BullMQ] requisition-rejected: missing requisitionId')
+    return
+  }
+  let row
+  try {
+    const rows = await executeQuery(
+      `SELECT r.req_id, r.req_emp_id, r.req_reference_no, r.req_required_by_date, r.req_material,
+              e.first_name, e.last_name, e.email, e.department_id, d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE r.req_id = $1`,
+      [requisitionId]
+    )
+    row = rows[0]
+  } catch (err) {
+    console.error('[BullMQ] requisition-rejected: fetch failed', err.message)
+    return
+  }
+  if (!row) {
+    console.warn('[BullMQ] requisition-rejected: requisition not found', requisitionId)
+    return
+  }
+  const creatorEmail = (row.email || '').trim()
+  if (!creatorEmail) {
+    console.log('[BullMQ] requisition-rejected: creator has no email, skip', requisitionId)
+    return
+  }
+
+  const refNo = row.req_reference_no || '#' + requisitionId
+  const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
+  const departmentName = row.department_name || ''
+  const requiredBy = row.req_required_by_date
+    ? new Date(row.req_required_by_date).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' })
+    : 'Not set'
+  let items = []
+  try {
+    items = await executeQuery(
+      'SELECT item_desc, item_product_description, item_qty, item_size, item_brand, item_est_cost FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+      [requisitionId]
+    ) || []
+  } catch (_) {}
+
+  const stageLabel = rejectedByStage ? rejectedByStage.charAt(0).toUpperCase() + rejectedByStage.slice(1) : 'Approver'
+  const subject = `Requisition ${refNo} – Rejected at ${stageLabel} Stage`
+  const body = buildRequisitionRejectedPlainText({ refNo, creatorName, requiredBy, departmentName, rejectedByStage: stageLabel, rejectionReason, items })
+  const html = buildRequisitionRejectedHtml({ title: 'Requisition Rejected', refNo, creatorName, requiredBy, departmentName, rejectedByStage: stageLabel, rejectionReason, items })
+  await sendRequisitionReminder({ to: creatorEmail, subject, body, html, meta: { event: 'requisition_rejected', ref: refNo, stage: rejectedByStage } })
+  console.log('[BullMQ] requisition-rejected: email sent to', creatorEmail, 'for req', requisitionId)
+}
+
+/**
  * Single processor for the queue: routes by job name.
  */
 export async function processJob(job) {
@@ -452,6 +653,12 @@ export async function processJob(job) {
     await handleRequisitionBucketChanged(job.data)
   } else if (job.name === 'requisition-reminder-3day-test') {
     await handleRequisitionReminder3DayTest(job.data)
+  } else if (job.name === 'requisition-reverted') {
+    await handleRequisitionReverted(job.data)
+  } else if (job.name === 'requisition-resubmitted') {
+    await handleRequisitionResubmitted(job.data)
+  } else if (job.name === 'requisition-rejected') {
+    await handleRequisitionRejected(job.data)
   } else {
     await processRequisitionReminders()
   }
