@@ -1246,41 +1246,49 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
       // Finance: explicit stage key OR handed to finance flag
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'hod') {
-      // HOD: explicit stage key (but NOT reverted items ? those go to getPendingHodRevertedRequisitions)
-      //      OR (no HOD approval AND no downstream approvals AND stage is NULL AND not reverted)
-      bucketCondition = ` AND COALESCE(r.has_been_reverted, 0) = 0 AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
+      // HOD: explicit stage key OR (no HOD approval AND no downstream approvals AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'committee') {
-      // Committee: explicit stage key only (category flow determines if Committee is needed)
-      bucketCondition = ` AND r.req_current_stage_key = $1`
+      // Committee: explicit stage key OR (HOD approved AND Committee not approved AND stage is NULL)
+      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_committee_approval, 0) = 0))`
     } else if (stageKey === 'ceo') {
       // CEO: explicit stage key OR (HOD+Committee approved AND CEO not approved AND stage is NULL AND not forwarded)
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL) AND COALESCE(r.req_procurement_ack, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'procurement') {
       // Procurement: explicit stage key OR (All 3 approved AND not completed AND not handed to finance AND stage is NULL)
-      // Also include requisitions that were handed to finance and approved (finance_approval=1, stage=NULL)
-      bucketCondition = ` AND (
+      bucketCondition = `
+      AND (
         r.req_current_stage_key = $1
         OR (
           r.req_current_stage_key IS NULL
           AND r.req_hod_approval = 1
           AND r.req_committee_approval = 1
-          AND r.req_ceo_approval = 1
           AND COALESCE(r.req_purchase_completed, 0) = 0
+          AND COALESCE(r.req_finance_approval, 1) = 1
           AND COALESCE(r.req_handed_to_finance, 0) = 0
         )
-        OR (
-          r.req_current_stage_key IS NULL
-          AND r.req_finance_approval = 1
-          AND COALESCE(r.req_procurement_ack, 0) = 0
-          AND COALESCE(r.req_purchase_completed, 0) = 0
-        )
-      )`
+      )
+      `
+
     } else if (stageKey === 'hr') {
       // HR: explicit stage key OR (HOD approved AND HR not approved AND stage is NULL)
-      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_hr_approval, 0) = 0))`
+      // bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_hr_approval, 0) = 0))`
+      bucketCondition = `
+      AND (
+        r.req_category = 'Loan & Advance Salary'
+        AND (
+          r.req_current_stage_key = $1
+          OR (
+            r.req_current_stage_key IS NULL
+            AND r.req_hod_approval = 1
+            AND COALESCE(r.req_hr_approval, 0) = 0
+          )
+        )
+      )
+    `   
     } else if (stageKey === 'admin') {
-      // Admin: explicit stage key OR (finance approved AND admin not approved AND stage is NULL)
-      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_finance_approval = 1 AND COALESCE(r.req_admin_approval, 0) = 0))`
+      // Admin: explicit stage key only (no legacy fallback for admin)
+      bucketCondition = ` AND r.req_current_stage_key = $1`
     } else {
       // Default: explicit stage key only
       bucketCondition = ` AND r.req_current_stage_key = $1`
@@ -1536,28 +1544,22 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
  * These are requisitions that were reverted back to HOD from a later stage
  * and have not yet been resolved by the HOD.
  */
-export async function getPendingHodRevertedRequisitions(deptId, deptName) {
-  try {
-    return await executeQuery(
-      `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
-        desg.desg_name AS designation_name
-       FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
-       LEFT JOIN departments d ON e.department_id = d.department_id
-       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-       WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
-         AND COALESCE(r.req_purchase_completed, 0) = 0
-         AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
-         AND r.has_been_reverted = 1
-         AND r.req_current_stage_key = 'hod'
-         AND r.revert_resolved_at IS NULL
-       ORDER BY r.reverted_at DESC`,
-      [deptId, deptName]
-    )
-  } catch (err) {
-    if (err.code === '42703') return []
-    throw err
-  }
-}
+// export async function getPendingHodRevertedRequisitions(deptId, deptName) {
+//   return executeQuery(
+//     `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+//       desg.desg_name AS designation_name
+//      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+//      LEFT JOIN departments d ON e.department_id = d.department_id
+//      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+//      WHERE (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
+//        AND(e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+//        AND r.has_been_reverted = 1
+//        AND r.req_current_stage_key = 'hod'
+//        AND r.revert_resolved_at IS NULL
+//      ORDER BY r.reverted_at DESC`,
+//     [deptId,deptName]
+//   )
+// }
 
 export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
   const whereClause = `(COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
@@ -1978,83 +1980,15 @@ export async function getHodDepartments(employeeId) {
 
 /**
  * Mark a requisition as resubmitted after HOD corrections.
- * Clears revert tracking flags, sets HOD approval, restores intermediate approvals for target stage bypass.
+ * Clears revert tracking flags and sets stage to the original fromStage.
  */
 export async function resubmitRequisitionAfterRevert(reqId, targetStage) {
-  // Build dynamic SQL based on target stage to restore intermediate approvals
-  let approvalSetClause = `
-    req_hod_approval = 1,
-    req_hod_approval_date = CURRENT_TIMESTAMP
-  `
-
-  // For procurement target: ensure Committee and CEO are marked approved (bypass them)
-  if (targetStage === 'procurement') {
-    approvalSetClause += `,
-    req_committee_approval = 1,
-    req_committee_approval_date = COALESCE(req_committee_approval_date, CURRENT_TIMESTAMP),
-    req_ceo_approval = 1,
-    req_ceo_approval_date = COALESCE(req_ceo_approval_date, CURRENT_TIMESTAMP),
-    req_procurement_ack = 0,
-    req_procurement_ack_date = NULL,
-    req_procurement_ack_by = NULL
-    `
-  }
-  // For finance target: ensure Committee, CEO, Procurement are marked approved (bypass all)
-  else if (targetStage === 'finance') {
-    approvalSetClause += `,
-    req_committee_approval = 1,
-    req_committee_approval_date = COALESCE(req_committee_approval_date, CURRENT_TIMESTAMP),
-    req_ceo_approval = 1,
-    req_ceo_approval_date = COALESCE(req_ceo_approval_date, CURRENT_TIMESTAMP),
-    req_procurement_ack = 1,
-    req_procurement_ack_date = COALESCE(req_procurement_ack_date, CURRENT_TIMESTAMP),
-    req_finance_approval = 0,
-    req_finance_approval_date = NULL,
-    req_finance_approved_by = NULL
-    `
-  }
-  // For CEO target: ensure Committee is marked approved (bypass it)
-  else if (targetStage === 'ceo') {
-    approvalSetClause += `,
-    req_committee_approval = 1,
-    req_committee_approval_date = COALESCE(req_committee_approval_date, CURRENT_TIMESTAMP),
-    req_ceo_approval = 0,
-    req_ceo_approval_date = NULL
-    `
-  }
-  // For committee target: just HOD approved (normal flow), reset committee
-  else if (targetStage === 'committee') {
-    approvalSetClause += `,
-    req_committee_approval = 0,
-    req_committee_approval_date = NULL
-    `
-  }
-  // For HR target: HOD approved, reset HR approval
-  else if (targetStage === 'hr') {
-    approvalSetClause += `,
-    req_hr_approval = 0,
-    req_hr_approval_date = NULL
-    `
-  }
-  // For admin target: ensure all prior stages approved, reset admin approval
-  else if (targetStage === 'admin') {
-    approvalSetClause += `,
-    req_admin_approval = 0,
-    req_admin_approval_date = NULL
-    `
-  }
-
   return executeQuery(
     `UPDATE requisition SET
        revert_resolved_at = NOW(),
        resubmit_skip_stages = FALSE,
-       has_been_reverted = 0,
-       reverted_from_stage = NULL,
-       reverted_to_stage = NULL,
-       reverted_by_employee_id = NULL,
-       reverted_at = NULL,
-       revert_comment = NULL,
-       ${approvalSetClause},
+       req_hod_approval = 1,
+       req_hod_approval_date = CURRENT_TIMESTAMP,
        req_current_stage_key = $2
      WHERE req_id = $1
      RETURNING req_id, req_reference_no, req_current_stage_key`,
@@ -2088,3 +2022,39 @@ export async function getMyRevertedRequisitionsList(employeeId) {
   }
 }
 
+/**
+ * Get pending requisitions that have been reverted to HOD for correction.
+ * @param {number} departmentId - Department ID
+ * @param {string} departmentName - Department name (for display)
+ * @returns {Promise<Array>}
+ */
+export async function getPendingHodRevertedRequisitions(departmentId, departmentName) {
+  try {
+    const result = await executeQuery(
+      `SELECT
+        r.*,
+        e.first_name || ' ' || e.last_name AS employee_name,
+        d.department_name,
+        desg.desg_name AS designation
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+       WHERE r.has_been_reverted = 1
+         AND r.req_current_stage_key = 'hod'
+         AND r.revert_resolved_at IS NULL
+         AND e.department_id = $1
+         AND r.req_is_rejected = 0
+         AND r.req_purchase_completed = 0
+       ORDER BY r.reverted_at DESC`,
+      [departmentId]
+    )
+    return result || []
+  } catch (err) {
+    if (err.code === '42703') {
+      // Column doesn't exist yet (migration not applied) - return empty
+      return []
+    }
+    throw err
+  }
+}
