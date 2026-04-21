@@ -1265,7 +1265,6 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
           AND r.req_committee_approval = 1
           AND COALESCE(r.req_purchase_completed, 0) = 0
           AND COALESCE(r.req_finance_approval, 1) = 1
-          AND COALESCE(r.req_handed_to_finance, 0) = 0
         )
       )
       `
