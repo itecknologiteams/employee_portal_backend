@@ -1029,7 +1029,7 @@ export async function getPendingCommittee(employeeId) {
 }
 
 export async function approveHR(body) {
-  const { requisitionId, approved } = body
+  const { requisitionId, approved, hrApprovedAmount } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
   const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
@@ -1059,6 +1059,13 @@ export async function approveHR(body) {
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
   await reqRepo.approveHr(reqId)
+
+  if (hrApprovedAmount != null) {
+    const amt = parseFloat(String(hrApprovedAmount).replace(/,/g, ''))
+    if (!isNaN(amt) && amt > 0) {
+      await reqRepo.saveHrApprovedAmount(reqId, amt)
+    }
+  }
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
   let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hr') : 'committee'

@@ -617,6 +617,13 @@ export async function approveHr(requisitionId) {
   }
 }
 
+export async function saveHrApprovedAmount(reqId, amount) {
+  await executeQuery(
+    `UPDATE requisition SET req_hr_approved_amount = $1 WHERE req_id = $2`,
+    [amount, reqId]
+  )
+}
+
 export async function approveHrCheck(reqId, eid) {
   await executeQuery(
     `UPDATE requisition 
