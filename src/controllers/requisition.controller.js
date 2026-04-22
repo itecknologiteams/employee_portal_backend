@@ -280,6 +280,28 @@ export async function approveHR(req, res) {
   }
 }
 
+export async function getPendingHRCheck(req, res) {
+  try {
+    const result = await requisitionService.getPendingHRCheck(req.query.empCode)
+    if (result?.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('getPendingHRCheck error:', error)
+    res.status(500).json({ error: 'Failed to fetch HR check pending list' })
+  }
+}
+
+export async function approveHRCheck(req, res) {
+  try {
+    const result = await requisitionService.approveHRCheck(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('HR Check approve error:', error)
+    res.status(500).json({ error: 'Failed to update approval' })
+  }
+}
+
 export async function getPendingAdmin(req, res) {
   try {
     const employeeId = await getEmployeeIdByCode(req.params.employeeCode)

@@ -30,6 +30,7 @@ async function rejectWithReason(requisitionId, reason, approverEid, stageKey) {
 }
 
 async function resolveApproverEmployeeId(body) {
+
   if (body?.approvedByEmployeeId != null && String(body.approvedByEmployeeId).trim() !== '') {
     const eid = parseEmployeeId(String(body.approvedByEmployeeId))
     if (eid != null) return eid
@@ -476,11 +477,12 @@ export async function createRequisition(body) {
         if (creatorIsCeo) await reqRepo.autoAdvanceCeoRequisition(reqId)
         else if (creatorIsCommittee) await reqRepo.autoAdvanceCommitteeRequisition(reqId)
         else if (creatorIsHod) await reqRepo.autoAdvanceHodRequisition(reqId, parseInt(employeeId, 10))
+      } else {
+        // Normal employee: HOD pe jaao pehle
+        await setCurrentStage(reqId, 'hod')
+        await notifyBucketChanged(reqId, 'hod')
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hod', deptId))
       }
-      
-      await setCurrentStage(reqId, 'hr')
-      await notifyBucketChanged(reqId, 'hr')
-      notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr', deptId))
     } else {
       // No HR stage in flow - fall back to normal auto-advance
       if (creatorIsCeo) {
@@ -998,6 +1000,20 @@ export async function getPendingAdmin(employeeId) {
   return list
 }
 
+export async function getPendingHRCheck(employeeCode) {
+  const eid = await getEmployeeIdByCode(String(employeeCode).trim())
+  console.log('getPendingHRCheck - employeeCode:', employeeCode, 'eid:', eid)
+  if (eid == null) return []
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
+  console.log('getPendingHRCheck - ok:', ok)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('hr_check')
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending HR Check', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
 export async function getPendingCommittee(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -1062,7 +1078,73 @@ export async function approveHR(body) {
   const bucketAfterHr = nextKey || 'committee'
   const deptIdHr = reqRow[0]?.department_id
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucketAfterHr, deptIdHr))
-  return { message: 'HR approval recorded', status: nextKey === 'ceo' ? 'Pending CEO' : (nextKey === 'finance' ? 'Pending Finance' : (nextKey === 'committee' ? 'Pending Committee' : `Pending ${nextKey}`)) }
+  return { 
+    message: 'HR approval recorded', 
+    status: nextKey === 'ceo' ? 'Pending CEO' 
+          : nextKey === 'finance' ? 'Pending Finance' 
+          : nextKey === 'hr_check' ? 'Pending HR Check'
+          : nextKey === 'committee' ? 'Pending Committee' 
+          : `Pending ${nextKey}` 
+  }
+}
+
+export async function approveHRCheck(body) {
+  const { requisitionId, approved } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId(body)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
+  }
+
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
+  if (!ok) {
+    return { error: 'Only HR can approve this stage.', status: 403 }
+  }
+
+  if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required.', status: 400 }
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+    await rejectWithReason(reqId, reason, eid, 'hr_check')
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected by HR (Check)',
+        body: `Your requisition was rejected by HR at check stage. Reason: ${reason}`,
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+
+  // Approved: HR check done, go to creator acknowledgment
+  await reqRepo.approveHrCheck(reqId, eid)
+
+  try {
+    const stages = await reqRepo.getFlowStages()
+    if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
+  } catch (_) {}
+
+  notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after HR Check:', e?.message))
+
+  const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+  if (creatorId) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: creatorId,
+      type: 'requisition_hr_check_approved',
+      title: 'Check received by HR',
+      body: 'HR has confirmed check received. Please acknowledge.',
+      url: '/requisition/acknowledgment',
+      relatedEntityType: 'requisition',
+      relatedEntityId: reqId
+    }))
+  }
+
+  return { message: 'HR check recorded. Forwarded to creator for acknowledgment.', status: 'Pending Acknowledgment' }
 }
 
 export async function approveCommittee(body) {
@@ -1772,6 +1854,7 @@ export async function getPendingCount(employeeId) {
   const [hod, hr, admin, committee, ceo, procurement, finance, hodAck, adminExec, creatorAck] = await Promise.all([
     getPendingHod(employeeId),
     getPendingHR(employeeId),
+    getPendingHRCheck(employeeId),
     getPendingAdmin(employeeId),
     getPendingCommittee(employeeId),
     getPendingCeo(employeeId),
@@ -1912,24 +1995,10 @@ export async function approveFinance(body) {
   await reqRepo.approveFinance(reqId, eid, idx)
   const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
   if (isLoan) {
-    // Loan category: skip procurement, go directly to creator acknowledgment
-    try {
-      const stages = await reqRepo.getFlowStages()
-      if (stages && stages.length > 0) await reqRepo.setRequisitionCurrentStage(reqId, null)
-    } catch (_) {}
-    notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Finance (Loan):', e?.message))
-    const cid = await notifRepo.getRequisitionCreatorId(reqId)
-    if (cid) {
-      notifSvc.notifySafe(notifSvc.notify({
-        recipientEmployeeId: cid,
-        type: 'requisition_finance_approved',
-        title: 'Finance approved',
-        body: 'Your requisition was approved by Finance. Please acknowledge when ready.',
-        url: '/requisition/acknowledgment',
-        relatedEntityType: 'requisition',
-        relatedEntityId: reqId
-      }))
-    }
+    // Loan category: Finance ke baad HR Check stage pe bhejo
+    await setCurrentStage(reqId, 'hr_check')
+    await notifyBucketChanged(reqId, 'hr_check')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr_check', deptFin[0]?.department_id))
   } else {
     // Normal category: set stage to procurement so it appears in their bucket
     await setCurrentStage(reqId, 'procurement')

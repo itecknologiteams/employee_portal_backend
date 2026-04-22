@@ -617,6 +617,16 @@ export async function approveHr(requisitionId) {
   }
 }
 
+export async function approveHrCheck(reqId, eid) {
+  await executeQuery(
+    `UPDATE requisition 
+     SET req_hr_check_approved_by = $1, 
+         req_hr_check_approved_at = NOW()
+     WHERE req_id = $2`,
+    [eid, reqId]
+  )
+}
+
 /** Admin approves (e.g. Stationary/Vehicle Maintenance after HOD For Info). Sets stage to null (done). */
 export async function approveAdmin(requisitionId) {
   try {
