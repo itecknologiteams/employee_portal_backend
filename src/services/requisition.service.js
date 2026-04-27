@@ -1070,15 +1070,12 @@ export async function approveHR(body) {
   const categoryName = reqRow[0]?.req_category
   let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hr') : 'committee'
   // Loan & Advance Salary: Amount <50K -> Finance only; >=50K -> CEO then Finance
+  // Use req_hr_approved_amount if HR set one, otherwise fall back to loan_advance_amount
   if (isCategoryHrAfterHod(categoryName)) {
-    const items = await reqRepo.getRequisitionItems(reqId)
-    let total = 0
-    for (const it of items || []) {
-      const qty = Number(it.hod_item_qty ?? it.item_qty) || 0
-      const cost = parseFloat(String(it.hod_item_est_cost ?? it.item_est_cost ?? '0').replace(/,/g, '')) || 0
-      total += qty * cost
-    }
-    nextKey = total < 50000 ? 'finance' : 'ceo'
+    const hrAmt = parseFloat(String(reqRow[0]?.req_hr_approved_amount ?? '').replace(/,/g, ''))
+    const loanAmt = parseFloat(String(reqRow[0]?.loan_advance_amount ?? '0').replace(/,/g, ''))
+    const loanTotal = !isNaN(hrAmt) && hrAmt > 0 ? hrAmt : (isNaN(loanAmt) ? 0 : loanAmt)
+    nextKey = loanTotal < 50000 ? 'finance' : 'ceo'
   }
   await setCurrentStage(reqId, nextKey || 'committee')
   await notifyBucketChanged(reqId, nextKey || 'committee')
