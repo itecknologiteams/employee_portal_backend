@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -n \"setViewModalReqId\\\\|onClick.*View\\\\|Eye.*Eye\\\\|Eye.*size\" D:\\\\\\\\Github\\\\\\\\Emp_Portal_FrontEnd\\\\\\\\src\\\\\\\\pages\\\\\\\\RequisitionPending.jsx)",
+      "Bash(grep -v \"//\")"
+    ]
+  }
+}

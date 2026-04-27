@@ -633,6 +633,30 @@ export async function saveHrApprovedAmount(reqId, amount) {
   )
 }
 
+export async function saveHrEmploymentStatus(reqId, status) {
+  try {
+    await executeQuery(
+      `UPDATE requisition SET req_employment_status = $1 WHERE req_id = $2`,
+      [status, reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return
+    throw err
+  }
+}
+
+export async function saveHrApprovedInstallments(reqId, installments) {
+  try {
+    await executeQuery(
+      `UPDATE requisition SET req_hr_approved_installments = $1 WHERE req_id = $2`,
+      [installments, reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return
+    throw err
+  }
+}
+
 export async function approveHrCheck(reqId, eid) {
   await executeQuery(
     `UPDATE requisition 

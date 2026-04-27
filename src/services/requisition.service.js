@@ -1029,7 +1029,7 @@ export async function getPendingCommittee(employeeId) {
 }
 
 export async function approveHR(body) {
-  const { requisitionId, approved, hrApprovedAmount } = body
+  const { requisitionId, approved, hrApprovedAmount, hrEmploymentStatus, hrApprovedInstallments } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
   const eid = await resolveApproverEmployeeId(body)
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
@@ -1062,9 +1062,14 @@ export async function approveHR(body) {
 
   if (hrApprovedAmount != null) {
     const amt = parseFloat(String(hrApprovedAmount).replace(/,/g, ''))
-    if (!isNaN(amt) && amt > 0) {
-      await reqRepo.saveHrApprovedAmount(reqId, amt)
-    }
+    if (!isNaN(amt) && amt > 0) await reqRepo.saveHrApprovedAmount(reqId, amt)
+  }
+  if (hrEmploymentStatus && ['Permanent', 'Not Confirmed'].includes(String(hrEmploymentStatus).trim())) {
+    await reqRepo.saveHrEmploymentStatus(reqId, String(hrEmploymentStatus).trim())
+  }
+  if (hrApprovedInstallments != null) {
+    const inst = parseInt(String(hrApprovedInstallments), 10)
+    if (!isNaN(inst) && inst > 0) await reqRepo.saveHrApprovedInstallments(reqId, inst)
   }
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
