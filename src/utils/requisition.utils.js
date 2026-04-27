@@ -26,12 +26,13 @@ export function computeCommitteeApprovedLineTotalPKR(items) {
 function isExecutionDone(row) {
   return row.req_admin_approval === 1 ||
     row.req_purchase_completed === 1 ||
-    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)))
+    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)) && row.req_current_stage_key !== 'hr_check')
 }
 
 export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   if (row.req_is_rejected === 1) return 'Rejected'
   if (row.req_creator_acknowledged === 1) return 'Closed'
+  if (row.req_current_stage_key === 'hr_check') return 'Pending HR Check'
   if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Pending your acknowledgment'
   if (row.req_admin_approval === 1) return 'Completed'
   if (row.req_hod_acknowledged === 1) return 'Completed'
@@ -81,7 +82,7 @@ export function getPendingAt(status) {
   if (status === 'Forwarded to Procurement') return 'Procurement'
   if (status === 'Pending CEO') return 'CEO'
   if (status === 'Pending Committee') return 'Committee'
-  if (status === 'Pending HR') return 'HR'
+  if (status === 'Pending HR' || status === 'Pending HR Check') return 'HR'
   if (status === 'Pending Admin') return 'Admin'
   if (status === 'Pending HOD') return 'HOD'
   if (status === 'Pending your acknowledgment') return 'Creator'
@@ -137,8 +138,9 @@ export function getTATFromRequisition(row) {
   if (row.req_hod_approval_date) lastEnd = row.req_hod_approval_date
   else return mapBucketsToDuration(buckets)
 
-  // HR — only if visited
-  if (row.req_hr_approval_date || currentKey === 'hr') {
+  // HR — only if visited (also show if rejected at this stage)
+  const hrRejected = row.req_is_rejected === 1 && String(row.req_rejection_stage || '') === 'hr'
+  if (row.req_hr_approval_date || currentKey === 'hr' || hrRejected) {
     buckets.push({ name: 'HR', start: lastEnd, end: row.req_hr_approval_date || null, assignee: '—' })
     if (row.req_hr_approval_date) lastEnd = row.req_hr_approval_date
     else return mapBucketsToDuration(buckets)
@@ -151,8 +153,9 @@ export function getTATFromRequisition(row) {
     else return mapBucketsToDuration(buckets)
   }
 
-  // CEO — only if not skipped and actually visited
-  if (!skipCeo && (row.req_ceo_approval_date || currentKey === 'ceo')) {
+  // CEO — only if not skipped and actually visited (also show if rejected at this stage)
+  const ceoRejected = row.req_is_rejected === 1 && String(row.req_rejection_stage || '') === 'ceo'
+  if (!skipCeo && (row.req_ceo_approval_date || currentKey === 'ceo' || ceoRejected)) {
     buckets.push({ name: 'CEO', start: lastEnd, end: row.req_ceo_approval_date || null, assignee: '—' })
     if (row.req_ceo_approval_date) lastEnd = row.req_ceo_approval_date
     else return mapBucketsToDuration(buckets)
@@ -334,10 +337,12 @@ export function buildTatFromRequisition(row, flowStages, behaviorMap) {
     // CEO: skip only if amount < threshold AND CEO was never approved
     if (key === 'ceo' && skipCeo) continue
 
-    // A stage is included if it has a completion timestamp OR is the current active stage
+    // A stage is included if it has a completion timestamp, is the current active stage,
+    // or is the stage where rejection occurred (terminal open bucket)
     const completionTs = getStageCompletionTimestamp(row, key)
     const isCurrentStage = (currentKey === key)
-    if (!completionTs && !isCurrentStage) continue
+    const isRejectionStage = row.req_is_rejected === 1 && String(row.req_rejection_stage || '').toLowerCase() === key
+    if (!completionTs && !isCurrentStage && !isRejectionStage) continue
 
     // Can't add if the previous stage hasn't completed (chain broken)
     if (lastEnd == null) break
@@ -354,7 +359,7 @@ export function buildTatFromRequisition(row, flowStages, behaviorMap) {
     }
   }
 
-  const buckets = [...raw, ...buildPostFlowTailBuckets(row)]
+  const buckets = row.req_is_rejected === 1 ? raw : [...raw, ...buildPostFlowTailBuckets(row)]
   return mapBucketsToDuration(buckets)
 }
 

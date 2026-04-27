@@ -298,7 +298,7 @@ export async function handleRequisitionBucketChanged(data) {
     console.warn('[BullMQ] requisition-bucket-changed: missing requisitionId or newBucket')
     return
   }
-  const validBuckets = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance']
+  const validBuckets = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover']
   if (!validBuckets.includes(newBucket)) {
     console.warn('[BullMQ] requisition-bucket-changed: invalid newBucket', newBucket)
     return

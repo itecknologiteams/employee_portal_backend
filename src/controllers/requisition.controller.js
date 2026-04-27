@@ -499,6 +499,54 @@ export async function completePurchase(req, res) {
   }
 }
 
+export async function getPendingAdminAcknowledge(req, res) {
+  try {
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingAdminAcknowledge(employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending Admin Acknowledge error:', error)
+    res.status(500).json({ error: 'Failed to fetch' })
+  }
+}
+
+export async function acknowledgeAdminStage(req, res) {
+  try {
+    const result = await requisitionService.acknowledgeAdminStage(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('Admin acknowledge error:', error)
+    res.status(500).json({ error: 'Failed to acknowledge' })
+  }
+}
+
+export async function getPendingAdminHandover(req, res) {
+  try {
+    const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await requisitionService.getPendingAdminHandover(employeeId)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(Array.isArray(result) ? result : [])
+  } catch (error) {
+    console.error('Pending Admin Handover error:', error)
+    res.status(500).json({ error: 'Failed to fetch' })
+  }
+}
+
+export async function handoverByAdmin(req, res) {
+  try {
+    const result = await requisitionService.handoverByAdmin(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message, status: result.status })
+  } catch (error) {
+    console.error('Admin handover error:', error)
+    res.status(500).json({ error: 'Failed to hand over' })
+  }
+}
+
 export async function getPendingAdminExecution(req, res) {
   try {
     const employeeId = await getEmployeeIdByCode(req.params.employeeCode)

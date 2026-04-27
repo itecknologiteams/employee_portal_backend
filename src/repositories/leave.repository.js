@@ -857,12 +857,12 @@ export async function getLeaveRequests(employeeId) {
   )
 }
 
-export async function createLeaveRequest(employeeId, leaveTypeId, startDate, endDate, reason, initialStatus = 'Pending') {
+export async function createLeaveRequest(employeeId, leaveTypeId, startDate, endDate, reason, initialStatus = 'Pending', source = 'portal') {
   return executeQuery(
-    `INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, reason, status, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, CURRENT_TIMESTAMP)
+    `INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, reason, status, source, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
      RETURNING leave_request_id`,
-    [employeeId, leaveTypeId, startDate, endDate, reason, initialStatus]
+    [employeeId, leaveTypeId, startDate, endDate, reason, initialStatus, source]
   )
 }
 
@@ -872,7 +872,8 @@ export async function getLeaveRequestById(leaveRequestId) {
     `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
         COALESCE(lr.annual_days_deducted, 0) AS annual_days_deducted,
-        e.department_id
+        e.department_id,
+        COALESCE(lr.source, 'portal') AS source
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
@@ -933,7 +934,9 @@ export async function getPendingHodLeaves(deptId, deptName, excludeEmployeeId) {
   return executeQuery(
     `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
-        e.first_name, e.last_name, e.email, d.department_name
+        e.first_name, e.last_name, e.email, d.department_name,
+        COALESCE(lr.source, 'portal') AS source,
+        e.employee_code
      FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id

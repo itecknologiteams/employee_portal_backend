@@ -21,7 +21,7 @@ import * as notifSvc from './notification.service.js'
 
 /** Save rejection reason as a comment and update the rejection record. */
 async function rejectWithReason(requisitionId, reason, approverEid, stageKey) {
-  await reqRepo.rejectRequisition(requisitionId, reason)
+  await reqRepo.rejectRequisition(requisitionId, reason, stageKey)
   if (reason && String(reason).trim()) {
     await reqRepo.insertRequisitionComment(requisitionId, stageKey, `[Rejection reason] ${String(reason).trim()}`, approverEid)
   }
@@ -118,7 +118,7 @@ export async function getCategories() {
   return { categories: [...REQUISITION_CATEGORIES], flow: null }
 }
 
-const VALID_BUCKETS = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin']
+const VALID_BUCKETS = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover']
 
 /** Categories where HOD can approve without BOQ (no size/brand/price per piece required). */
 const REQUISITION_CATEGORIES_NO_BOQ = [
@@ -1383,9 +1383,18 @@ export async function approveAdmin(body) {
     }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
+  const reqRowForCat = await reqRepo.getRequisitionAndDepartment(reqId)
+  const adminCategoryName = reqRowForCat[0]?.req_category
+  const adminCat = adminCategoryName ? await reqRepo.getRequisitionCategoryByName(adminCategoryName) : null
   await reqRepo.approveAdmin(reqId)
-  // approveAdmin repo call already sets req_current_stage_key = NULL (done).
-  // Notify creator that the ticket is ready for acknowledgment.
+  if (adminCat && adminCat.execution_admin === 1) {
+    // execution_admin categories (e.g. Stationary): Admin must acknowledge and hand over before creator can ack
+    await setCurrentStage(reqId, 'admin_acknowledge')
+    await notifyBucketChanged(reqId, 'admin_acknowledge')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'admin_acknowledge', reqRowForCat[0]?.department_id))
+    return { message: 'Admin approval recorded. Proceed to acknowledge and hand over.', status: 'Pending Admin Acknowledge' }
+  }
+  // Non-execution_admin: stage is already NULL from approveAdmin; notify creator directly.
   notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Admin:', e?.message))
   const creatorAdm = await notifRepo.getRequisitionCreatorId(reqId)
   if (creatorAdm) {
@@ -1722,6 +1731,78 @@ export async function getPendingAdminExecution(employeeId) {
   }
 }
 
+/** Admin: list requisitions pending admin acknowledgment (admin_acknowledge stage). */
+export async function getPendingAdminAcknowledge(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isAdminMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('admin_acknowledge')
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending Admin Acknowledge', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+/** Admin acknowledges items are ready — advances stage from admin_acknowledge → admin_handover. */
+export async function acknowledgeAdminStage(body) {
+  const { requisitionId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.acknowledgedByEmployeeId, approvedByEmployeeCode: body.acknowledgedByEmployeeCode })
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and acknowledgedByEmployeeId or acknowledgedByEmployeeCode are required', status: 400 }
+  }
+  const ok = await reqRepo.isAdminMember(eid)
+  if (!ok) return { error: 'Only Admin can acknowledge at this stage', status: 403 }
+  const rows = await reqRepo.getRequisitionForAdminAcknowledge(reqId)
+  if (!rows.length) return { error: 'Requisition not found or not in Admin Acknowledge stage', status: 404 }
+  await reqRepo.updateAdminAcknowledged(reqId)
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  await notifyBucketChanged(reqId, 'admin_handover')
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'admin_handover', reqRow[0]?.department_id))
+  return { message: 'Admin acknowledged. Ready for handover.', status: 'Pending Admin Handover' }
+}
+
+/** Admin: list requisitions pending handover to creator (admin_handover stage). */
+export async function getPendingAdminHandover(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isAdminMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('admin_handover')
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: 'Pending Admin Handover', items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+/** Admin hands items over to creator — advances stage from admin_handover → NULL. Creator can now acknowledge. */
+export async function handoverByAdmin(body) {
+  const { requisitionId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: body.handedByEmployeeId, approvedByEmployeeCode: body.handedByEmployeeCode })
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and handedByEmployeeId or handedByEmployeeCode are required', status: 400 }
+  }
+  const ok = await reqRepo.isAdminMember(eid)
+  if (!ok) return { error: 'Only Admin can perform handover', status: 403 }
+  const rows = await reqRepo.getRequisitionForAdminHandover(reqId)
+  if (!rows.length) return { error: 'Requisition not found or not in Admin Handover stage', status: 404 }
+  await reqRepo.updateAdminHandover(reqId)
+  notifyCreatorAckRequired(reqId).catch((e) => console.error('notifyCreatorAckRequired after Admin Handover:', e?.message))
+  const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+  if (creatorId) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: creatorId,
+      type: 'requisition_ready_for_receipt',
+      title: 'Items handed over by Admin',
+      body: 'Admin has handed over your items. Please acknowledge receipt in the portal.',
+      url: '/requisition/acknowledgment',
+      relatedEntityType: 'requisition',
+      relatedEntityId: reqId
+    }))
+  }
+  return { message: 'Admin handover complete. Creator can now acknowledge.', status: 'Pending Creator Acknowledgment' }
+}
+
 /** Procurement or Admin (for execution_admin categories): mark requisition as complete. */
 export async function completePurchase(reqId, body) {
   const reqIdNum = parseInt(reqId, 10)
@@ -1858,7 +1939,7 @@ export async function getPendingCount(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { count: 0 }
   const f = (r) => (Array.isArray(r) ? r.length : 0)
-  const [hod, hr, admin, committee, ceo, procurement, finance, hodAck, adminExec, creatorAck] = await Promise.all([
+  const [hod, hr, admin, committee, ceo, procurement, finance, hodAck, adminExec, adminAck, adminHo, creatorAck] = await Promise.all([
     getPendingHod(employeeId),
     getPendingHR(employeeId),
     getPendingHRCheck(employeeId),
@@ -1869,9 +1950,11 @@ export async function getPendingCount(employeeId) {
     getPendingFinance(employeeId),
     getPendingHodAcknowledge(employeeId),
     getPendingAdminExecution(employeeId),
+    getPendingAdminAcknowledge(employeeId),
+    getPendingAdminHandover(employeeId),
     getPendingCreatorAcknowledge(employeeId)
   ])
-  const count = f(hod) + f(hr) + f(admin) + f(committee) + f(ceo) + f(procurement) + f(finance) + f(hodAck) + f(adminExec) + f(creatorAck)
+  const count = f(hod) + f(hr) + f(admin) + f(committee) + f(ceo) + f(procurement) + f(finance) + f(hodAck) + f(adminExec) + f(adminAck) + f(adminHo) + f(creatorAck)
   return { count }
 }
 
@@ -2075,11 +2158,22 @@ export async function getTatReport(query) {
     itemsByReqId.set(it.req_id, list)
   }
 
+  // For rejected requisitions missing req_rejection_stage (pre-migration rows), extract from comments
+  const rejectedIds = rows.filter((r) => r.req_is_rejected === 1 && !r.req_rejection_stage).map((r) => r.req_id)
+  const commentsMap = rejectedIds.length ? await reqRepo.getRequisitionCommentsByReqIds(rejectedIds) : new Map()
+
   const data = rows.map((row) => {
+    // Backfill rejection stage from comments when column is absent (legacy rows)
+    if (row.req_is_rejected === 1 && !row.req_rejection_stage) {
+      const comments = commentsMap.get(row.req_id) || []
+      const rc = comments.find((c) => c.comment_text && c.comment_text.startsWith('[Rejection reason]'))
+      row.req_rejection_stage = rc?.stage_key || null
+    }
+
     // Attach items to row for CEO skip calculation
     row.items = itemsByReqId.get(row.req_id) || []
     const bm = row.req_category ? behaviorByCategory.get(String(row.req_category).trim().toLowerCase()) : null
-    const { totalHours } =
+    const { buckets, totalHours } =
       stages?.length && bm
         ? buildTatFromRequisition(row, stages, bm)
         : getTATFromRequisition(row)
@@ -2091,7 +2185,9 @@ export async function getTatReport(query) {
       totalHours,
       totalTimeFormatted: formatTotalTime(totalHours),
       status: row.req_is_rejected === 1 ? 'Rejected' : getRequisitionStatus(row),
-      createdAt: row.req_created_at
+      createdAt: row.req_created_at,
+      rejection_stage: row.req_is_rejected === 1 ? (row.req_rejection_stage || null) : undefined,
+      buckets: buckets || []
     }
   })
   return { data, pagination: { page, limit, total, totalPages: Math.ceil(total / limit) || 1 } }

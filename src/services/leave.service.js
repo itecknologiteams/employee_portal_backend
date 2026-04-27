@@ -957,6 +957,112 @@ export async function hrEditDeduction(deductionId, body) {
   }
 }
 
+/**
+ * Receive a leave request pushed from the ICS Attendance System.
+ * Creates the record with source='ics', determines HOD vs HR initial status,
+ * and notifies the appropriate approver.
+ *
+ * Expected body from ICS:
+ *   { employeeCode, leaveTypeId, startDate, endDate, reason, icsLeaveId? }
+ *
+ * Returns:
+ *   { leaveRequestId, status, message } on success
+ *   { error, status } on failure
+ */
+export async function receiveIcsLeaveRequest(data) {
+  const { employeeCode, leaveTypeId, startDate, endDate, reason, icsLeaveId } = data || {}
+
+  // --- Validate required fields ---
+  const code = String(employeeCode || '').trim()
+  if (!code) return { error: 'employeeCode is required', status: 400 }
+
+  const typeId = parseInt(leaveTypeId, 10)
+  if (Number.isNaN(typeId) || typeId < 1) {
+    return { error: 'leaveTypeId is required and must be a positive integer', status: 400 }
+  }
+
+  // ICS leaves are Casual (1) or Sick (2) — enforce this
+  if (![1, 2].includes(typeId)) {
+    return {
+      error: 'ICS leaves must be Casual (leaveTypeId=1) or Sick (leaveTypeId=2)',
+      status: 400
+    }
+  }
+
+  const range = validateLeaveDateRange(startDate, endDate)
+  if (range.error) return { error: range.error, status: range.status }
+
+  // --- Resolve employee ---
+  const employeeId = await getEmployeeIdByCode(code)
+  if (!employeeId) return { error: 'Employee not found', status: 404 }
+
+  // --- Validate leave type is active ---
+  const leaveTypeDetails = await leaveRepo.getLeaveTypeById(typeId)
+  if (!leaveTypeDetails) return { error: 'Invalid leave type ID', status: 400 }
+  if (!leaveTypeDetails.is_active) return { error: 'This leave type is currently inactive', status: 400 }
+
+  const normalizedTypeName = leaveTypeDetails.leave_type_name
+
+  // --- Determine initial status (HOD skip logic same as portal) ---
+  let initialStatus = 'Pending' // will go to HOD
+  const emp = await reqRepo.getEmployeeDept(employeeId)
+  if (emp?.department_id != null) {
+    const hodId = await reqRepo.getHodByDepartment(emp.department_id)
+    if (hodId === employeeId) initialStatus = 'Pending HR' // applicant is HOD — skip to HR
+  }
+  if (initialStatus === 'Pending') {
+    const isSenior = await reqRepo.isSeniorExecutiveForLeave(employeeId)
+    if (isSenior) initialStatus = 'Pending HR'
+  }
+
+  // --- Persist with source='ics' ---
+  const result = await leaveRepo.createLeaveRequest(
+    employeeId, typeId, startDate, endDate,
+    reason || `ICS leave request${icsLeaveId ? ` (ICS ref: ${icsLeaveId})` : ''}`,
+    initialStatus,
+    'ics'
+  )
+  const leaveRequestId = result[0]?.leave_request_id
+  if (!leaveRequestId) return { error: 'Failed to create leave request', status: 500 }
+
+  // --- Notify approver ---
+  try {
+    const deptId = emp?.department_id
+    if (initialStatus === 'Pending HR') {
+      const hrIds = await notifRepo.getHrEmployeeIds()
+      notifSvc.notifySafe(notifSvc.notifyMany(hrIds, {
+        type: 'leave_pending_hr',
+        title: 'New ICS leave request',
+        body: `ICS ${normalizedTypeName} request #${leaveRequestId} from ${code} is pending HR review.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: leaveRequestId
+      }))
+    } else if (deptId != null) {
+      const hodIds = await notifRepo.getHodEmployeeIdsForDepartment(deptId)
+      notifSvc.notifySafe(notifSvc.notifyMany(hodIds, {
+        type: 'leave_pending_hod',
+        title: 'New ICS leave request',
+        body: `ICS ${normalizedTypeName} request #${leaveRequestId} from ${code} is pending your approval.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: leaveRequestId
+      }))
+    }
+  } catch (nErr) {
+    console.warn('ICS leave receive notification error:', nErr.message)
+  }
+
+  return {
+    message: 'ICS leave request received and queued for approval',
+    leaveRequestId,
+    leaveTypeId: typeId,
+    leaveType: normalizedTypeName,
+    status: initialStatus,
+    source: 'ics'
+  }
+}
+
 export async function createLeaveRequest(data) {
   const { employeeId, leaveTypeId, leaveType, startDate, endDate, reason } = data
 
@@ -1118,7 +1224,7 @@ export async function updateLeaveStatus(leaveRequestId, body) {
   if (!leave) return { error: 'Leave request not found', status: 404 }
 
   // Check if this is an ICS leave (requires only HOD approval, no HR)
-  const isIcsLeave = source === 'ics'
+  const isIcsLeave = (leave.source || 'portal') === 'ics'
 
   const current = (leave.status || 'Pending').trim()
 

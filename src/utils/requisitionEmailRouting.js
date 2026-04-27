@@ -174,6 +174,7 @@ export async function getEmailsForBucket(bucket, departmentIdOrIds) {
   else if (bucket === 'ceo') codes = await getEmployeeCodesByRole('CEO')
   else if (bucket === 'procurement') codes = await getEmployeeCodesByRole('Procurement')
   else if (bucket === 'finance') codes = await getEmployeeCodesByRole('Finance')
+  else if (bucket === 'admin' || bucket === 'admin_acknowledge' || bucket === 'admin_handover') codes = await getEmployeeCodesByRole('Admin')
   if (codes.length === 0) return []
   return resolveEmailsPreferCrmForCodes(codes)
 }
@@ -184,5 +185,8 @@ export const BUCKET_LABELS = {
   committee: 'Pending Committee',
   ceo: 'Pending CEO',
   procurement: 'Procurement',
-  finance: 'Pending Finance'
+  finance: 'Pending Finance',
+  admin: 'Pending Admin',
+  admin_acknowledge: 'Pending Admin Acknowledge',
+  admin_handover: 'Pending Admin Handover'
 }

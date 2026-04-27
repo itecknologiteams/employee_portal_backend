@@ -301,6 +301,35 @@ export async function checkRolloverEligibility(req, res) {
   }
 }
 
+/**
+ * POST /api/leave/ics/receive
+ * Called by the ICS Attendance System when an employee submits a Casual or Sick leave.
+ * Creates a portal leave request with source='ics' so the HOD can approve/reject it.
+ *
+ * Expected body:
+ *   {
+ *     employeeCode: string,   // e.g. "EMP-001"
+ *     leaveTypeId: number,    // 1 = Casual, 2 = Sick
+ *     startDate: string,      // YYYY-MM-DD
+ *     endDate: string,        // YYYY-MM-DD
+ *     reason?: string,
+ *     icsLeaveId?: string|number  // ICS internal reference (optional, stored in reason)
+ *   }
+ *
+ * Response on success:
+ *   { leaveRequestId, leaveTypeId, leaveType, status, source, message }
+ */
+export async function receiveIcsLeaveRequest(req, res) {
+  try {
+    const result = await leaveService.receiveIcsLeaveRequest(req.body || {})
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.status(201).json(result)
+  } catch (error) {
+    console.error('ICS receive leave request error:', error)
+    res.status(500).json({ error: 'Failed to receive ICS leave request' })
+  }
+}
+
 /** Proxy to external Attendance System API for casual/sick leaves */
 export async function getExternalLeaves(req, res) {
   try {

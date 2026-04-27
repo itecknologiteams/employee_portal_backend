@@ -554,15 +554,24 @@ export async function getRequisitionAndDepartment(requisitionId) {
   )
 }
 
-export async function rejectRequisition(requisitionId, reason) {
+export async function rejectRequisition(requisitionId, reason, stageKey) {
+  const params = [requisitionId]
+  const sets = ['req_is_rejected = 1', 'req_current_stage_key = NULL']
+  if (reason) {
+    params.push(String(reason).trim())
+    sets.push(`req_rejection_reason = $${params.length}`)
+  }
+  if (stageKey) {
+    params.push(String(stageKey).trim().toLowerCase())
+    sets.push(`req_rejection_stage = $${params.length}`)
+  }
   try {
     return await executeQuery(
-      `UPDATE requisition SET req_is_rejected = 1, req_current_stage_key = NULL${reason ? ', req_rejection_reason = $2' : ''} WHERE req_id = $1`,
-      reason ? [requisitionId, String(reason).trim()] : [requisitionId]
+      `UPDATE requisition SET ${sets.join(', ')} WHERE req_id = $1`,
+      params
     )
   } catch (err) {
     if (err.code === '42703') {
-      // Either req_current_stage_key or req_rejection_reason column missing ? fall back
       return executeQuery('UPDATE requisition SET req_is_rejected = 1 WHERE req_id = $1', [requisitionId])
     }
     throw err
@@ -634,16 +643,21 @@ export async function approveHrCheck(reqId, eid) {
   )
 }
 
-/** Admin approves (e.g. Stationary/Vehicle Maintenance after HOD For Info). Sets stage to null (done). */
+/** Admin approves (e.g. Stationary/Vehicle Maintenance after HOD For Info). */
 export async function approveAdmin(requisitionId) {
+  // Approval flag must always be written — separate query so a missing req_current_stage_key column cannot silently swallow this update.
+  await executeQuery(
+    'UPDATE requisition SET req_admin_approval = 1, req_admin_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
+    [requisitionId]
+  )
+  // Clear stage key best-effort (column may not exist on older deployments).
   try {
-    return await executeQuery(
-      'UPDATE requisition SET req_admin_approval = 1, req_admin_approval_date = CURRENT_TIMESTAMP, req_current_stage_key = NULL WHERE req_id = $1',
+    await executeQuery(
+      'UPDATE requisition SET req_current_stage_key = NULL WHERE req_id = $1',
       [requisitionId]
     )
   } catch (err) {
-    if (err.code === '42703') return []
-    throw err
+    if (err.code !== '42703') throw err
   }
 }
 
@@ -802,7 +816,7 @@ export async function updateHodAcknowledged(reqId, acknowledgedByEmployeeId) {
 /** Requisitions created by employeeId where execution is done but creator has not acknowledged (close ticket). */
 export async function getPendingCreatorAcknowledgeList(employeeId) {
   try {
-    return executeQuery(
+    return await executeQuery(
       `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
         desg.desg_name AS designation_name
        FROM requisition r
@@ -813,15 +827,34 @@ export async function getPendingCreatorAcknowledgeList(employeeId) {
          AND COALESCE(r.req_is_rejected, 0) = 0
          AND COALESCE(r.req_creator_acknowledged, 0) = 0
          AND (
-           COALESCE(r.req_admin_approval, 0) = 1
+           (COALESCE(r.req_admin_approval, 0) = 1 AND COALESCE(r.req_current_stage_key, '') NOT IN ('admin_acknowledge', 'admin_handover'))
            OR COALESCE(r.req_purchase_completed, 0) = 1
-           OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%')
+           OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%' AND COALESCE(r.req_current_stage_key, '') <> 'hr_check')
          )
        ORDER BY r.req_created_at DESC`,
       [employeeId]
     )
   } catch (err) {
-    if (err.code === '42703') return []
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+          desg.desg_name AS designation_name
+         FROM requisition r
+         JOIN employees e ON r.req_emp_id = e.employee_id
+         LEFT JOIN departments d ON e.department_id = d.department_id
+         LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+         WHERE r.req_emp_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE
+           AND COALESCE(r.req_is_rejected, 0) = 0
+           AND COALESCE(r.req_creator_acknowledged, 0) = 0
+           AND (
+             COALESCE(r.req_admin_approval, 0) = 1
+             OR COALESCE(r.req_purchase_completed, 0) = 1
+             OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%')
+           )
+         ORDER BY r.req_created_at DESC`,
+        [employeeId]
+      )
+    }
     throw err
   }
 }
@@ -829,21 +862,33 @@ export async function getPendingCreatorAcknowledgeList(employeeId) {
 /** Single req eligible for creator acknowledge: created by employeeId, execution done, not yet acknowledged. */
 export async function getRequisitionForCreatorAcknowledge(reqId, employeeId) {
   try {
-    const rows = await executeQuery(
+    return await executeQuery(
       `SELECT r.req_id, r.req_emp_id FROM requisition r
        WHERE r.req_id = $1 AND r.req_emp_id = $2
          AND COALESCE(r.req_is_rejected, 0) = 0
          AND COALESCE(r.req_creator_acknowledged, 0) = 0
          AND (
-           COALESCE(r.req_admin_approval, 0) = 1
+           (COALESCE(r.req_admin_approval, 0) = 1 AND COALESCE(r.req_current_stage_key, '') NOT IN ('admin_acknowledge', 'admin_handover'))
            OR COALESCE(r.req_purchase_completed, 0) = 1
-           OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%')
+           OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%' AND COALESCE(r.req_current_stage_key, '') <> 'hr_check')
          )`,
       [reqId, employeeId]
     )
-    return rows
   } catch (err) {
-    if (err.code === '42703') return []
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT r.req_id, r.req_emp_id FROM requisition r
+         WHERE r.req_id = $1 AND r.req_emp_id = $2
+           AND COALESCE(r.req_is_rejected, 0) = 0
+           AND COALESCE(r.req_creator_acknowledged, 0) = 0
+           AND (
+             COALESCE(r.req_admin_approval, 0) = 1
+             OR COALESCE(r.req_purchase_completed, 0) = 1
+             OR (COALESCE(r.req_finance_approval, 0) = 1 AND TRIM(COALESCE(r.req_category, '')) ILIKE '%Loan%')
+           )`,
+        [reqId, employeeId]
+      )
+    }
     throw err
   }
 }
@@ -858,6 +903,48 @@ export async function updateCreatorAcknowledged(reqId) {
     if (err.code === '42703') return []
     throw err
   }
+}
+
+/** Validate requisition is in admin_acknowledge stage. */
+export async function getRequisitionForAdminAcknowledge(reqId) {
+  return executeQuery(
+    `SELECT r.req_id, r.req_emp_id, r.req_category, e.department_id
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     WHERE r.req_id = $1
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
+       AND r.req_current_stage_key = 'admin_acknowledge'`,
+    [reqId]
+  )
+}
+
+/** Advance admin_acknowledge → admin_handover. */
+export async function updateAdminAcknowledged(reqId) {
+  return executeQuery(
+    `UPDATE requisition SET req_current_stage_key = 'admin_handover' WHERE req_id = $1`,
+    [reqId]
+  )
+}
+
+/** Validate requisition is in admin_handover stage. */
+export async function getRequisitionForAdminHandover(reqId) {
+  return executeQuery(
+    `SELECT r.req_id, r.req_emp_id, r.req_category, e.department_id
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     WHERE r.req_id = $1
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
+       AND r.req_current_stage_key = 'admin_handover'`,
+    [reqId]
+  )
+}
+
+/** Advance admin_handover → NULL (done; creator can now acknowledge). */
+export async function updateAdminHandover(reqId) {
+  return executeQuery(
+    `UPDATE requisition SET req_current_stage_key = NULL WHERE req_id = $1`,
+    [reqId]
+  )
 }
 
 export async function handoverToFinance(requisitionId) {
@@ -1868,7 +1955,7 @@ export async function getTatReportData(whereClause, params, limit, offset) {
        r.req_committee_approval, r.req_committee_approval_date,
        r.req_ceo_approval, r.req_ceo_approval_date, r.req_procurement_ack, r.req_handed_to_finance,
        r.req_handed_to_finance_date, r.req_finance_approval, r.req_finance_approval_date,
-       r.req_quotation_1_url, r.req_quotation_2_url, r.req_quotation_3_url, r.req_is_rejected,
+       r.req_quotation_1_url, r.req_quotation_2_url, r.req_quotation_3_url, r.req_is_rejected, r.req_rejection_stage,
        r.req_purchase_completed, r.req_purchase_completed_date, r.req_hod_acknowledged, r.req_hod_acknowledged_date,
        r.req_creator_acknowledged, r.req_creator_acknowledged_date,
        e.first_name, e.last_name
