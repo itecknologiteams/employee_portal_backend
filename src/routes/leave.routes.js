@@ -28,6 +28,8 @@ router.get('/hr/deductions', leaveController.getHrDeductionLog)
 router.post('/request', leaveController.createLeaveRequest)
 router.put('/request/:leaveRequestId/status', leaveController.updateLeaveStatus)
 router.post('/ics/receive', leaveController.receiveIcsLeaveRequest)
+router.post('/ics/hod-action', leaveController.hodIcsAction)
+router.get('/ics/decisions', leaveController.getIcsDecisions)
 
 /** Proxy endpoint for external Attendance System API (casual/sick leaves) */
 router.post('/external-leaves', leaveController.getExternalLeaves)

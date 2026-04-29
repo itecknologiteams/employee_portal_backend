@@ -79,6 +79,22 @@ export async function getPendingHod(req, res) {
   }
 }
 
+/**
+ * POST /api/leave/ics/hod-action
+ * HOD approves or rejects an ICS leave that is not yet in the portal DB.
+ * Body: { icsLeaveId, empCode, hodEmployeeCode, action, leaveTypeId, leaveTypeName, startDate, endDate, reason }
+ */
+export async function hodIcsAction(req, res) {
+  try {
+    const result = await leaveService.hodActOnIcsLeave(req.body || {})
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('HOD ICS action error:', error)
+    res.status(500).json({ error: 'Failed to process ICS leave action' })
+  }
+}
+
 export async function getHrList(req, res) {
   try {
     const { employeeCode } = req.params
@@ -330,17 +346,46 @@ export async function receiveIcsLeaveRequest(req, res) {
   }
 }
 
+/**
+ * GET /api/leave/ics/decisions
+ * Pull API for the ICS Attendance System to query Approved / Rejected leave decisions.
+ *
+ * Query params (all optional):
+ *   emp_id    — employee code (e.g. 10608)
+ *   from      — start_date >= YYYY-MM-DD
+ *   to        — start_date <= YYYY-MM-DD
+ *   status    — 'Approved' | 'Rejected'  (default: both)
+ *
+ * Example:
+ *   GET /api/leave/ics/decisions?emp_id=10608&from=2026-01-01&status=Approved
+ */
+export async function getIcsDecisions(req, res) {
+  try {
+    const { emp_id, from, to, status } = req.query
+    const decisions = await leaveService.getIcsLeaveDecisions({
+      empCode: emp_id || null,
+      fromDate: from || null,
+      toDate: to || null,
+      status: status || null
+    })
+    res.json({ data: decisions, total: decisions.length })
+  } catch (error) {
+    console.error('ICS decisions error:', error)
+    res.status(500).json({ error: 'Failed to fetch ICS leave decisions' })
+  }
+}
+
 /** Proxy to external Attendance System API for casual/sick leaves */
 export async function getExternalLeaves(req, res) {
   try {
     const { emp_id, year } = req.body
-    
+
     if (!emp_id || !year) {
       return res.status(400).json({ error: 'emp_id and year are required' })
     }
 
     const EXTERNAL_API_URL = 'http://192.168.20.244:3002/leaves/view-allocated-leaves-by-emp'
-    
+
     const response = await fetch(EXTERNAL_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -353,12 +398,25 @@ export async function getExternalLeaves(req, res) {
     }
 
     const data = await response.json()
+
+    // Sync each ICS leave into the portal DB so it appears in the HOD approval bucket.
+    // Runs in parallel; individual failures are suppressed so they don't block the response.
+    const icsLeaves = data?.data?.leaves || []
+    const employeeCode = String(emp_id)
+    await Promise.all(
+      icsLeaves
+        .filter(l => l.leave_type_id && l.start_date)
+        .map(l => leaveService.syncIcsLeaveToPortal(employeeCode, l).catch(err => {
+          console.warn('ICS leave portal sync warning:', err.message)
+        }))
+    )
+
     res.json(data)
   } catch (error) {
     console.error('External leaves API error:', error)
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch external leaves',
-      message: error.message 
+      message: error.message
     })
   }
 }

@@ -1226,17 +1226,6 @@ export async function approveCommittee(body) {
     return { message: 'Committee approval recorded', status: statusLabel }
   }
 
-  // When next stage is CEO (or no flow): line total strictly under REQUISITION_CEO_MIN_AMOUNT_PKR → skip CEO, forward to Procurement.
-  const itemsAfter = await reqRepo.getRequisitionItems(reqId)
-  const totalAfterCommittee = computeCommitteeApprovedLineTotalPKR(itemsAfter)
-  if (totalAfterCommittee < REQUISITION_CEO_MIN_AMOUNT_PKR) {
-    await reqRepo.approveCeo(reqId)
-    await setCurrentStage(reqId, 'procurement')
-    await notifyBucketChanged(reqId, 'procurement')
-    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
-    return { message: `Committee approval recorded; forwarded to Procurement (line total under ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR — CEO stage skipped)`, status: 'Forwarded to Procurement' }
-  }
-
   const nextKey = nextKeyFromFlow || 'ceo'
   await setCurrentStage(reqId, nextKey)
   await notifyBucketChanged(reqId, nextKey)
@@ -1244,17 +1233,9 @@ export async function approveCommittee(body) {
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
-/** Auto-approve CEO and move to Procurement when line total is under threshold (same rule as Committee approve). */
-async function applyCeoSkipToProcurementIfUnderThreshold(reqId) {
-  const lineItems = await reqRepo.getRequisitionItems(reqId)
-  const lineTotal = computeCommitteeApprovedLineTotalPKR(lineItems)
-  if (lineTotal >= REQUISITION_CEO_MIN_AMOUNT_PKR) return false
-  await reqRepo.approveCeo(reqId)
-  await setCurrentStage(reqId, 'procurement')
-  await notifyBucketChanged(reqId, 'procurement')
-  const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
-  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptRow[0]?.department_id))
-  return true
+/** CEO stage is no longer skipped based on amount — all requisitions with CEO in flow require CEO approval. */
+async function applyCeoSkipToProcurementIfUnderThreshold(_reqId) {
+  return false
 }
 
 /**

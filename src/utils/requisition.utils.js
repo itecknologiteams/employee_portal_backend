@@ -61,13 +61,7 @@ export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   if (row.req_current_stage_key === 'hr') return 'Pending HR'
   if (row.req_current_stage_key === 'admin') return 'Pending Admin'
   if (row.req_ceo_approval === 1) return 'Forwarded to Procurement'
-  if (row.req_committee_approval === 1) {
-    const line = itemsLineTotalPkrOptional != null ? Number(itemsLineTotalPkrOptional) : null
-    if (line != null && !Number.isNaN(line) && line < REQUISITION_CEO_MIN_AMOUNT_PKR) {
-      return 'Forwarded to Procurement'
-    }
-    return 'Pending CEO'
-  }
+  if (row.req_committee_approval === 1) return 'Pending CEO'
   if (row.req_hod_approval === 1) return 'Pending Committee'
   return 'Pending HOD'
 }
@@ -275,10 +269,7 @@ function shouldSkipCeo(row) {
   if (row.req_handed_to_finance === 1) return true
   if (row.req_finance_approval === 1) return true
 
-  // Fall back to amount-based calculation (needs items to be loaded)
-  const lineTotal = computeLineTotalForCeoSkip(row)
-  if (lineTotal == null) return false
-  return lineTotal < REQUISITION_CEO_MIN_AMOUNT_PKR
+  return false
 }
 
 /**

@@ -868,19 +868,40 @@ export async function createLeaveRequest(employeeId, leaveTypeId, startDate, end
 
 /** Get single leave request by id (for status update). */
 export async function getLeaveRequestById(leaveRequestId) {
-  const rows = await executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
-        (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
-        COALESCE(lr.annual_days_deducted, 0) AS annual_days_deducted,
-        e.department_id,
-        COALESCE(lr.source, 'portal') AS source
-     FROM leave_requests lr
-     JOIN employees e ON lr.employee_id = e.employee_id
-     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
-     WHERE lr.leave_request_id = $1`,
-    [leaveRequestId]
-  )
-  return rows[0]
+  try {
+    const rows = await executeQuery(
+      `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+          (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+          COALESCE(lr.annual_days_deducted, 0) AS annual_days_deducted,
+          e.department_id,
+          COALESCE(lr.source, 'portal') AS source,
+          lr.ics_leave_id
+       FROM leave_requests lr
+       JOIN employees e ON lr.employee_id = e.employee_id
+       LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+       WHERE lr.leave_request_id = $1`,
+      [leaveRequestId]
+    )
+    return rows[0]
+  } catch (err) {
+    if (err.code === '42703') {
+      const rows = await executeQuery(
+        `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+            (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+            COALESCE(lr.annual_days_deducted, 0) AS annual_days_deducted,
+            e.department_id,
+            'portal' AS source,
+            NULL AS ics_leave_id
+         FROM leave_requests lr
+         JOIN employees e ON lr.employee_id = e.employee_id
+         LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+         WHERE lr.leave_request_id = $1`,
+        [leaveRequestId]
+      )
+      return rows[0]
+    }
+    throw err
+  }
 }
 
 /** Update leave request status only when current status matches (for HOD then HR two-step flow). */
@@ -893,18 +914,38 @@ export async function updateLeaveRequestStatus(leaveRequestId, newStatus, requir
 
 /** Leave requests pending HR approval (status = 'Pending HR'). */
 export async function getPendingHrLeaves() {
-  return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
-        (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
-        e.first_name, e.last_name, e.email, d.department_name
-     FROM leave_requests lr
-     JOIN employees e ON lr.employee_id = e.employee_id
-     LEFT JOIN departments d ON e.department_id = d.department_id
-     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
-     WHERE lr.status = 'Pending HR'
-     ORDER BY lr.created_at ASC`,
-    []
-  )
+  try {
+    return await executeQuery(
+      `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+          (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+          e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+          COALESCE(lr.source, 'portal') AS source, lr.ics_leave_id
+       FROM leave_requests lr
+       JOIN employees e ON lr.employee_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+       WHERE lr.status = 'Pending HR'
+       ORDER BY lr.created_at ASC`,
+      []
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+            (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+            e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+            'portal' AS source, NULL AS ics_leave_id
+         FROM leave_requests lr
+         JOIN employees e ON lr.employee_id = e.employee_id
+         LEFT JOIN departments d ON e.department_id = d.department_id
+         LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+         WHERE lr.status = 'Pending HR'
+         ORDER BY lr.created_at ASC`,
+        []
+      )
+    }
+    throw err
+  }
 }
 
 /** Total count of all leave requests (for HR list pagination). */
@@ -915,38 +956,87 @@ export async function countAllLeavesForHr() {
 
 /** All leave requests for HR list with pagination: every department, with applicant and department and status. */
 export async function getAllLeavesForHr(limit, offset) {
-  return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
-        (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
-        e.first_name, e.last_name, e.email, d.department_name
-     FROM leave_requests lr
-     JOIN employees e ON lr.employee_id = e.employee_id
-     LEFT JOIN departments d ON e.department_id = d.department_id
-     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
-     ORDER BY lr.created_at DESC
-     LIMIT $1 OFFSET $2`,
-    [limit, offset]
-  )
+  try {
+    return await executeQuery(
+      `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+          (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+          e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+          COALESCE(lr.source, 'portal') AS source, lr.ics_leave_id
+       FROM leave_requests lr
+       JOIN employees e ON lr.employee_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+       ORDER BY lr.created_at DESC
+       LIMIT $1 OFFSET $2`,
+      [limit, offset]
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+            (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
+            e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+            'portal' AS source, NULL AS ics_leave_id
+         FROM leave_requests lr
+         JOIN employees e ON lr.employee_id = e.employee_id
+         LEFT JOIN departments d ON e.department_id = d.department_id
+         LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+         ORDER BY lr.created_at DESC
+         LIMIT $1 OFFSET $2`,
+        [limit, offset]
+      )
+    }
+    throw err
+  }
 }
 
 /** Leave requests pending HOD approval: same department as HOD, status 'Pending', exclude HOD's own. */
 export async function getPendingHodLeaves(deptId, deptName, excludeEmployeeId) {
-  return executeQuery(
-    `SELECT lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+  const BASE_COLS = `lr.leave_request_id, lr.employee_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
         (lr.end_date - lr.start_date + 1) AS days, lr.status, lr.reason, lr.created_at,
-        e.first_name, e.last_name, e.email, d.department_name,
-        COALESCE(lr.source, 'portal') AS source,
-        e.employee_code
-     FROM leave_requests lr
+        e.first_name, e.last_name, e.email, d.department_name, e.employee_code`
+  const WHERE = `WHERE lr.status = 'Pending' AND lr.employee_id != $3
+       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))`
+  const JOINS = `FROM leave_requests lr
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
-     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
-     WHERE lr.status = 'Pending'
-       AND lr.employee_id != $3
-       AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
-     ORDER BY lr.created_at ASC`,
-    [deptId, deptName, excludeEmployeeId]
-  )
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id`
+  const params = [deptId, deptName, excludeEmployeeId]
+  try {
+    // Only portal-originated leaves — ICS leaves are fetched directly from ICS API
+    return executeQuery(
+      `SELECT ${BASE_COLS}, 'portal' AS source ${JOINS} ${WHERE} AND COALESCE(lr.source, 'portal') = 'portal' ORDER BY lr.created_at ASC`,
+      params
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT ${BASE_COLS}, 'portal' AS source ${JOINS} ${WHERE} ORDER BY lr.created_at ASC`,
+        params
+      )
+    }
+    throw err
+  }
+}
+
+/**
+ * Return ics_leave_id values already actioned in the portal (HOD approved → Pending HR / Approved / Rejected).
+ * Used to deduplicate ICS API results in the HOD pending bucket.
+ */
+export async function getProcessedIcsLeaveIds(employeeIds) {
+  if (!employeeIds?.length) return []
+  try {
+    return executeQuery(
+      `SELECT ics_leave_id FROM leave_requests
+       WHERE source = 'ics' AND ics_leave_id IS NOT NULL
+         AND status != 'Pending'
+         AND employee_id = ANY($1)`,
+      [employeeIds]
+    )
+  } catch (err) {
+    if (err.code === '42703') return []
+    throw err
+  }
 }
 
 /** Get pending leaves for CEO approval (HOD's Annual/Other leave requests).
@@ -1010,6 +1100,143 @@ export async function getLeaveTypeIdByName(leaveTypeName) {
     [leaveTypeName]
   )
   return rows
+}
+
+/** Get all active employees in a department, excluding one employee (the HOD). */
+export async function getActiveEmployeesByDepartment(deptId, excludeEmployeeId) {
+  return executeQuery(
+    `SELECT employee_id, employee_code, first_name, last_name FROM employees
+     WHERE department_id = $1 AND employee_id != $2 AND is_active = true`,
+    [deptId, excludeEmployeeId]
+  )
+}
+
+/**
+ * Find an existing ICS portal record and update its status + set ics_leave_id.
+ * Matches by ics_leave_id OR by (employee + leave_type + start_date + source='ics').
+ * Used when HOD approves/rejects so we UPDATE instead of INSERT.
+ */
+export async function findAndUpdateIcsLeave(employeeId, icsLeaveId, leaveTypeId, startDate, newStatus) {
+  const icsId = parseInt(icsLeaveId, 10)
+  try {
+    const rows = await executeQuery(
+      `UPDATE leave_requests
+       SET status = $3, ics_leave_id = COALESCE(ics_leave_id, $2), updated_at = CURRENT_TIMESTAMP
+       WHERE employee_id = $1 AND source = 'ics' AND status = 'Pending'
+         AND (ics_leave_id = $2 OR (leave_type_id = $4 AND start_date = $5))
+       RETURNING leave_request_id, ics_leave_id`,
+      [employeeId, icsId, newStatus, leaveTypeId, startDate]
+    )
+    return rows[0] || null
+  } catch (err) {
+    if (err.code === '42703') {
+      // ics_leave_id or source column missing — match by type+date only
+      const rows = await executeQuery(
+        `UPDATE leave_requests
+         SET status = $2
+         WHERE employee_id = $1 AND status = 'Pending'
+           AND leave_type_id = $3 AND start_date = $4
+         RETURNING leave_request_id`,
+        [employeeId, newStatus, leaveTypeId, startDate]
+      )
+      return rows[0] || null
+    }
+    throw err
+  }
+}
+
+/** Check if an ICS leave already exists in the portal (dedup by employee + type + start_date + source). */
+export async function findIcsLeaveInPortal(employeeId, leaveTypeId, startDate) {
+  try {
+    const rows = await executeQuery(
+      `SELECT leave_request_id FROM leave_requests
+       WHERE employee_id = $1 AND leave_type_id = $2 AND start_date = $3 AND source = 'ics'`,
+      [employeeId, leaveTypeId, startDate]
+    )
+    return rows[0] || null
+  } catch (err) {
+    if (err.code === '42703') {
+      // source column not yet migrated — fall back to matching without it
+      const rows = await executeQuery(
+        `SELECT leave_request_id FROM leave_requests
+         WHERE employee_id = $1 AND leave_type_id = $2 AND start_date = $3`,
+        [employeeId, leaveTypeId, startDate]
+      )
+      return rows[0] || null
+    }
+    throw err
+  }
+}
+
+/** Insert an ICS leave into the portal DB, bypassing date validation (for sync purposes). */
+export async function createIcsLeaveInPortal(employeeId, leaveTypeId, leaveTypeName, startDate, endDate, reason, initialStatus, icsLeaveId = null) {
+  const icsId = icsLeaveId != null ? parseInt(icsLeaveId, 10) : null
+  try {
+    return executeQuery(
+      `INSERT INTO leave_requests (employee_id, leave_type_id, leave_type, start_date, end_date, reason, status, source, ics_leave_id, created_at)
+       VALUES ($1, $2, COALESCE((SELECT leave_type_name FROM leave_types WHERE leave_type_id = $2), $3), $4, $5, $6, $7, 'ics', $8, CURRENT_TIMESTAMP)
+       RETURNING leave_request_id`,
+      [employeeId, leaveTypeId, leaveTypeName, startDate, endDate, reason, initialStatus, icsId]
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      // source or ics_leave_id column not yet migrated — insert without them
+      return executeQuery(
+        `INSERT INTO leave_requests (employee_id, leave_type_id, leave_type, start_date, end_date, reason, status, created_at)
+         VALUES ($1, $2, COALESCE((SELECT leave_type_name FROM leave_types WHERE leave_type_id = $2), $3), $4, $5, $6, $7, CURRENT_TIMESTAMP)
+         RETURNING leave_request_id`,
+        [employeeId, leaveTypeId, leaveTypeName, startDate, endDate, reason, initialStatus]
+      )
+    }
+    throw err
+  }
+}
+
+/**
+ * Get ICS leave decisions (Approved / Rejected) for the ICS developer pull API.
+ * Optional filters: emp_code, from_date, to_date, status ('Approved'|'Rejected'|both).
+ */
+export async function getIcsLeaveDecisions({ empCode, fromDate, toDate, status } = {}) {
+  const conditions = [`lr.source = 'ics'`, `lr.status IN ('Approved', 'Rejected')`]
+  const params = []
+
+  if (empCode) {
+    params.push(String(empCode))
+    conditions.push(`e.employee_code = $${params.length}`)
+  }
+  if (fromDate) {
+    params.push(fromDate)
+    conditions.push(`lr.start_date >= $${params.length}`)
+  }
+  if (toDate) {
+    params.push(toDate)
+    conditions.push(`lr.start_date <= $${params.length}`)
+  }
+  if (status && ['Approved', 'Rejected'].includes(status)) {
+    params.push(status)
+    conditions.push(`lr.status = $${params.length}`)
+  }
+
+  return executeQuery(
+    `SELECT
+        lr.leave_request_id   AS portal_leave_id,
+        e.employee_code       AS emp_id,
+        CONCAT(e.first_name, ' ', e.last_name) AS emp_name,
+        COALESCE(lt.leave_type_name, lr.leave_type) AS leave_type,
+        lr.start_date,
+        lr.end_date,
+        (lr.end_date - lr.start_date + 1) AS total_days,
+        lr.status,
+        lr.reason,
+        lr.updated_at         AS decided_at,
+        lr.created_at         AS requested_at
+     FROM leave_requests lr
+     JOIN employees e ON lr.employee_id = e.employee_id
+     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+     WHERE ${conditions.join(' AND ')}
+     ORDER BY lr.updated_at DESC`,
+    params
+  )
 }
 
 /** Get all leave types. */
