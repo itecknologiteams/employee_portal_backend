@@ -790,21 +790,21 @@ export async function getPendingHodReverted(employeeId) {
 export async function getApprovedByHod(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const emp = await reqRepo.getEmployeeDept(employeeId)
-  if (!emp) return { error: 'Employee not found', status: 404 }
-  const deptId = emp.department_id
-  const deptName = (emp.department_name || '').trim().toLowerCase()
-  if (deptId == null && !deptName) return []
-  const isHodForDept = await reqRepo.isHodOfDepartment(eid, deptId)
-  if (!isHodForDept) return []
 
-  // Get ALL requisitions where HOD has approved (req_hod_approval = 1)
-  // Simple filter: HOD approved + same department
-  // Exclude requisitions created by the current user
-  const rows = await reqRepo.getAllHodApprovedRequisitions(deptId, deptName, eid)
+  // Purana single-department logic hatao, naya multi-department function use karo
+  const rows = await reqRepo.getApprovedByHodRequisitions(eid)
+
+  if (!rows || rows.length === 0) return []
+
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+
+  const list = rows.map(req => ({
+    ...req,
+    status: getRequisitionStatus(req),
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
+
   return list
 }
 

@@ -328,7 +328,7 @@ export async function getHodDepartmentsForEmployee(employeeId) {
           results.push({ department_id: row.department_id, department_name: row.department_name || '' })
         }
       }
-    } catch (_) { }
+    } catch (_) {}
   }
 
   return results
@@ -1336,7 +1336,7 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
           )
         )
       )
-    `
+    `   
     } else if (stageKey === 'admin') {
       // Admin: explicit stage key only (no legacy fallback for admin)
       bucketCondition = ` AND r.req_current_stage_key = $1`
@@ -1518,7 +1518,7 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
   )
 }
 
-export async function getApprovedByHodRequisitions(deptId, deptName) {
+export async function getApprovedByHodRequisitions(hodEmployeeId) {
   return executeQuery(
     `SELECT 
         r.*, 
@@ -1543,18 +1543,18 @@ export async function getApprovedByHodRequisitions(deptId, deptName) {
         COALESCE(r.req_hod_approval, 0)::int = 1
         AND COALESCE(r.req_is_rejected, 0)::int = 0
         AND COALESCE(r.is_hidden, FALSE) = FALSE
-        AND (
-            e.department_id = ANY($1)
-            OR (
-                LOWER(TRIM(COALESCE(d.department_name, '')))
-                = ANY($2)
-                AND array_length($2, 1) > 0
-            )
+        AND r.req_emp_id != $1  -- HOD ki khud ki requisition exclude
+        AND EXISTS (
+            SELECT 1
+            FROM employee_hod_departments ehd
+            WHERE
+                ehd.employee_id = $1
+                AND ehd.department_id = e.department_id
         )
     ORDER BY
         r.req_hod_approval_date DESC NULLS LAST,
         r.req_created_at DESC`,
-    [deptId, deptName]
+    [hodEmployeeId]
   )
 }
 
