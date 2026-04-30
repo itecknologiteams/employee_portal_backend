@@ -847,14 +847,30 @@ export async function setAnnualDaysDeducted(leaveRequestId, days) {
 }
 
 export async function getLeaveRequests(employeeId) {
-  return executeQuery(
-    `SELECT lr.leave_request_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
-        (lr.end_date - lr.start_date + 1) as days, lr.status, lr.reason, lr.created_at
-     FROM leave_requests lr
-     LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
-     WHERE lr.employee_id = $1 ORDER BY lr.created_at DESC`,
-    [employeeId]
-  )
+  try {
+    return executeQuery(
+      `SELECT lr.leave_request_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+          (lr.end_date - lr.start_date + 1) as days, lr.status, lr.reason, lr.created_at,
+          COALESCE(lr.source, 'portal') AS source, lr.ics_leave_id
+       FROM leave_requests lr
+       LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+       WHERE lr.employee_id = $1 ORDER BY lr.created_at DESC`,
+      [employeeId]
+    )
+  } catch (err) {
+    if (err.code === '42703') {
+      return executeQuery(
+        `SELECT lr.leave_request_id, lr.leave_type_id, lt.leave_type_name as leave_type, lr.start_date, lr.end_date,
+            (lr.end_date - lr.start_date + 1) as days, lr.status, lr.reason, lr.created_at,
+            'portal' AS source, NULL AS ics_leave_id
+         FROM leave_requests lr
+         LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+         WHERE lr.employee_id = $1 ORDER BY lr.created_at DESC`,
+        [employeeId]
+      )
+    }
+    throw err
+  }
 }
 
 export async function createLeaveRequest(employeeId, leaveTypeId, startDate, endDate, reason, initialStatus = 'Pending', source = 'portal') {

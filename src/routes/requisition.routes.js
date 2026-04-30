@@ -1,6 +1,6 @@
 import express from 'express'
 import * as requisitionController from '../controllers/requisition.controller.js'
-import { quotationUpload } from '../utils/file.utils.js'
+import { quotationUpload, supportDocUpload } from '../utils/file.utils.js'
 
 const router = express.Router()
 
@@ -48,6 +48,15 @@ router.post(
     { name: 'quotation3', maxCount: 1 }
   ]),
   requisitionController.uploadQuotations
+)
+router.post(
+  '/support-docs/:reqId/upload',
+  supportDocUpload.fields([
+    { name: 'supportDoc1', maxCount: 1 },
+    { name: 'supportDoc2', maxCount: 1 },
+    { name: 'supportDoc3', maxCount: 1 }
+  ]),
+  requisitionController.uploadSupportDocs
 )
 router.put('/expected-handover/:reqId', requisitionController.setExpectedHandover)
 router.post('/handover/finance', requisitionController.handoverFinance)

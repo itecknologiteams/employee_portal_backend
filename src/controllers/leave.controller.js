@@ -411,7 +411,28 @@ export async function getExternalLeaves(req, res) {
         }))
     )
 
-    res.json(data)
+    // Normalize ICS leaves to portal camelCase format so both leave endpoints return the same shape
+    const normalizedLeaves = icsLeaves.map(l => ({
+      id: l.leave_id,
+      icsLeaveId: l.leave_id,
+      leaveTypeId: l.leave_type_id,
+      type: l.leave_type_name || 'Casual',
+      startDate: l.start_date,
+      endDate: l.end_date || l.start_date,
+      status: l.leave_status || 'Pending',
+      days: l.total_days || 1,
+      reason: l.reason || '',
+      date: l.created_at || null,
+      source: 'ics'
+    }))
+
+    res.json({
+      ...data,
+      data: {
+        ...(data?.data || {}),
+        leaves: normalizedLeaves
+      }
+    })
   } catch (error) {
     console.error('External leaves API error:', error)
     res.status(500).json({

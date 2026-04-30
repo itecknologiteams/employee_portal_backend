@@ -433,6 +433,20 @@ export async function uploadQuotations(req, res) {
   }
 }
 
+export async function uploadSupportDocs(req, res) {
+  try {
+    const result = await requisitionService.uploadSupportDocs(
+      req.params.reqId, req.files || {},
+      req.body.updatedByEmployeeId, req.body.updatedByEmployeeCode
+    )
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Support docs upload error:', error)
+    res.status(500).json({ error: 'Failed to upload supporting documents' })
+  }
+}
+
 export async function setExpectedHandover(req, res) {
   try {
     const result = await requisitionService.setExpectedHandover(req.params.reqId, req.body)

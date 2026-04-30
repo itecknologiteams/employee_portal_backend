@@ -24,6 +24,16 @@ export const quotationUpload = multer({
   }
 })
 
+/** Supporting documents upload for procurement — images (jpeg/png/gif/webp) and PDFs, max 10 MB each. */
+export const supportDocUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = /^(image\/(jpeg|jpg|png|gif|webp)|application\/pdf)$/i.test(file.mimetype)
+    cb(null, !!allowed)
+  }
+})
+
 /** Excel/CSV upload for payroll (gross salaries, payroll sheet, overrides) - .xlsx, .xls, .csv */
 export const payrollExcelUpload = multer({
   storage: multer.memoryStorage(),

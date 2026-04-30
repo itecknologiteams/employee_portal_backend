@@ -328,7 +328,7 @@ export async function getHodDepartmentsForEmployee(employeeId) {
           results.push({ department_id: row.department_id, department_name: row.department_name || '' })
         }
       }
-    } catch (_) {}
+    } catch (_) { }
   }
 
   return results
@@ -792,8 +792,8 @@ export async function updatePurchaseCompleted(reqId, completedByEmployeeId) {
   )
 }
 
-/** Requisitions completed by Procurement, pending HOD acknowledgment (same department as HOD). */
-export async function getPendingHodAcknowledgeList(deptId, deptName) {
+/** Requisitions completed by Procurement, pending HOD acknowledgment — only where the HOD is the creator. */
+export async function getPendingHodAcknowledgeList(deptId, deptName, hodEmployeeId) {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
       desg.desg_name AS designation_name
@@ -805,9 +805,9 @@ export async function getPendingHodAcknowledgeList(deptId, deptName) {
        AND COALESCE(r.req_purchase_completed, 0) = 1
        AND COALESCE(r.req_hod_acknowledged, 0) = 0
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
-       AND (r.req_creator_role IS NULL OR r.req_creator_role = '' OR r.req_creator_role = 'HOD')
+       AND r.req_emp_id = $3
      ORDER BY r.req_purchase_completed_date DESC`,
-    [deptId, deptName]
+    [deptId, deptName, hodEmployeeId]
   )
 }
 
@@ -820,7 +820,7 @@ export async function getRequisitionForHodAcknowledge(reqId) {
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
+     WHERE r.req_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE AND COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
     [reqId]
   )
 }
@@ -1336,7 +1336,7 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
           )
         )
       )
-    `   
+    `
     } else if (stageKey === 'admin') {
       // Admin: explicit stage key only (no legacy fallback for admin)
       bucketCondition = ` AND r.req_current_stage_key = $1`
@@ -1520,17 +1520,39 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
 
 export async function getApprovedByHodRequisitions(deptId, deptName) {
   return executeQuery(
-    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
-      desg.desg_name AS designation_name,
-      hod_approver.employee_code AS hod_approver_employee_code,
-      hod_approver.employee_id AS hod_approver_id
-     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
-     LEFT JOIN departments d ON e.department_id = d.department_id
-     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     LEFT JOIN employees hod_approver ON r.req_hod_approved_by = hod_approver.employee_id
-     WHERE (COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_is_rejected, 0)::int = 0) AND COALESCE(r.is_hidden, FALSE) = FALSE
-     AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
-     ORDER BY r.req_hod_approval_date DESC NULLS LAST, r.req_created_at DESC`,
+    `SELECT 
+    r.*, 
+    e.first_name, 
+    e.last_name, 
+    e.email, 
+    e.employee_code, 
+    d.department_name,
+    desg.desg_name AS designation_name,
+    hod_approver.employee_code AS hod_approver_employee_code,
+    hod_approver.employee_id AS hod_approver_id
+FROM requisition r
+JOIN employees e 
+    ON r.req_emp_id = e.employee_id
+LEFT JOIN departments d 
+    ON e.department_id = d.department_id
+LEFT JOIN designation desg 
+    ON e.designation_id = desg.desg_id
+LEFT JOIN employees hod_approver 
+    ON r.req_hod_approved_by = hod_approver.employee_id
+WHERE 
+    (COALESCE(r.req_hod_approval, 0)::int = 1)
+    AND (COALESCE(r.req_is_rejected, 0)::int = 0)
+    AND COALESCE(r.is_hidden, FALSE) = FALSE
+    AND (
+        e.department_id = ANY($1)
+        OR (
+            LOWER(TRIM(COALESCE(d.department_name, ''))) = ANY($2)
+            AND array_length($2, 1) > 0
+        )
+    )
+ORDER BY 
+    r.req_hod_approval_date DESC NULLS LAST,
+    r.req_created_at DESC`,
     [deptId, deptName]
   )
 }
@@ -1548,6 +1570,8 @@ export async function getAllHodApprovedRequisitions(deptId, deptName, excludeEmp
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (COALESCE(r.req_hod_approval, 0)::int = 1)
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
        AND r.req_emp_id != $3
      ORDER BY r.req_hod_approval_date DESC NULLS LAST, r.req_created_at DESC`,
@@ -1723,6 +1747,8 @@ export async function getApprovedByCommitteeRequisitions(excludeEmployeeId) {
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (COALESCE(r.req_committee_approval, 0)::int = 1)
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND r.req_emp_id != $1
      ORDER BY r.req_committee_approval_date DESC NULLS LAST, r.req_created_at DESC`,
     [excludeEmployeeId]
@@ -1740,6 +1766,8 @@ export async function getApprovedByCeoRequisitions(excludeEmployeeId) {
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
      WHERE (COALESCE(r.req_ceo_approval, 0)::int = 1)
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND r.req_emp_id != $1
      ORDER BY r.req_ceo_approval_date DESC NULLS LAST, r.req_created_at DESC`,
     [excludeEmployeeId]
@@ -1761,6 +1789,17 @@ export async function getRequisitionForProcurementAck(reqId) {
 
 export async function getRequisitionForQuotations(reqId) {
   return executeQuery('SELECT req_id FROM requisition WHERE req_id = $1 AND req_procurement_ack = 1', [reqId])
+}
+
+export async function getRequisitionForSupportDocs(reqId) {
+  return executeQuery('SELECT req_id FROM requisition WHERE req_id = $1 AND req_procurement_ack = 1', [reqId])
+}
+
+export async function updateSupportDocsUpload(reqId, url1, url2, url3) {
+  return executeQuery(
+    `UPDATE requisition SET req_support_doc_1_url = $2, req_support_doc_2_url = $3, req_support_doc_3_url = $4 WHERE req_id = $1`,
+    [reqId, url1, url2, url3]
+  )
 }
 
 export async function getRequisitionForHandover(reqId) {

@@ -788,7 +788,9 @@ export async function getLeaveRequests(employeeId) {
     days: parseInt(r.days || 0),
     status: r.status || 'Pending',
     reason: r.reason || '',
-    date: r.created_at
+    date: r.created_at,
+    source: r.source || 'portal',
+    icsLeaveId: r.ics_leave_id ?? null
   }))
 }
 
@@ -1625,8 +1627,15 @@ export async function hodActOnIcsLeave(body) {
 
   const newStatus = action === 'reject' ? 'Rejected' : 'Pending HR'
 
-  // UPDATE the existing portal record (no new insert)
-  const updated = await leaveRepo.findAndUpdateIcsLeave(empId, icsLeaveId, typeId, startDate, newStatus)
+  // Update existing portal record if it was already synced; otherwise create one for approve
+  let updated = await leaveRepo.findAndUpdateIcsLeave(empId, icsLeaveId, typeId, startDate, newStatus)
+  if (!updated && newStatus === 'Pending HR') {
+    const typeName = String(leaveTypeName || 'Casual').trim()
+    const result = await leaveRepo.createIcsLeaveInPortal(
+      empId, typeId, typeName, startDate, endDate || startDate, reason || '', 'Pending HR', icsLeaveId
+    )
+    updated = result[0] || null
+  }
   const portalLeaveId = updated?.leave_request_id
 
   if (action === 'reject') {

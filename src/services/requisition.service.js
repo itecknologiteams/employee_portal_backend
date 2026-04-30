@@ -1,6 +1,7 @@
 import { executeQuery } from '../../config/database.js'
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
-import { sendRequisitionReminder, isEmailConfigured } from '../../config/email.js'
+import { sendRequisitionReminder, isEmailConfigured, EMAIL_FROM } from '../../config/email.js'
+import { getEmailsForBucket } from '../utils/requisitionEmailRouting.js'
 import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
@@ -1156,6 +1157,41 @@ export async function approveHRCheck(body) {
   return { message: 'HR check recorded. Forwarded to creator for acknowledgment.', status: 'Pending Acknowledgment' }
 }
 
+/** Fire-and-forget: email CEO employees that committee has approved a requisition (informational — no action required). */
+function notifyCeoCommitteeApproved(reqId, forwardedTo) {
+  if (!isEmailConfigured()) return
+  ;(async () => {
+    try {
+      const toEmails = await getEmailsForBucket('ceo', null)
+      if (!toEmails.length) return
+      const rows = await executeQuery(
+        `SELECT r.req_reference_no, r.req_material, e.first_name, e.last_name
+         FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+         WHERE r.req_id = $1`,
+        [reqId]
+      )
+      const r = rows[0]
+      if (!r) return
+      const refNo = r.req_reference_no || `#${reqId}`
+      const creatorName = `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Employee'
+      const material = (r.req_material || '').trim() || '—'
+      const nextLabel = forwardedTo === 'procurement' ? 'Procurement' : forwardedTo === 'finance' ? 'Finance' : forwardedTo
+      const subject = `Requisition ${refNo} — Approved by Committee`
+      const body = [
+        `This is an informational notification.`,
+        ``,
+        `Requisition ${refNo} (${material}) submitted by ${creatorName} has been approved by the Committee.`,
+        `It has been forwarded to ${nextLabel}.`,
+        ``,
+        `No action is required from you.`
+      ].join('\n')
+      await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'committee_approved_ceo_notify', ref: refNo } })
+    } catch (err) {
+      console.error('[CEO notify] committee approved email failed:', err.message)
+    }
+  })()
+}
+
 export async function approveCommittee(body) {
   const { requisitionId, approved, approvedQuantities } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
@@ -1222,8 +1258,21 @@ export async function approveCommittee(body) {
     await notifyBucketChanged(reqId, nextKeyFromFlow)
     const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKeyFromFlow, deptRow[0]?.department_id))
+    notifyCeoCommitteeApproved(reqId, nextKeyFromFlow)
     const statusLabel = nextKeyFromFlow === 'finance' ? 'Pending Finance Approval' : nextKeyFromFlow === 'procurement' ? 'Forwarded to Procurement' : `Pending ${nextKeyFromFlow}`
     return { message: 'Committee approval recorded', status: statusLabel }
+  }
+
+  // When next stage is CEO (or no flow): line total strictly under REQUISITION_CEO_MIN_AMOUNT_PKR → skip CEO, forward to Procurement.
+  const itemsAfter = await reqRepo.getRequisitionItems(reqId)
+  const totalAfterCommittee = computeCommitteeApprovedLineTotalPKR(itemsAfter)
+  if (totalAfterCommittee < REQUISITION_CEO_MIN_AMOUNT_PKR) {
+    await reqRepo.approveCeo(reqId)
+    await setCurrentStage(reqId, 'procurement')
+    await notifyBucketChanged(reqId, 'procurement')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
+    notifyCeoCommitteeApproved(reqId, 'procurement')
+    return { message: `Committee approval recorded; forwarded to Procurement (line total under ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR — CEO stage skipped)`, status: 'Forwarded to Procurement' }
   }
 
   const nextKey = nextKeyFromFlow || 'ceo'
@@ -1233,9 +1282,17 @@ export async function approveCommittee(body) {
   return { message: 'Committee approval recorded', status: 'Pending CEO' }
 }
 
-/** CEO stage is no longer skipped based on amount — all requisitions with CEO in flow require CEO approval. */
-async function applyCeoSkipToProcurementIfUnderThreshold(_reqId) {
-  return false
+/** Auto-approve CEO and move to Procurement when line total is under threshold (same rule as Committee approve). */
+async function applyCeoSkipToProcurementIfUnderThreshold(reqId) {
+  const lineItems = await reqRepo.getRequisitionItems(reqId)
+  const lineTotal = computeCommitteeApprovedLineTotalPKR(lineItems)
+  if (lineTotal >= REQUISITION_CEO_MIN_AMOUNT_PKR) return false
+  await reqRepo.approveCeo(reqId)
+  await setCurrentStage(reqId, 'procurement')
+  await notifyBucketChanged(reqId, 'procurement')
+  const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptRow[0]?.department_id))
+  return true
 }
 
 /**
@@ -1492,6 +1549,37 @@ export async function uploadQuotations(reqId, files, updatedByEmployeeId, update
     quotation1Url: dataUrl1,
     quotation2Url: dataUrl2,
     quotation3Url: dataUrl3
+  }
+}
+
+export async function uploadSupportDocs(reqId, files, updatedByEmployeeId, updatedByEmployeeCode) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const eid = await resolveApproverEmployeeId({ approvedByEmployeeId: updatedByEmployeeId, approvedByEmployeeCode: updatedByEmployeeCode })
+  if (eid == null) return { error: 'Valid updatedByEmployeeId or updatedByEmployeeCode required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can add supporting documents', status: 403 }
+  const rows = await reqRepo.getRequisitionForSupportDocs(reqIdNum)
+  if (!rows.length) return { error: 'Requisition not found or not acknowledged', status: 404 }
+  const { fileToDataUrl } = await import('../utils/file.utils.js')
+  const d1 = files.supportDoc1?.[0]
+  const d2 = files.supportDoc2?.[0]
+  const d3 = files.supportDoc3?.[0]
+  if (!d1 || !d2 || !d3) {
+    return { error: 'Upload all 3 supporting documents (supportDoc1, supportDoc2, supportDoc3)', status: 400 }
+  }
+  const dataUrl1 = fileToDataUrl(d1)
+  const dataUrl2 = fileToDataUrl(d2)
+  const dataUrl3 = fileToDataUrl(d3)
+  if (!dataUrl1 || !dataUrl2 || !dataUrl3) {
+    return { error: 'Could not read uploaded document data', status: 400 }
+  }
+  await reqRepo.updateSupportDocsUpload(reqIdNum, dataUrl1, dataUrl2, dataUrl3)
+  return {
+    message: 'Supporting documents uploaded',
+    supportDoc1Url: dataUrl1,
+    supportDoc2Url: dataUrl2,
+    supportDoc3Url: dataUrl3
   }
 }
 
@@ -1854,7 +1942,7 @@ export async function getPendingHodAcknowledge(employeeId) {
     const deptId = dept.department_id
     const deptName = (dept.department_name || '').trim().toLowerCase()
     try {
-      const rows = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName)
+      const rows = await reqRepo.getPendingHodAcknowledgeList(deptId, deptName, eid)
       for (const r of rows || []) {
         if (r.req_id != null && !seenReqIds.has(r.req_id)) {
           seenReqIds.add(r.req_id)
