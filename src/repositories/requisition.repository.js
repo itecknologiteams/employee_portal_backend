@@ -1521,38 +1521,39 @@ export async function getPendingHodRequisitionsFallback(deptId, deptName, exclud
 export async function getApprovedByHodRequisitions(deptId, deptName) {
   return executeQuery(
     `SELECT 
-    r.*, 
-    e.first_name, 
-    e.last_name, 
-    e.email, 
-    e.employee_code, 
-    d.department_name,
-    desg.desg_name AS designation_name,
-    hod_approver.employee_code AS hod_approver_employee_code,
-    hod_approver.employee_id AS hod_approver_id
-FROM requisition r
-JOIN employees e 
-    ON r.req_emp_id = e.employee_id
-LEFT JOIN departments d 
-    ON e.department_id = d.department_id
-LEFT JOIN designation desg 
-    ON e.designation_id = desg.desg_id
-LEFT JOIN employees hod_approver 
-    ON r.req_hod_approved_by = hod_approver.employee_id
-WHERE 
-    (COALESCE(r.req_hod_approval, 0)::int = 1)
-    AND (COALESCE(r.req_is_rejected, 0)::int = 0)
-    AND COALESCE(r.is_hidden, FALSE) = FALSE
-    AND (
-        e.department_id = ANY($1)
-        OR (
-            LOWER(TRIM(COALESCE(d.department_name, ''))) = ANY($2)
-            AND array_length($2, 1) > 0
+        r.*, 
+        e.first_name, 
+        e.last_name, 
+        e.email, 
+        e.employee_code, 
+        d.department_name,
+        desg.desg_name AS designation_name,
+        hod_approver.employee_code AS hod_approver_employee_code,
+        hod_approver.employee_id AS hod_approver_id
+    FROM requisition r
+    JOIN employees e 
+        ON r.req_emp_id = e.employee_id
+    LEFT JOIN departments d 
+        ON e.department_id = d.department_id
+    LEFT JOIN designation desg 
+        ON e.designation_id = desg.desg_id
+    LEFT JOIN employees hod_approver 
+        ON r.req_hod_approved_by = hod_approver.employee_id
+    WHERE
+        COALESCE(r.req_hod_approval, 0)::int = 1
+        AND COALESCE(r.req_is_rejected, 0)::int = 0
+        AND COALESCE(r.is_hidden, FALSE) = FALSE
+        AND (
+            e.department_id = ANY($1)
+            OR (
+                LOWER(TRIM(COALESCE(d.department_name, '')))
+                = ANY($2)
+                AND array_length($2, 1) > 0
+            )
         )
-    )
-ORDER BY 
-    r.req_hod_approval_date DESC NULLS LAST,
-    r.req_created_at DESC`,
+    ORDER BY
+        r.req_hod_approval_date DESC NULLS LAST,
+        r.req_created_at DESC`,
     [deptId, deptName]
   )
 }
