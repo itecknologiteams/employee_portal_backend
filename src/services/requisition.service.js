@@ -791,21 +791,22 @@ export async function getApprovedByHod(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
 
-  // Purana single-department logic hatao, naya multi-department function use karo
-  const rows = await reqRepo.getApprovedByHodRequisitions(eid)
+  const hodDepartments = await reqRepo.getHodDepartmentsForEmployee(eid)
+  if (!hodDepartments || hodDepartments.length === 0) return []
+
+  const deptIds = hodDepartments.map(d => d.department_id)
+  const rows = await reqRepo.getApprovedByHodRequisitionsForDepts(eid, deptIds)
 
   if (!rows || rows.length === 0) return []
 
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
 
-  const list = rows.map(req => ({
+  return rows.map(req => ({
     ...req,
     status: getRequisitionStatus(req),
     items: items.filter(i => i.req_id === req.req_id)
   }))
-
-  return list
 }
 
 export async function getApprovedByCommittee(employeeId) {
@@ -1159,7 +1160,6 @@ export async function approveHRCheck(body) {
 
 /** Fire-and-forget: email CEO employees that committee has approved a requisition (informational — no action required). */
 function notifyCeoCommitteeApproved(reqId, forwardedTo) {
-  if (!isEmailConfigured()) return
   ;(async () => {
     try {
       const toEmails = await getEmailsForBucket('ceo', null)
