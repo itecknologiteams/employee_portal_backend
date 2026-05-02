@@ -873,12 +873,12 @@ export async function getLeaveRequests(employeeId) {
   }
 }
 
-export async function createLeaveRequest(employeeId, leaveTypeId, startDate, endDate, reason, initialStatus = 'Pending', source = 'portal') {
+export async function createLeaveRequest(employeeId, leaveTypeId, leaveTypeName, startDate, endDate, reason, initialStatus = 'Pending', source = 'portal') {
   return executeQuery(
-    `INSERT INTO leave_requests (employee_id, leave_type_id, start_date, end_date, reason, status, source, created_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
+    `INSERT INTO leave_requests (employee_id, leave_type_id, leave_type, start_date, end_date, reason, status, source, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, CURRENT_TIMESTAMP)
      RETURNING leave_request_id`,
-    [employeeId, leaveTypeId, startDate, endDate, reason, initialStatus, source]
+    [employeeId, leaveTypeId, leaveTypeName, startDate, endDate, reason, initialStatus, source]
   )
 }
 

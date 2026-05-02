@@ -1142,7 +1142,7 @@ export async function createLeaveRequest(data) {
       if (isSenior) initialStatus = 'Pending HR'
     }
   }
-  const result = await leaveRepo.createLeaveRequest(employeeId, finalLeaveTypeId, startDate, endDate, reason, initialStatus)
+  const result = await leaveRepo.createLeaveRequest(employeeId, finalLeaveTypeId, normalizedTypeName, startDate, endDate, reason, initialStatus)
   const leaveRequestId = result[0].leave_request_id
 
   if (isEmailConfigured()) {
