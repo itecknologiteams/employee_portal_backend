@@ -1108,12 +1108,15 @@ export async function getLeaveTypeById(leaveTypeId) {
   return rows[0] || null
 }
 
-/** Get leave type ID by name (case-insensitive). */
+/** Get leave type ID by name (case-insensitive). Also matches when the input has a trailing " Leave" suffix. */
 export async function getLeaveTypeIdByName(leaveTypeName) {
+  const stripped = String(leaveTypeName || '').replace(/\s+leave$/i, '').trim()
   const rows = await executeQuery(
     `SELECT leave_type_id, leave_type_name, description, is_active
-     FROM leave_types WHERE LOWER(TRIM(leave_type_name)) = LOWER(TRIM($1))`,
-    [leaveTypeName]
+     FROM leave_types
+     WHERE LOWER(TRIM(leave_type_name)) = LOWER(TRIM($1))
+        OR LOWER(TRIM(leave_type_name)) = LOWER(TRIM($2))`,
+    [leaveTypeName, stripped]
   )
   return rows
 }
