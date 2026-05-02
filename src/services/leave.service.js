@@ -1083,7 +1083,7 @@ export async function createLeaveRequest(data) {
 
   if (!finalLeaveTypeId) {
     return {
-      error: 'leaveTypeId is required. Available types: 1=Casual, 2=Sick, 3=Annual, 4=Marriage, 5=Maternity, 6=Paternal, 7=Pilgrimage',
+      error: 'leaveTypeId is required. Portal-requestable types: 3=Annual, 4=Marriage, 5=Maternity, 6=Paternal, 7=Pilgrimage. (Casual and Sick are managed through the Attendance system.)',
       status: 400
     }
   }

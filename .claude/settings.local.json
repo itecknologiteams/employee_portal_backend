@@ -2,7 +2,9 @@
   "permissions": {
     "allow": [
       "Bash(grep -n \"setViewModalReqId\\\\|onClick.*View\\\\|Eye.*Eye\\\\|Eye.*size\" D:\\\\\\\\Github\\\\\\\\Emp_Portal_FrontEnd\\\\\\\\src\\\\\\\\pages\\\\\\\\RequisitionPending.jsx)",
-      "Bash(grep -v \"//\")"
+      "Bash(grep -v \"//\")",
+      "Bash(Get-ChildItem -Path \"D:\\\\Github\\\\Emp_Portal_BackEnd\" -Recurse -Directory -Name)",
+      "Bash(Select-Object -First 20)"
     ]
   }
 }
