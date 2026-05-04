@@ -91,36 +91,30 @@ export async function employeeHasPermission(empId, permissionKey) {
 
 /**
  * Portal login: users.username (portal credentials) then employees.email + password_hash.
- * Used when CRM is disabled or when CRM login fails (non-CRM technicians use portal credentials from employees/users).
+ * Used when CRM is disabled or when CRM login` fails (non-CRM technicians use portal credentials from employees/users).
  */
 async function loginWithPortalCredentials(loginId, password) {
   try {
     const userRows = await authRepo.findUserByUsername(loginId)
+
     if (userRows.length > 0) {
       const row = userRows[0]
+
       if (!row.is_active) {
         return { error: 'Account is deactivated. Please contact HR.', status: 403 }
       }
-      const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
-      const isTechnician = role === 'Technician'
 
-      let valid = false
-      if (isTechnician) {
-        // Technicians: password is their employee_code (plain text, no hash)
-        valid = password === (row.employee_code || '').trim()
-      } else {
-        const hashToCheck = row.hashed_password
-        if (!isBcryptHash(hashToCheck)) {
-          return { error: 'Account password is not set up correctly. Please contact HR.', status: 401 }
-        }
-        valid = await bcrypt.compare(password, hashToCheck)
-      }
+      // 🔐 Only check employee_code
+      const valid = password === (row.employee_code || '').trim()
 
       if (valid) {
         if (await isSsoEnrolledAndRevoked(row.emp_id)) {
           return { error: 'Access suspended by CRM. Please sign in through CRM.', status: 403 }
         }
+
+        const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
         const permissions = await getEffectivePermissions(row.emp_id, role)
+
         return {
           employeeId: row.emp_id,
           employeeCode: row.employee_code || '',
@@ -128,40 +122,51 @@ async function loginWithPortalCredentials(loginId, password) {
           email: row.email,
           department: row.department_name || '',
           position: '',
-          userType: isTechnician ? 'Technician' : row.user_type,
+          userType: role === 'Technician' ? 'Technician' : row.user_type,
           permissions,
           forcePasswordChange: false
         }
       }
+
+      return { error: 'Invalid username or password', status: 401 }
     }
   } catch (err) {
-    const tableMissing = err.code === '42P01' || err.number === 208 || (err.message && err.message.includes('Invalid object name'))
+    const tableMissing =
+      err.code === '42P01' ||
+      err.number === 208 ||
+      (err.message && err.message.includes('Invalid object name'))
+
     if (!tableMissing) throw err
   }
 
+  // 🔁 Fallback (email login)
   const result = await authRepo.findEmployeeByEmail(loginId)
+
   if (result.length === 0) {
     return { error: 'Invalid username/email or password', status: 401 }
   }
+
   const employee = result[0]
+
   if (!employee.is_active) {
     return { error: 'Account is deactivated. Please contact HR.', status: 403 }
   }
-  if (!isBcryptHash(employee.password_hash)) {
+
+  // 🔐 Only check employee_code here as well
+  const valid = password === (employee.employee_code || '').trim()
+
+  if (!valid) {
     return { error: 'Invalid username/email or password', status: 401 }
   }
-  const isValidPassword = await bcrypt.compare(password, employee.password_hash)
-  if (!isValidPassword) {
-    return { error: 'Invalid username/email or password', status: 401 }
-  }
+
   if (await isSsoEnrolledAndRevoked(employee.employee_id)) {
     return { error: 'Access suspended by CRM. Please sign in through CRM.', status: 403 }
   }
+
   const userType = await authRepo.getUserTypeByEmployeeId(employee.employee_id) || 'User'
   const role = await resolveRoleForPermissions(employee.employee_id, userType)
   const permissions = await getEffectivePermissions(employee.employee_id, role)
-  const isTechnician = role === 'Technician'
-  const forcePasswordChange = isTechnician && (await authRepo.getUserForcePasswordChange(employee.employee_id))
+
   return {
     employeeId: employee.employee_id,
     employeeCode: employee.employee_code || '',
@@ -169,9 +174,9 @@ async function loginWithPortalCredentials(loginId, password) {
     email: employee.email,
     department: employee.department_name || employee.department_id,
     position: employee.position,
-    userType: isTechnician ? 'Technician' : userType,
+    userType: role === 'Technician' ? 'Technician' : userType,
     permissions,
-    forcePasswordChange: !!forcePasswordChange
+    forcePasswordChange: false
   }
 }
 
