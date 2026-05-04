@@ -160,7 +160,7 @@ async function processSendReminder(job) {
             r.req_hod_approval, r.req_committee_approval, r.req_ceo_approval, r.req_procurement_ack,
             r.req_quotation_1_url, r.req_quotation_2_url, r.req_quotation_3_url,
             r.req_handed_to_finance, r.req_finance_approval, r.req_is_rejected,
-            e.first_name, e.last_name, e.email AS creator_email
+            e.first_name, e.last_name
      FROM requisition r
      INNER JOIN employees e ON r.req_emp_id = e.employee_id
      WHERE r.req_id = $1`,
@@ -205,13 +205,20 @@ async function processSendReminder(job) {
 /** Send immediate email to creator: requisition ready, please acknowledge within 5 minutes. */
 async function sendCreatorAckRequiredEmail(reqId) {
   const rows = await executeQuery(
-    `SELECT e.email, e.first_name, e.last_name, r.req_reference_no
+    `SELECT e.employee_code, e.first_name, e.last_name, r.req_reference_no
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
-     WHERE r.req_id = $1 AND e.email IS NOT NULL AND TRIM(COALESCE(e.email, '')) != ''`,
+     WHERE r.req_id = $1`,
     [reqId]
   )
-  if (!rows.length || !rows[0].email) return
+  if (!rows.length) return
   const creator = rows[0]
+  const creatorCode = (creator.employee_code || '').trim()
+  if (!creatorCode) return
+  const creatorEmails = await resolveEmailsPreferCrmForCodes([creatorCode])
+  if (!creatorEmails.length) {
+    console.log('[Requisition Emailer] No CRM email for creator', creatorCode, '– ack notification not sent')
+    return
+  }
   const refNo = creator.req_reference_no || `#${reqId}`
   const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
   const ackUrl = `${portalUrl}requisition/acknowledgment`
@@ -230,12 +237,12 @@ async function sendCreatorAckRequiredEmail(reqId) {
   const transport = getEmailTransport()
   await transport.sendMail({
     from: EMAIL_FROM,
-    to: creator.email,
+    to: creatorEmails[0],
     subject,
     html,
     text: html.replace(/<[^>]+>/g, ''),
   })
-  console.log('[Requisition Emailer] Creator ack required email sent to', creator.email, 'for req', reqId)
+  console.log('[Requisition Emailer] Creator ack required email sent to', creatorEmails[0], 'for req', reqId)
 }
 
 /** Process delayed job: if creator has not acknowledged, send reminder. */
@@ -243,7 +250,7 @@ async function processCreatorAckReminder(job) {
   const { reqId } = job.data
   const rows = await executeQuery(
     `SELECT r.req_id, r.req_reference_no, r.req_creator_acknowledged,
-            e.email, e.first_name, e.last_name
+            e.employee_code, e.first_name, e.last_name
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      WHERE r.req_id = $1`,
     [reqId]
@@ -251,8 +258,13 @@ async function processCreatorAckReminder(job) {
   if (!rows.length) return
   const row = rows[0]
   if (row.req_creator_acknowledged === 1) return
-  const email = row.email
-  if (!email || String(email).trim() === '') return
+  const creatorCode = (row.employee_code || '').trim()
+  if (!creatorCode) return
+  const creatorEmails = await resolveEmailsPreferCrmForCodes([creatorCode])
+  if (!creatorEmails.length) {
+    console.log('[Requisition Emailer] No CRM email for creator', creatorCode, '– ack reminder not sent')
+    return
+  }
   const refNo = row.req_reference_no || `#${reqId}`
   const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
   const ackUrl = `${portalUrl}requisition/acknowledgment`
@@ -271,12 +283,12 @@ async function processCreatorAckReminder(job) {
   const transport = getEmailTransport()
   await transport.sendMail({
     from: EMAIL_FROM,
-    to: email,
+    to: creatorEmails[0],
     subject,
     html,
     text: html.replace(/<[^>]+>/g, ''),
   })
-  console.log('[Requisition Emailer] Creator ack reminder sent to', email, 'for req', reqId)
+  console.log('[Requisition Emailer] Creator ack reminder sent to', creatorEmails[0], 'for req', reqId)
 }
 
 /**

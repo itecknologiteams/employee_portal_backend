@@ -109,7 +109,8 @@ export async function getCategories() {
           execution_admin: r.execution_admin === 1,
           execution_finance: r.execution_finance === 1,
           execution_procurement: r.execution_procurement === 1,
-          form_layout: r.form_layout || null
+          form_layout: r.form_layout || null,
+          requires_date: !isCategoryNoDate(r.name)
         }))
       }
     }
@@ -344,8 +345,8 @@ function normalizeRequisitionItemForCreate(item) {
   return { ...item, itemEstCost: String(n) }
 }
 
-/** Categories that don't require a required by date (Loan & Advance Salary) */
-const REQUISITION_CATEGORIES_NO_DATE = ['Loan & Advance Salary']
+/** Categories that don't require a required by date */
+const REQUISITION_CATEGORIES_NO_DATE = ['Loan & Advance Salary', 'Stationary']
 
 function isCategoryNoDate(category) {
   if (category == null || category === '') return false

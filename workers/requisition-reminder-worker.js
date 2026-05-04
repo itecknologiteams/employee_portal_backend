@@ -22,6 +22,7 @@ import {
   BUCKET_LABELS,
   fetchLineTotalPkrForCeoRule
 } from '../src/utils/requisitionEmailRouting.js'
+import { resolveEmailsPreferCrmForCodes } from '../src/utils/requisitionEmailRecipients.js'
 
 const FOUR_HOURS_MS = 4 * 60 * 60 * 1000  // 3 days left → email every 4 hr
 const THREE_HOURS_MS = 3 * 60 * 60 * 1000 // 2 days left → email every 3 hr
@@ -214,6 +215,93 @@ export async function processRequisitionReminders() {
         await redis.set(dayKey, '1')
         await redis.expire(dayKey, 2 * 24 * 60 * 60)
       }
+    } catch (_) {}
+  }
+
+  // Stationary has no required-by date — send one reminder per day until admin approves (closes) the requisition
+  const stationaryQuery = `
+    SELECT r.req_id, r.req_reference_no, r.req_emp_id, r.req_material,
+           r.req_current_stage_key,
+           e.first_name, e.last_name, e.department_id,
+           d.department_name
+    FROM requisition r
+    JOIN employees e ON r.req_emp_id = e.employee_id
+    LEFT JOIN departments d ON e.department_id = d.department_id
+    WHERE r.req_required_by_date IS NULL
+      AND LOWER(TRIM(r.req_category)) = 'stationary'
+      AND COALESCE(r.req_is_rejected, 0) = 0
+      AND COALESCE(r.req_admin_approval, 0) = 0
+  `
+  let stationaryRows = []
+  try {
+    stationaryRows = await executeQuery(stationaryQuery, [])
+  } catch (err) {
+    console.error('Stationary reminder query failed:', err.message)
+  }
+
+  for (const row of stationaryRows) {
+    const reqId = row.req_id
+    const refNo = row.req_reference_no || '#' + reqId
+    const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim()
+
+    const dayKey = getReminderRedisKey(reqId) + ':day:' + todayStr
+    try {
+      if (await redis.get(dayKey)) continue
+    } catch (_) {}
+
+    const stageKey = row.req_current_stage_key || 'admin'
+    const creatorDeptIds = await getEmployeeDepartmentIdsForCreator(row.req_emp_id)
+    let toEmails = await getEmailsForBucket(stageKey, stageKey === 'hod' ? creatorDeptIds : row.department_id)
+    if (!toEmails.length) {
+      const testEmail = (process.env.TEST_REMINDER_EMAIL || '').trim()
+      if (testEmail) {
+        toEmails = [testEmail]
+        console.log(`Requisition ${reqId} (Stationary): sending reminder to TEST_REMINDER_EMAIL (no recipient for bucket ${stageKey})`)
+      } else {
+        console.warn(`Requisition ${reqId} (Stationary): no recipient for bucket ${stageKey}. Skip. Set TEST_REMINDER_EMAIL in .env to test.`)
+        continue
+      }
+    }
+
+    const creatorDescription = (row.req_material || '').trim()
+    const departmentName = (
+      (await getDepartmentNamesForIds(creatorDeptIds)) || row.department_name || ''
+    ).trim()
+    let items = []
+    try {
+      const itemRows = await executeQuery(
+        'SELECT item_desc, item_qty, item_size, item_brand, item_est_cost FROM requisition_items WHERE req_id = $1 ORDER BY item_id',
+        [reqId]
+      )
+      items = itemRows || []
+    } catch (_) {}
+
+    const bucketLabel = BUCKET_LABELS[stageKey] || stageKey
+    const subject = `Requisition ${refNo} – Pending ${bucketLabel} (Stationary)`
+    const body = buildRequisitionReminderPlainText({
+      refNo,
+      creatorName,
+      requiredBy: 'N/A',
+      departmentName,
+      bucketLabel,
+      creatorDescription,
+      daysMessage: 'pending',
+      items
+    })
+    const html = buildRequisitionEmailHtml({
+      title: `Requisition Reminder – ${bucketLabel}`,
+      refNo,
+      creatorName,
+      requiredBy: 'N/A',
+      departmentName,
+      bucketLabel,
+      creatorDescription,
+      items
+    })
+    await sendRequisitionReminder({ to: toEmails.join(','), subject, body, html })
+    try {
+      await redis.set(dayKey, '1')
+      await redis.expire(dayKey, 2 * 24 * 60 * 60)
     } catch (_) {}
   }
 }
@@ -599,7 +687,7 @@ export async function handleRequisitionRejected(data) {
   try {
     const rows = await executeQuery(
       `SELECT r.req_id, r.req_emp_id, r.req_reference_no, r.req_required_by_date, r.req_material,
-              e.first_name, e.last_name, e.email, e.department_id, d.department_name
+              e.first_name, e.last_name, e.employee_code, e.department_id, d.department_name
        FROM requisition r
        JOIN employees e ON r.req_emp_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
@@ -615,11 +703,17 @@ export async function handleRequisitionRejected(data) {
     console.warn('[BullMQ] requisition-rejected: requisition not found', requisitionId)
     return
   }
-  const creatorEmail = (row.email || '').trim()
-  if (!creatorEmail) {
-    console.log('[BullMQ] requisition-rejected: creator has no email, skip', requisitionId)
+  const creatorCode = (row.employee_code || '').trim()
+  if (!creatorCode) {
+    console.log('[BullMQ] requisition-rejected: creator has no employee code, skip', requisitionId)
     return
   }
+  const creatorEmails = await resolveEmailsPreferCrmForCodes([creatorCode])
+  if (!creatorEmails.length) {
+    console.log('[BullMQ] requisition-rejected: no CRM email found for creator', creatorCode)
+    return
+  }
+  const creatorEmail = creatorEmails[0]
 
   const refNo = row.req_reference_no || '#' + requisitionId
   const creatorName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || 'Employee'
