@@ -276,6 +276,8 @@ export async function getHistory(employeeId, query = {}) {
     location: req.req_location,
     material: req.req_material,
     requiredByDate: req.req_required_by_date || null,
+    isUrgent: req.req_is_urgent === 1,
+    urgentDate: req.req_urgent_date || null,
     business: req.req_business,
     category: req.req_category || null,
     status: getRequisitionStatus(req),
@@ -321,6 +323,8 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
       category: req.req_category || null,
       createdAt: req.req_created_at,
       requiredByDate: req.req_required_by_date || null,
+      isUrgent: req.req_is_urgent === 1,
+      urgentDate: req.req_urgent_date || null,
       status,
       pendingAt: getPendingAt(status),
       isRejected: req.req_is_rejected === 1,
@@ -356,7 +360,7 @@ function isCategoryNoDate(category) {
 }
 
 export async function createRequisition(body) {
-  const { employeeId, location, material, requiredByDate, business, items, category, loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths } = body
+  const { employeeId, location, material, requiredByDate, business, items, category, loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths, isUrgent } = body
   const categoryTrimmed = category?.trim() || ''
   const noDateCategory = isCategoryNoDate(categoryTrimmed)
 
@@ -432,8 +436,11 @@ export async function createRequisition(body) {
     creatorRole = 'HOD'
   }
 
+  const urgent = isUrgent === true || isUrgent === 1 || isUrgent === 'true'
+  const urgentDate = urgent ? new Date().toISOString().slice(0, 10) : null
+
   const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, categoryTrimmed,
-    loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths)
+    loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths, urgent, urgentDate)
   const reqId = created.req_id
   const refNo = created.req_reference_no
 

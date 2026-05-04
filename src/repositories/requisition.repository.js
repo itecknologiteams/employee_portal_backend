@@ -86,27 +86,29 @@ export async function getItemCountsByReqIds(reqIds) {
   )
 }
 
-export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, category, loanAdvanceType = null, loanAdvanceAmount = null, loanAdvanceReason = null, loanInstallmentMonths = null) {
+export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, category, loanAdvanceType = null, loanAdvanceAmount = null, loanAdvanceReason = null, loanInstallmentMonths = null, isUrgent = false, urgentDate = null) {
   // Use RETURNING clause to get the inserted row directly - eliminates race condition
   const hasLoanFields = loanAdvanceType || loanAdvanceAmount || loanAdvanceReason || loanInstallmentMonths
 
   if (hasLoanFields) {
     const r = await executeQuery(
       `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category,
-        loan_advance_type, loan_advance_amount, loan_advance_reason, loan_installment_months)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+        loan_advance_type, loan_advance_amount, loan_advance_reason, loan_installment_months, req_is_urgent, req_urgent_date)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING req_id, req_reference_no`,
       [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null,
-        loanAdvanceType || null, loanAdvanceAmount || null, loanAdvanceReason || null, loanInstallmentMonths || null]
+        loanAdvanceType || null, loanAdvanceAmount || null, loanAdvanceReason || null, loanInstallmentMonths || null,
+        isUrgent ? 1 : 0, isUrgent ? (urgentDate || null) : null]
     )
     return r[0]
   }
 
   const r = await executeQuery(
-    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
+    `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category, req_is_urgent, req_urgent_date)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING req_id, req_reference_no`,
-    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null]
+    [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null,
+      isUrgent ? 1 : 0, isUrgent ? (urgentDate || null) : null]
   )
   return r[0]
 }

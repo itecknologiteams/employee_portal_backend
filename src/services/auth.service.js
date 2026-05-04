@@ -101,19 +101,26 @@ async function loginWithPortalCredentials(loginId, password) {
       if (!row.is_active) {
         return { error: 'Account is deactivated. Please contact HR.', status: 403 }
       }
-      const hashToCheck = row.hashed_password
-      if (!isBcryptHash(hashToCheck)) {
-        return { error: 'Account password is not set up correctly. Please contact HR.', status: 401 }
+      const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
+      const isTechnician = role === 'Technician'
+
+      let valid = false
+      if (isTechnician) {
+        // Technicians: password is their employee_code (plain text, no hash)
+        valid = password === (row.employee_code || '').trim()
+      } else {
+        const hashToCheck = row.hashed_password
+        if (!isBcryptHash(hashToCheck)) {
+          return { error: 'Account password is not set up correctly. Please contact HR.', status: 401 }
+        }
+        valid = await bcrypt.compare(password, hashToCheck)
       }
-      const valid = await bcrypt.compare(password, hashToCheck)
+
       if (valid) {
         if (await isSsoEnrolledAndRevoked(row.emp_id)) {
           return { error: 'Access suspended by CRM. Please sign in through CRM.', status: 403 }
         }
-        const role = await resolveRoleForPermissions(row.emp_id, row.user_type)
         const permissions = await getEffectivePermissions(row.emp_id, role)
-        const isTechnician = role === 'Technician'
-        const forcePasswordChange = isTechnician && (row.force_password_change === true)
         return {
           employeeId: row.emp_id,
           employeeCode: row.employee_code || '',
@@ -123,7 +130,7 @@ async function loginWithPortalCredentials(loginId, password) {
           position: '',
           userType: isTechnician ? 'Technician' : row.user_type,
           permissions,
-          forcePasswordChange: !!forcePasswordChange
+          forcePasswordChange: false
         }
       }
     }
