@@ -28,6 +28,9 @@ router.get('/download/:salarySlipId', salaryController.downloadSalarySlip)
 router.get('/fpin/status/:employeeCode', salaryController.getFpinStatus)
 router.post('/fpin/set', salaryController.setFpin)
 router.post('/fpin/verify', salaryController.verifyFpin)
+// FPIN reset: request OTP by email, then verify OTP + set new 4-digit PIN
+router.post('/fpin/reset-request', salaryController.requestFpinReset)
+router.post('/fpin/reset', salaryController.resetFpinWithCode)
 
 // Upload old salary slips (import from SQL Server). Body: { slips: [...] }
 router.post('/old-slips', salaryController.createOldSlips)

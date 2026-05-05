@@ -40,6 +40,15 @@ export async function upsertFpin(employeeId, pinHash) {
   )
 }
 
+/** FPIN reset: get employee email, code, and name for sending the reset verification code. */
+export async function getEmployeeEmailById(employeeId) {
+  const rows = await executeQuery(
+    'SELECT email, first_name, employee_code FROM employees WHERE employee_id = $1',
+    [employeeId]
+  )
+  return rows.length ? rows[0] : null
+}
+
 /** Get hr_emp_id(s) for portal employee (employee_code often matches legacy hr_emp_id). */
 export async function getHrEmpIdsForEmployee(employeeId) {
   const rows = await executeQuery(

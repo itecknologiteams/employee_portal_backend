@@ -1,5 +1,9 @@
 import bcrypt from 'bcryptjs'
 import * as salaryRepo from '../repositories/salary.repository.js'
+import { readFileSync, existsSync } from 'fs'
+import { resolve } from 'path'
+import { APP_NAME, EMAIL_FROM, EMAIL_LOGO_PATH, getEmailTransport, isEmailConfigured } from '../../config/email.js'
+import { getOfficialEmailFromCrm } from '../../config/crmDatabase.js'
 
 function monthLabelFromDate(date) {
   return date ? new Date(date).toLocaleDateString('en-US', { month: 'long', year: 'numeric' }) : null
@@ -582,4 +586,160 @@ export async function verifyFpin(employeeId, pin) {
     return { error: `Too many wrong attempts. Try again after ${FPIN_LOCK_MINUTES} minutes.`, status: 429 }
   }
   return { error: `Invalid FPIN. ${remaining} attempt(s) remaining.`, status: 401, remainingAttempts: remaining }
+}
+
+// ---------- FPIN Reset (email OTP flow) ----------
+// In-memory store: employeeId -> { codeHash, expiresAt }. Short-lived (10 min), cleared on use or re-request.
+const fpinResetStore = new Map()
+const FPIN_RESET_EXPIRY_MS = 10 * 60 * 1000
+const FPIN_RESET_SALT_ROUNDS = 6 // lower rounds for short-lived OTP — speed matters here
+
+function maskEmail(email) {
+  const [local, domain] = String(email).split('@')
+  if (!domain) return email
+  const visible = local.slice(0, Math.min(3, local.length))
+  return `${visible}${'*'.repeat(Math.max(0, local.length - visible.length))}@${domain}`
+}
+
+/** Send a 6-digit verification code to the employee's CRM (official) email to initiate FPIN reset. */
+export async function requestFpinReset(employeeId) {
+  const emp = await salaryRepo.getEmployeeEmailById(employeeId)
+  if (!emp) return { error: 'Employee not found', status: 404 }
+
+  // Always send to CRM email (official work email from ERP_Tracking.dbo.USERS)
+  const crmEmail = await getOfficialEmailFromCrm(emp.employee_code)
+  const targetEmail = crmEmail || emp.email
+  if (!targetEmail) return { error: 'No email address on file for this employee', status: 400 }
+
+  const code = String(Math.floor(100000 + Math.random() * 900000))
+  const codeHash = await bcrypt.hash(code, FPIN_RESET_SALT_ROUNDS)
+  fpinResetStore.set(employeeId, { codeHash, expiresAt: Date.now() + FPIN_RESET_EXPIRY_MS })
+
+  if (isEmailConfigured()) {
+    const transport = getEmailTransport()
+    if (transport) {
+      const name = emp.first_name || 'Employee'
+      const appName = APP_NAME || 'Employee Portal'
+      const digits = code.split('')
+      const digitBoxes = digits.map(d =>
+        `<span style="display:inline-block;width:44px;height:56px;line-height:56px;text-align:center;font-size:28px;font-weight:700;color:#1e293b;background:#f1f5f9;border:2px solid #e2e8f0;border-radius:10px;margin:0 4px;">${d}</span>`
+      ).join('')
+
+      // Build inline logo attachment (CID) — works in all email clients including Gmail & Outlook
+      const logoAttachments = []
+      const logoAbsPath = EMAIL_LOGO_PATH ? resolve(EMAIL_LOGO_PATH) : ''
+      if (logoAbsPath && existsSync(logoAbsPath)) {
+        logoAttachments.push({
+          filename: 'logo.png',
+          content: readFileSync(logoAbsPath),
+          cid: 'emp-portal-logo',
+          contentDisposition: 'inline'
+        })
+      }
+      const logoImgTag = logoAttachments.length
+        ? `<img src="cid:emp-portal-logo" alt="${appName}" width="75" style="display:block;margin:0 auto 22px;max-width:75px;height:auto;" />`
+        : ''
+
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"><title>FPIN Reset</title></head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Arial,sans-serif;">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:40px 16px;">
+    <tr><td align="center">
+      <table width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;">
+
+        <!-- Header: logo + title on white with blue top accent -->
+        <tr><td style="background:#ffffff;border-radius:16px 16px 0 0;border-top:5px solid #1e40af;padding:36px 40px 32px;text-align:center;">
+          ${logoImgTag}
+          <p style="margin:0 0 8px;font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:2.5px;text-transform:uppercase;">Security Alert</p>
+          <h1 style="margin:0;font-size:26px;font-weight:800;color:#1e40af;letter-spacing:-0.5px;">FPIN Reset Request</h1>
+        </td></tr>
+
+        <!-- Divider -->
+        <tr><td style="background:#ffffff;padding:0 40px;"><div style="height:1px;background:#e2e8f0;"></div></td></tr>
+
+        <!-- Body -->
+        <tr><td style="background:#ffffff;padding:32px 40px 36px;border-left:1px solid #e2e8f0;border-right:1px solid #e2e8f0;">
+          <p style="margin:0 0 6px;font-size:17px;font-weight:600;color:#1e293b;">Hi ${name},</p>
+          <p style="margin:0 0 28px;font-size:15px;color:#64748b;line-height:1.65;">We received a request to reset your <strong style="color:#1e293b;">Salary Slip PIN (FPIN)</strong> on the Employee Portal. Use the verification code below to proceed.</p>
+
+          <!-- Code block -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#f8fafc;border:2px solid #e2e8f0;border-radius:14px;margin-bottom:24px;">
+            <tr><td style="padding:28px 20px;text-align:center;">
+              <p style="margin:0 0 18px;font-size:11px;font-weight:700;color:#94a3b8;letter-spacing:2px;text-transform:uppercase;">Your Verification Code</p>
+              <div style="margin:0 auto;">${digitBoxes}</div>
+              <p style="margin:20px 0 0;font-size:13px;color:#94a3b8;">⏱&nbsp; Expires in <strong style="color:#ef4444;">10 minutes</strong></p>
+            </td></tr>
+          </table>
+
+          <!-- Steps -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#eff6ff;border:1px solid #bfdbfe;border-radius:12px;margin-bottom:24px;">
+            <tr><td style="padding:18px 22px;">
+              <p style="margin:0 0 10px;font-size:13px;font-weight:700;color:#1e40af;">How to use this code:</p>
+              <table cellpadding="0" cellspacing="0">
+                <tr><td style="padding:3px 0;font-size:13px;color:#1d4ed8;"><span style="color:#3b82f6;font-weight:700;margin-right:8px;">1.</span>Go back to the Employee Portal</td></tr>
+                <tr><td style="padding:3px 0;font-size:13px;color:#1d4ed8;"><span style="color:#3b82f6;font-weight:700;margin-right:8px;">2.</span>Enter this 6-digit code in the verification field</td></tr>
+                <tr><td style="padding:3px 0;font-size:13px;color:#1d4ed8;"><span style="color:#3b82f6;font-weight:700;margin-right:8px;">3.</span>Set your new 4-digit FPIN</td></tr>
+              </table>
+            </td></tr>
+          </table>
+
+          <!-- Security notice -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="background:#fffbeb;border-left:4px solid #f59e0b;border-radius:0 10px 10px 0;">
+            <tr><td style="padding:14px 18px;">
+              <p style="margin:0;font-size:13px;color:#92400e;line-height:1.65;"><strong>Didn't request this?</strong> Please ignore this email. Your current FPIN remains unchanged and your account is safe.</p>
+            </td></tr>
+          </table>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:0 0 16px 16px;padding:22px 40px;text-align:center;">
+          <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#334155;">${appName}</p>
+          <p style="margin:0;font-size:12px;color:#94a3b8;">This is an automated message — please do not reply.</p>
+        </td></tr>
+
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`
+
+      const text = `Hi ${name},\n\nYour FPIN reset verification code is: ${code}\n\nThis code expires in 10 minutes.\n\nIf you did not request this, please ignore this email. Your current FPIN remains unchanged.\n\n— ${appName}`
+
+      await transport.sendMail({
+        from: EMAIL_FROM,
+        to: targetEmail,
+        subject: `${code} is your FPIN Reset Code — ${appName}`,
+        text,
+        html,
+        attachments: logoAttachments
+      }).catch((err) => console.error('[FPIN Reset] Email failed:', err.message))
+    }
+  }
+
+  return { message: 'Verification code sent', maskedEmail: maskEmail(targetEmail) }
+}
+
+/** Verify the OTP code and set the new 4-digit FPIN in a single step. */
+export async function resetFpinWithCode(employeeId, code, newPin) {
+  const entry = fpinResetStore.get(employeeId)
+  if (!entry) return { error: 'No reset request found. Please request a new code.', status: 400 }
+
+  if (Date.now() > entry.expiresAt) {
+    fpinResetStore.delete(employeeId)
+    return { error: 'Verification code has expired. Please request a new one.', status: 400 }
+  }
+
+  const match = await bcrypt.compare(String(code).trim(), entry.codeHash)
+  if (!match) return { error: 'Invalid verification code.', status: 401 }
+
+  const p = String(newPin).trim()
+  if (!/^\d{4}$/.test(p)) return { error: 'FPIN must be exactly 4 digits.', status: 400 }
+
+  const pinHash = await bcrypt.hash(p, FPIN_SALT_ROUNDS)
+  await salaryRepo.upsertFpin(employeeId, pinHash)
+  await salaryRepo.updateFpinAttempts(employeeId, 0, null)
+
+  fpinResetStore.delete(employeeId)
+  return { message: 'FPIN reset successfully' }
 }

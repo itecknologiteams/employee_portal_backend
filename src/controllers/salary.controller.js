@@ -203,3 +203,35 @@ export async function verifyFpin(req, res) {
     res.status(500).json({ error: 'Failed to verify FPIN' })
   }
 }
+
+/** POST /fpin/reset-request – body: { employeeCode }. Send 6-digit OTP to employee email. */
+export async function requestFpinReset(req, res) {
+  try {
+    const { employeeCode } = req.body
+    if (!employeeCode) return res.status(400).json({ error: 'employeeCode is required' })
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await salaryService.requestFpinReset(employeeId)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('FPIN reset-request error:', error)
+    res.status(500).json({ error: 'Failed to send reset code' })
+  }
+}
+
+/** POST /fpin/reset – body: { employeeCode, code, newPin }. Verify OTP and set new 4-digit FPIN. */
+export async function resetFpinWithCode(req, res) {
+  try {
+    const { employeeCode, code, newPin } = req.body
+    if (!employeeCode) return res.status(400).json({ error: 'employeeCode is required' })
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await salaryService.resetFpinWithCode(employeeId, code, newPin)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('FPIN reset error:', error)
+    res.status(500).json({ error: 'Failed to reset FPIN' })
+  }
+}

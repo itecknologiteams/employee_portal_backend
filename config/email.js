@@ -34,6 +34,8 @@ export const EMAIL_FROM = process.env.EMAIL_FROM || process.env.MAIL_FROM || pro
 
 export const APP_NAME = process.env.APP_NAME || 'Employee Portal'
 
+export const EMAIL_LOGO_PATH = process.env.EMAIL_LOGO_PATH || ''
+
 /** Portal URL for requisition emails (link to open RFM portal). */
 export const REQUISITION_PORTAL_URL = process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/'
 
