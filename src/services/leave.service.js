@@ -1272,10 +1272,10 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       }
       return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
     }
-    // All leave types (portal and ICS) require HOD → HR two-step approval
-    if (!['Pending HR', 'Rejected'].includes(normalizedStatus)) {
+    // HOD directly approves or rejects — no HR approval step required
+    if (!['Approved', 'Rejected'].includes(normalizedStatus)) {
       return {
-        error: 'HOD can set status to Pending HR (forward to HR) or Rejected',
+        error: 'HOD can set status to Approved or Rejected',
         status: 400
       }
     }
@@ -1285,77 +1285,72 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       return { error: 'Only HOD of the applicant\'s department can approve or reject', status: 403 }
     }
 
-    const result = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending')
-    if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+    if (normalizedStatus === 'Approved') {
+      const ar = await approveWithAnnualDeduction(leave, reqId, 'Pending', 'Approved')
+      if (ar.error) return ar
+    } else {
+      const result = await leaveRepo.updateLeaveRequestStatus(reqId, 'Rejected', 'Pending')
+      if (!result || result.length === 0) return { error: 'Could not update status', status: 400 }
+    }
 
-    // Sync to ICS: 'Approved' when forwarded to HR (HOD-level OK), 'Rejected' when rejected
+    // Sync status to ICS and CRM
     const empData = await findEmployeeByEmployeeId(leave.employee_id)
     const employeeCode = empData?.employee_code || empData?.code
     if (employeeCode) {
-      const icsStatus = normalizedStatus === 'Pending HR' ? 'Approved' : 'Rejected'
       syncLeaveStatusToICS({
         employeeCode,
         leaveId: reqId,
-        status: icsStatus,
+        status: normalizedStatus,
         leaveType: leave.leave_type || 'Annual',
         startDate: leave.start_date,
         endDate: leave.end_date
       }).catch(err => console.error('ICS sync error (non-blocking):', err?.message))
-      // CRM: Pending HR = still pending (1), Rejected = rejected (3)
       syncStatusToCrm(leave.ics_leave_id, employeeCode, normalizedStatus)
     } else {
       console.warn(`⚠️ Could not find employee_code for employee_id ${leave.employee_id}, skipping ICS sync`)
     }
 
-    if (normalizedStatus === 'Pending HR' && isEmailConfigured()) {
+    // Notify HR by email when HOD approves so they are aware the employee will be on leave
+    if (normalizedStatus === 'Approved' && isEmailConfigured()) {
       const transport = getEmailTransport()
       if (transport) {
         try {
-          const to = getLeaveNotificationEmail()
-          const subject = `Leave request forwarded to HR — pending your approval (ID: ${reqId})`
+          const empName = empData ? `${empData.first_name || ''} ${empData.last_name || ''}`.trim() : `Employee #${leave.employee_id}`
+          const subject = `Leave Approved — ${empName} on leave (ID: ${reqId})`
           const body = [
-            'A leave request has been forwarded by HOD and is now in your HR bucket.',
+            'This is an informational notification. No action is required from HR.',
             '',
-            `Leave Request ID: ${reqId}`,
-            `Employee ID: ${leave.employee_id}`,
-            `Leave Type: ${leave.leave_type || '???'}`,
-            `Start Date: ${leave.start_date || '???'}`,
-            `End Date: ${leave.end_date || '???'}`,
+            `Leave Request ID : ${reqId}`,
+            `Employee        : ${empName}`,
+            `Leave Type      : ${leave.leave_type || '???'}`,
+            `Start Date      : ${leave.start_date || '???'}`,
+            `End Date        : ${leave.end_date || '???'}`,
             '',
             'Reason:',
-            (leave.reason && String(leave.reason).trim()) || '???'
+            (leave.reason && String(leave.reason).trim()) || '—'
           ].join('\n')
-          await transport.sendMail({ from: EMAIL_FROM, to, subject, text: body })
+          await transport.sendMail({ from: EMAIL_FROM, to: 'hr@itecknologi.com', subject, text: body })
         } catch (err) {
-          console.error('[Leave] HR notify FAILED:', err.message)
+          console.error('[Leave] HR notify email FAILED:', err.message)
         }
       }
     }
-    if (normalizedStatus === 'Pending HR') {
-      notifSvc.notifySafe(notifSvc.notifyMany(await notifRepo.getHrEmployeeIds(), {
-        type: 'leave_pending_hr',
-        title: 'Leave forwarded to HR',
-        body: `Leave #${reqId} was forwarded by HOD for HR review.`,
+
+    // In-app notification to the employee
+    const applicantId = parseInt(leave.employee_id, 10)
+    if (!Number.isNaN(applicantId)) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: applicantId,
+        type: normalizedStatus === 'Approved' ? 'leave_approved' : 'leave_rejected',
+        title: normalizedStatus === 'Approved' ? 'Leave approved' : 'Leave rejected',
+        body: `Your leave request #${reqId} was ${normalizedStatus.toLowerCase()} by HOD.`,
         url: '/leave',
         relatedEntityType: 'leave',
         relatedEntityId: reqId
       }))
     }
-    if (normalizedStatus === 'Rejected') {
-      const applicantId = parseInt(leave.employee_id, 10)
-      if (!Number.isNaN(applicantId)) {
-        notifSvc.notifySafe(notifSvc.notify({
-          recipientEmployeeId: applicantId,
-          type: 'leave_rejected',
-          title: 'Leave rejected',
-          body: `Your leave request #${reqId} was rejected by HOD.`,
-          url: '/leave',
-          relatedEntityType: 'leave',
-          relatedEntityId: reqId
-        }))
-      }
-    }
-    const message = normalizedStatus === 'Rejected' ? 'Leave request rejected' : 'Leave forwarded to HR'
+
+    const message = normalizedStatus === 'Rejected' ? 'Leave request rejected' : 'Leave request approved'
     return { message, status: normalizedStatus }
   }
 
@@ -1625,79 +1620,69 @@ export async function hodActOnIcsLeave(body) {
   const typeId = leaveTypeId ? parseInt(leaveTypeId, 10) : null
   if (!typeId || !startDate) return { error: 'leaveTypeId and startDate are required', status: 400 }
 
-  const newStatus = action === 'reject' ? 'Rejected' : 'Pending HR'
+  const newStatus = action === 'reject' ? 'Rejected' : 'Approved'
+  const typeName = String(leaveTypeName || 'Casual').trim()
 
-  // Update existing portal record if it was already synced; otherwise create one for approve
+  // Update existing portal record; if not yet synced, create it first
   let updated = await leaveRepo.findAndUpdateIcsLeave(empId, icsLeaveId, typeId, startDate, newStatus)
-  if (!updated && newStatus === 'Pending HR') {
-    const typeName = String(leaveTypeName || 'Casual').trim()
+  if (!updated) {
     const result = await leaveRepo.createIcsLeaveInPortal(
-      empId, typeId, typeName, startDate, endDate || startDate, reason || '', 'Pending HR', icsLeaveId
+      empId, typeId, typeName, startDate, endDate || startDate, reason || '', newStatus, icsLeaveId
     )
     updated = result[0] || null
   }
   const portalLeaveId = updated?.leave_request_id
 
+  // Sync final decision to CRM
+  syncStatusToCrm(icsLeaveId, empCode, newStatus)
+
+  // In-app notification to employee
+  const applicantId = parseInt(empId, 10)
+  if (!Number.isNaN(applicantId)) {
+    notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: applicantId,
+      type: newStatus === 'Approved' ? 'leave_approved' : 'leave_rejected',
+      title: newStatus === 'Approved' ? 'Leave approved' : 'Leave rejected',
+      body: `Your leave request was ${newStatus.toLowerCase()} by HOD.`,
+      url: '/leave',
+      relatedEntityType: 'leave',
+      relatedEntityId: portalLeaveId || icsLeaveId
+    }))
+  }
+
   if (action === 'reject') {
-    // Final decision by HOD → call CRM API
-    syncStatusToCrm(icsLeaveId, empCode, 'Rejected')
-    const applicantId = parseInt(empId, 10)
-    if (!Number.isNaN(applicantId)) {
-      notifSvc.notifySafe(notifSvc.notify({
-        recipientEmployeeId: applicantId,
-        type: 'leave_rejected',
-        title: 'Leave rejected',
-        body: 'Your leave request was rejected by HOD.',
-        url: '/leave',
-        relatedEntityType: 'leave',
-        relatedEntityId: portalLeaveId || icsLeaveId
-      }))
-    }
     return { message: 'Leave request rejected', status: 'Rejected' }
   }
 
-  // HOD approved → notify CRM that leave is pending HR review (new_status=1)
-  syncStatusToCrm(icsLeaveId, empCode, 'Pending HR')
-
-  // Notify HR
+  // HOD approved — notify HR by email (informational only, no action required)
   if (isEmailConfigured()) {
     const transport = getEmailTransport()
     if (transport) {
       try {
-        const to = getLeaveNotificationEmail()
         await transport.sendMail({
           from: EMAIL_FROM,
-          to,
-          subject: `Leave request forwarded to HR — pending your approval (ICS ID: ${icsLeaveId})`,
+          to: 'hr@itecknologi.com',
+          subject: `Leave Approved — Employee on leave (ICS ID: ${icsLeaveId})`,
           text: [
-            'A leave request (from ICS) has been forwarded by HOD and is now in your HR bucket.',
+            'This is an informational notification. No action is required from HR.',
             '',
-            `ICS Leave ID: ${icsLeaveId}`,
+            `ICS Leave ID   : ${icsLeaveId}`,
             `Portal Leave ID: ${portalLeaveId || '—'}`,
-            `Employee Code: ${empCode}`,
-            `Leave Type: ${typeName}`,
-            `Start Date: ${startDate}`,
-            `End Date: ${endDate || startDate}`,
+            `Employee Code  : ${empCode}`,
+            `Leave Type     : ${typeName}`,
+            `Start Date     : ${startDate}`,
+            `End Date       : ${endDate || startDate}`,
             '',
             `Reason: ${reason || '—'}`
           ].join('\n')
         })
       } catch (err) {
-        console.error('[Leave] HR notify FAILED:', err.message)
+        console.error('[Leave] HR notify email FAILED:', err.message)
       }
     }
   }
 
-  notifSvc.notifySafe(notifSvc.notifyMany(await notifRepo.getHrEmployeeIds(), {
-    type: 'leave_pending_hr',
-    title: 'Leave forwarded to HR',
-    body: `ICS leave #${icsLeaveId} was forwarded by HOD for HR review.`,
-    url: '/leave',
-    relatedEntityType: 'leave',
-    relatedEntityId: portalLeaveId || icsLeaveId
-  }))
-
-  return { message: 'Leave forwarded to HR', status: 'Pending HR', portalLeaveId }
+  return { message: 'Leave request approved', status: 'Approved', portalLeaveId }
 }
 
 /** Get pending leave requests for CEO approval.

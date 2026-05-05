@@ -399,17 +399,7 @@ export async function getExternalLeaves(req, res) {
 
     const data = await response.json()
 
-    // Sync each ICS leave into the portal DB so it appears in the HOD approval bucket.
-    // Runs in parallel; individual failures are suppressed so they don't block the response.
     const icsLeaves = data?.data?.leaves || []
-    const employeeCode = String(emp_id)
-    await Promise.all(
-      icsLeaves
-        .filter(l => l.leave_type_id && l.start_date)
-        .map(l => leaveService.syncIcsLeaveToPortal(employeeCode, l).catch(err => {
-          console.warn('ICS leave portal sync warning:', err.message)
-        }))
-    )
 
     // Normalize ICS leaves to portal camelCase format so both leave endpoints return the same shape
     const normalizedLeaves = icsLeaves.map(l => ({

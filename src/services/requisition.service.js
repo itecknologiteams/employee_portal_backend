@@ -363,6 +363,7 @@ export async function createRequisition(body) {
   const { employeeId, location, material, requiredByDate, business, items, category, loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths, isUrgent } = body
   const categoryTrimmed = category?.trim() || ''
   const noDateCategory = isCategoryNoDate(categoryTrimmed)
+  const urgent = isUrgent === true || isUrgent === 1 || isUrgent === 'true'
 
   if (!employeeId) {
     return { error: 'employeeId is required', status: 400 }
@@ -373,8 +374,8 @@ export async function createRequisition(body) {
   if (!material || typeof material !== 'string' || !String(material).trim()) {
     return { error: 'Material / Summary is required', status: 400 }
   }
-  // Required by date is optional for Loan & Advance Salary
-  if (!noDateCategory && (!requiredByDate || typeof requiredByDate !== 'string' || !String(requiredByDate).trim())) {
+  // Required by date is optional for no-date categories and urgent requests
+  if (!noDateCategory && !urgent && (!requiredByDate || typeof requiredByDate !== 'string' || !String(requiredByDate).trim())) {
     return { error: 'Required by date is required', status: 400 }
   }
   const itemsList = Array.isArray(items) ? items : []
@@ -415,9 +416,8 @@ export async function createRequisition(body) {
     return { error: `Category must be one of: ${allowedCategories.join(', ')}`, status: 400 }
   }
 
-  // Required by date must be at least 4 days from today (cannot select today or next 3 days)
-  // Skip this validation for Loan & Advance Salary category
-  if (!noDateCategory && requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())) {
+  // Required by date must be at least 4 days from today — skip for urgent and no-date categories
+  if (!noDateCategory && !urgent && requiredByDate && typeof requiredByDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(requiredByDate.trim())) {
     const minDate = new Date()
     minDate.setDate(minDate.getDate() + 4)
     const minStr = `${minDate.getFullYear()}-${String(minDate.getMonth() + 1).padStart(2, '0')}-${String(minDate.getDate()).padStart(2, '0')}`
@@ -436,7 +436,6 @@ export async function createRequisition(body) {
     creatorRole = 'HOD'
   }
 
-  const urgent = isUrgent === true || isUrgent === 1 || isUrgent === 'true'
   const urgentDate = urgent ? new Date().toISOString().slice(0, 10) : null
 
   const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, categoryTrimmed,
