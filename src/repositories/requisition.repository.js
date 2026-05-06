@@ -1812,6 +1812,20 @@ export async function getApprovedByCeoRequisitions(excludeEmployeeId) {
   )
 }
 
+export async function getApprovedByAdminRequisitions() {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE COALESCE(r.req_admin_approval, 0)::int = 1
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
+     ORDER BY r.req_admin_approval_date DESC NULLS LAST, r.req_created_at DESC`
+  )
+}
+
 /** Req is in Procurement bucket (by flow) and can be acknowledged by Procurement. Use current_stage_key so all flow paths (e.g. Committee?Procurement or HOD???CEO?Procurement) work. */
 export async function getRequisitionForProcurementAck(reqId) {
   try {

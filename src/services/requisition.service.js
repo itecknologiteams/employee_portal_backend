@@ -848,6 +848,17 @@ export async function getApprovedByCeo(employeeId) {
   return list
 }
 
+export async function getApprovedByAdmin(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isAdminMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getApprovedByAdminRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+}
+
 export async function approveHod(body) {
   const boqItemsRaw = body.boqItems ?? body.boq_items
   const boqItems = Array.isArray(boqItemsRaw) ? boqItemsRaw : []
