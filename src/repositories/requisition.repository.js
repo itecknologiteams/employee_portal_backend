@@ -1300,8 +1300,8 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
       // Finance: explicit stage key OR handed to finance flag
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_handed_to_finance = 1 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'hod') {
-      // HOD: explicit stage key OR (no HOD approval AND no downstream approvals AND stage is NULL)
-      bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
+      // HOD: explicit stage key (not yet approved by HOD, not completed) OR legacy NULL stage with no approvals
+      bucketCondition = ` AND ((r.req_current_stage_key = $1 AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 0) OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'committee') {
       // Committee: explicit stage key OR (HOD approved AND Committee not approved AND stage is NULL)
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_committee_approval, 0) = 0))`
@@ -1624,11 +1624,9 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
          AND (r.req_required_by_date::date <= CURRENT_DATE)
          AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
          AND (
-           -- Still in HOD bucket (not yet forwarded to Committee/CEO/etc)
-           (r.req_current_stage_key = 'hod' OR r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0)
+           (r.req_current_stage_key = 'hod' AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 0)
            OR
-           -- Completed, pending HOD acknowledgment
-           (COALESCE(r.req_purchase_completed, 0) = 0 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_current_stage_key IS NULL)
+           (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0)
          )
        ORDER BY r.req_required_by_date ASC NULLS LAST, r.req_created_at ASC`,
       [deptId, deptName]
@@ -1812,6 +1810,34 @@ export async function getApprovedByAdminRequisitions() {
        AND COALESCE(r.req_is_rejected, 0) = 0
        AND COALESCE(r.is_hidden, FALSE) = FALSE
      ORDER BY r.req_admin_approval_date DESC NULLS LAST, r.req_created_at DESC`
+  )
+}
+
+export async function getApprovedByProcurementRequisitions() {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE COALESCE(r.req_purchase_completed, 0)::int = 1
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
+     ORDER BY r.req_purchase_completed_date DESC NULLS LAST, r.req_created_at DESC`
+  )
+}
+
+export async function getApprovedByFinanceRequisitions() {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE COALESCE(r.req_finance_approval, 0)::int = 1
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
+     ORDER BY r.req_finance_approval_date DESC NULLS LAST, r.req_created_at DESC`
   )
 }
 

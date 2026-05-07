@@ -679,15 +679,16 @@ export async function getReportAll(employeeId) {
   const deptId = emp?.department_id ?? null
   const deptNameLower = emp?.department_name_lower ?? ''
   const youAreHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
-  const [isCommittee, isCeo, isSuperAdmin] = await Promise.all([
+  const [isCommittee, isCeo, isSuperAdmin, isFinance] = await Promise.all([
     reqRepo.isCommitteeMember(eid),
     reqRepo.isCeoMember(eid),
-    reqRepo.isSuperAdmin(eid)
+    reqRepo.isSuperAdmin(eid),
+    reqRepo.isFinanceHod(eid)
   ])
-  const canView = youAreHod || isCommittee || isCeo || isSuperAdmin
+  const canView = youAreHod || isCommittee || isCeo || isSuperAdmin || isFinance
   if (!canView) return []
 
-  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo && !isSuperAdmin
+  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo && !isSuperAdmin && !isFinance
   const rows = hodOnlyFilter
     ? await reqRepo.getReportAllRequisitionsHod(deptId, deptNameLower)
     : await reqRepo.getReportAllRequisitions()
@@ -846,6 +847,28 @@ export async function getApprovedByCeo(employeeId) {
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
   return list
+}
+
+export async function getApprovedByProcurement(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getApprovedByProcurementRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+}
+
+export async function getApprovedByFinance(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const ok = await reqRepo.isFinanceHod(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getApprovedByFinanceRequisitions()
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
 }
 
 export async function getApprovedByAdmin(employeeId) {
@@ -2146,22 +2169,44 @@ export async function getPendingFinance(employeeId) {
   let ok = false
   if (useFlow) {
     ok = await reqRepo.isEmployeeTypeForStage(eid, 'finance')
-    // Fallback to legacy check if flow stage check fails (e.g., no finance stage in table or designation mismatch)
     if (!ok) ok = await reqRepo.isFinanceHod(eid)
   } else {
     ok = await reqRepo.isFinanceHod(eid)
   }
   if (!ok) return []
-  // Always filter by current stage key to show only Finance bucket requisitions
-  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('finance')
-  const reqIds = rows.map(r => r.req_id)
+
+  // Finance-stage pending
+  const financeRows = await reqRepo.getPendingRequisitionsByCurrentStage('finance')
+
+  // Also include HOD-stage pending for Finance person's own department(s)
+  const hodDepartments = await reqRepo.getHodDepartmentsForEmployee(eid)
+  let hodRows = []
+  for (const dept of hodDepartments) {
+    const deptId = dept.department_id
+    const deptName = (dept.department_name || '').trim().toLowerCase()
+    try {
+      const rows = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName }) || []
+      hodRows = hodRows.concat(rows)
+    } catch (_) {}
+  }
+
+  // Merge and deduplicate by req_id
+  const seen = new Set()
+  const merged = []
+  for (const r of financeRows) {
+    if (!seen.has(r.req_id)) { seen.add(r.req_id); merged.push({ ...r, status: 'Pending Finance Approval' }) }
+  }
+  for (const r of hodRows) {
+    if (!seen.has(r.req_id)) { seen.add(r.req_id); merged.push(r) }
+  }
+
+  const reqIds = merged.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  const list = rows.map(req => ({
+  return merged.map(req => ({
     ...req,
-    status: 'Pending Finance Approval',
+    status: req.status || getRequisitionStatus(req),
     items: items.filter(i => i.req_id === req.req_id)
   }))
-  return list
 }
 
 export async function approveFinance(body) {
