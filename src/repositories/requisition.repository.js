@@ -1309,19 +1309,8 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
       // CEO: explicit stage key OR (HOD+Committee approved AND CEO not approved AND stage is NULL AND not forwarded)
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND r.req_committee_approval = 1 AND (r.req_ceo_approval = 0 OR r.req_ceo_approval IS NULL) AND COALESCE(r.req_procurement_ack, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
     } else if (stageKey === 'procurement') {
-      // Procurement: explicit stage key OR (All 3 approved AND not completed AND not handed to finance AND stage is NULL)
-      bucketCondition = `
-      AND (
-        r.req_current_stage_key = $1
-        OR (
-          r.req_current_stage_key IS NULL
-          AND r.req_hod_approval = 1
-          AND r.req_committee_approval = 1
-          AND COALESCE(r.req_purchase_completed, 0) = 0
-          AND COALESCE(r.req_finance_approval, 1) = 1
-        )
-      )
-      `
+      // Procurement: show all requisitions explicitly at the procurement stage, excluding completed ones
+      bucketCondition = ` AND r.req_current_stage_key = $1 AND COALESCE(r.req_purchase_completed, 0) = 0`
 
     } else if (stageKey === 'hr') {
       // HR: explicit stage key OR (HOD approved AND HR not approved AND stage is NULL)

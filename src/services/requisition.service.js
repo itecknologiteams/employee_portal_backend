@@ -1270,7 +1270,17 @@ export async function approveCommittee(body) {
   const stages = await reqRepo.getFlowStages()
   const nextKeyFromFlow = categoryName && stages.length > 0 ? await reqRepo.getNextStageKey(categoryName, 'committee') : null
 
-  // When category flow defines next stage after committee (e.g. Devices/Accessories → Finance, not CEO), respect it.
+  // Amount >= 100K ALWAYS requires CEO approval — this overrides any category flow routing.
+  const itemsAfter = await reqRepo.getRequisitionItems(reqId)
+  const totalAfterCommittee = computeCommitteeApprovedLineTotalPKR(itemsAfter)
+  if (totalAfterCommittee >= REQUISITION_CEO_MIN_AMOUNT_PKR) {
+    await setCurrentStage(reqId, 'ceo')
+    await notifyBucketChanged(reqId, 'ceo')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', reqRow[0]?.department_id))
+    return { message: 'Committee approval recorded', status: 'Pending CEO' }
+  }
+
+  // Amount < 100K: follow category flow if defined (e.g. Devices/Accessories → Finance).
   if (nextKeyFromFlow && nextKeyFromFlow !== 'ceo') {
     await setCurrentStage(reqId, nextKeyFromFlow)
     await notifyBucketChanged(reqId, nextKeyFromFlow)
@@ -1281,23 +1291,13 @@ export async function approveCommittee(body) {
     return { message: 'Committee approval recorded', status: statusLabel }
   }
 
-  // When next stage is CEO (or no flow): line total strictly under REQUISITION_CEO_MIN_AMOUNT_PKR → skip CEO, forward to Procurement.
-  const itemsAfter = await reqRepo.getRequisitionItems(reqId)
-  const totalAfterCommittee = computeCommitteeApprovedLineTotalPKR(itemsAfter)
-  if (totalAfterCommittee < REQUISITION_CEO_MIN_AMOUNT_PKR) {
-    await reqRepo.approveCeo(reqId)
-    await setCurrentStage(reqId, 'procurement')
-    await notifyBucketChanged(reqId, 'procurement')
-    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
-    notifyCeoCommitteeApproved(reqId, 'procurement')
-    return { message: `Committee approval recorded; forwarded to Procurement (line total under ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR — CEO stage skipped)`, status: 'Forwarded to Procurement' }
-  }
-
-  const nextKey = nextKeyFromFlow || 'ceo'
-  await setCurrentStage(reqId, nextKey)
-  await notifyBucketChanged(reqId, nextKey)
-  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextKey, reqRow[0]?.department_id))
-  return { message: 'Committee approval recorded', status: 'Pending CEO' }
+  // Amount < 100K and no category-specific routing: skip CEO → Procurement.
+  await reqRepo.approveCeo(reqId)
+  await setCurrentStage(reqId, 'procurement')
+  await notifyBucketChanged(reqId, 'procurement')
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
+  notifyCeoCommitteeApproved(reqId, 'procurement')
+  return { message: `Committee approval recorded; forwarded to Procurement (line total under ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} PKR — CEO stage skipped)`, status: 'Forwarded to Procurement' }
 }
 
 /** Auto-approve CEO and move to Procurement when line total is under threshold (same rule as Committee approve). */
