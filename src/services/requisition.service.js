@@ -1210,6 +1210,44 @@ function notifyCeoCommitteeApproved(reqId, forwardedTo) {
   })()
 }
 
+/** Fire-and-forget: email CEO that a requisition >= 100K is pending their approval (action required). */
+function notifyCeoApprovalRequired(reqId, totalPkr) {
+  ;(async () => {
+    try {
+      const toEmails = await getEmailsForBucket('ceo', null)
+      if (!toEmails.length) return
+      const rows = await executeQuery(
+        `SELECT r.req_reference_no, r.req_material, e.first_name, e.last_name
+         FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+         WHERE r.req_id = $1`,
+        [reqId]
+      )
+      const r = rows[0]
+      if (!r) return
+      const refNo = r.req_reference_no || `#${reqId}`
+      const creatorName = `${r.first_name || ''} ${r.last_name || ''}`.trim() || 'Employee'
+      const material = (r.req_material || '').trim() || '—'
+      const amountStr = totalPkr != null ? `PKR ${Number(totalPkr).toLocaleString()}` : 'above threshold'
+      const subject = `Action Required: Requisition ${refNo} Pending CEO Approval`
+      const body = [
+        `A requisition requiring your approval has been approved by the Committee.`,
+        ``,
+        `Reference : ${refNo}`,
+        `Description: ${material}`,
+        `Submitted By: ${creatorName}`,
+        `Total Amount: ${amountStr}`,
+        ``,
+        `This requisition exceeds PKR ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} and requires CEO approval before it can proceed to Procurement.`,
+        ``,
+        `Please log in to the Employee Portal to approve or reject this requisition.`
+      ].join('\n')
+      await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'committee_approved_ceo_action_required', ref: refNo } })
+    } catch (err) {
+      console.error('[CEO notify] action required email failed:', err.message)
+    }
+  })()
+}
+
 export async function approveCommittee(body) {
   const { requisitionId, approved, approvedQuantities } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
@@ -1277,6 +1315,7 @@ export async function approveCommittee(body) {
     await setCurrentStage(reqId, 'ceo')
     await notifyBucketChanged(reqId, 'ceo')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', reqRow[0]?.department_id))
+    notifyCeoApprovalRequired(reqId, totalAfterCommittee)
     return { message: 'Committee approval recorded', status: 'Pending CEO' }
   }
 
