@@ -508,16 +508,12 @@ export async function createRequisition(body) {
         await setCurrentStage(reqId, 'committee')
         await notifyBucketChanged(reqId, 'committee')
         notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'committee', deptId))
-      } else if (categoryFlowBucket) {
-        await setCurrentStage(reqId, categoryFlowBucket)
-        await notifyBucketChanged(reqId, categoryFlowBucket)
-        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, categoryFlowBucket, deptId))
       } else {
-        const firstKey = await reqRepo.getFirstStageKey(categoryTrimmed).catch(() => 'hod')
-        const bucket = firstKey || 'hod'
-        await setCurrentStage(reqId, bucket)
-        await notifyBucketChanged(reqId, bucket)
-        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, bucket, deptId))
+        // Normal employee: Loan & Advance Salary always requires HOD approval first,
+        // regardless of flow stage config or hod_for_info DB setting.
+        await setCurrentStage(reqId, 'hod')
+        await notifyBucketChanged(reqId, 'hod')
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hod', deptId))
       }
     }
   } else if (creatorIsCeo) {
