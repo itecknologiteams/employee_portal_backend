@@ -507,9 +507,8 @@ export async function isHrMember(employeeId) {
       `SELECT 1 FROM employees e
        LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HR'
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND (desg.desg_name ILIKE '%HR%' OR desg.desg_name = 'Human Resource')
-       LEFT JOIN users u ON e.employee_id = u.emp_id
        WHERE e.employee_id = $1
-         AND ( (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL) OR (u.user_type IN ('Admin', 'Staff')) )`,
+         AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
       [employeeId]
     )
     return rows.length > 0
