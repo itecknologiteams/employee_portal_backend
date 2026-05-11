@@ -882,6 +882,22 @@ export async function getApprovedByAdmin(employeeId) {
   return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
 }
 
+export async function getApprovedByHr(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const isHr = await reqRepo.isHrMember(employeeId)
+  if (!isHr ) return []
+
+  // Get ALL requisitions where HR has approved (req_hr_approval = 1)
+  // All departments - HR oversees all HODs
+  // Exclude requisitions created by the current user
+  const rows = await reqRepo.getApprovedByHrRequisitions(eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  const list = rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+  return list
+}
+
 export async function approveHod(body) {
   const boqItemsRaw = body.boqItems ?? body.boq_items
   const boqItems = Array.isArray(boqItemsRaw) ? boqItemsRaw : []

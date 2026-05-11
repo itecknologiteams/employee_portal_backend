@@ -28,6 +28,7 @@ router.get('/approved-by-ceo/:employeeCode', requisitionController.getApprovedBy
 router.get('/approved-by-admin/:employeeCode', requisitionController.getApprovedByAdmin)
 router.get('/approved-by-finance/:employeeCode', requisitionController.getApprovedByFinance)
 router.get('/approved-by-procurement/:employeeCode', requisitionController.getApprovedByProcurement)
+router.get('/approved-by-hr/:employeeCode', requisitionController.getApprovedByHR)
 router.post('/approve/hod', requisitionController.approveHod)
 router.get('/pending/hr/:employeeCode', requisitionController.getPendingHR)
 router.post('/approve/hr', requisitionController.approveHR)
