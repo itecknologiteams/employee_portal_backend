@@ -344,7 +344,11 @@ export async function approveHR(req, res) {
 
 export async function getPendingHRCheck(req, res) {
   try {
-    const result = await requisitionService.getPendingHRCheck(req.query.empCode)
+    const empCode = req.query.empCode
+    if (!empCode) return res.json([])
+    const employeeId = await getEmployeeIdByCode(String(empCode).trim())
+    if (!employeeId) return res.json([])
+    const result = await requisitionService.getPendingHRCheck(employeeId)
     if (result?.error) return res.status(result.status).json({ error: result.error })
     res.json(result)
   } catch (error) {

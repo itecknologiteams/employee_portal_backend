@@ -1055,13 +1055,11 @@ export async function getPendingAdmin(employeeId) {
   return list
 }
 
-export async function getPendingHRCheck(employeeCode) {
-  const eid = await getEmployeeIdByCode(String(employeeCode).trim())
-  console.log('getPendingHRCheck - employeeCode:', employeeCode, 'eid:', eid)
+export async function getPendingHRCheck(employeeId) {
+  const eid = parseEmployeeId(employeeId)
   if (eid == null) return []
   const useFlow = (await reqRepo.getFlowStages()).length > 0
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
-  console.log('getPendingHRCheck - ok:', ok)
   if (!ok) return []
   const rows = await reqRepo.getPendingRequisitionsByCurrentStage('hr_check')
   const reqIds = rows.map(r => r.req_id)
