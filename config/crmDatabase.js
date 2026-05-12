@@ -138,8 +138,8 @@ export async function checkCrmLogin(username, password) {
   try {
     const Mssql = await getMssql()
     const request = pool.request()
-    request.input('Uname', Mssql.VarChar(200), String(username))
-    request.input('Pass', Mssql.VarChar(200), String(password))
+    request.input('U_ID', Mssql.VarChar(200), String(username))
+    request.input('PASS', Mssql.VarChar(200), String(password))
     const result = await request.execute('dbo.CheckLogin')
     const rows = result.recordset || (result.recordsets && result.recordsets[0]) || []
     if (!rows || rows.length === 0) return { valid: false }
