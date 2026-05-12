@@ -64,10 +64,10 @@ const allowedOrigins = [
   `http://${NETWORK_IP}:4173`,
   'https://emp.itecknologi.com',
   'http://rfm.itecknologi.internal',
-  'http://192.168.20.244',
-  'http://192.168.20.244/',
-  'https://iot.itecknologi.com',
-  'https://iot.itecknologi.com/',
+  'http://192.168.20.180',
+  'http://192.168.20.180/',
+  'https://webtrack.itecknologi.com',
+  'https://webtrack.itecknologi.com/',
   ...envCorsOrigins
 ]
 
@@ -84,7 +84,7 @@ app.use(cors({
     if (
       allowedOrigins.indexOf(origin) !== -1 ||
       origin.includes(NETWORK_IP) ||
-      origin.includes('192.168.20.244') ||
+      origin.includes('192.168.20.180') ||
       origin.includes('rfm.itecknologi.internal')
     ) {
       callback(null, true)

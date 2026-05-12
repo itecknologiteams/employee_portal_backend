@@ -384,20 +384,28 @@ export async function getExternalLeaves(req, res) {
       return res.status(400).json({ error: 'emp_id and year are required' })
     }
 
-    const EXTERNAL_API_URL = 'http://192.168.20.244:3002/leaves/view-allocated-leaves-by-emp'
+    const EXTERNAL_API_URL = process.env.ICS_API_BASE_URL
+      ? `${process.env.ICS_API_BASE_URL}/view-allocated-leaves-by-emp.php`
+      : 'https://webtrack.itecknologi.com/InternalCommunicationSystem/view-allocated-leaves-by-emp.php'
 
-    const response = await fetch(EXTERNAL_API_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ emp_id, year }),
-      timeout: 10000
-    })
+    let data
+    try {
+      const response = await fetch(EXTERNAL_API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ emp_id, year }),
+        signal: AbortSignal.timeout(10000)
+      })
 
-    if (!response.ok) {
-      throw new Error(`External API returned ${response.status}`)
+      if (!response.ok) {
+        throw new Error(`External API returned ${response.status}`)
+      }
+
+      data = await response.json()
+    } catch (fetchErr) {
+      console.error('External attendance API unreachable:', fetchErr.message)
+      return res.json({ data: { leaves: [] }, unavailable: true })
     }
-
-    const data = await response.json()
 
     const icsLeaves = data?.data?.leaves || []
 

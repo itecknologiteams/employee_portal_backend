@@ -6,7 +6,7 @@ import { getEmployeeIdByCode, findEmployeeByEmployeeId } from '../repositories/a
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 
 /** External ICS Attendance System API Base URL */
-const ICS_API_BASE_URL = 'http://192.168.20.244:3002'
+const ICS_API_BASE_URL = process.env.ICS_API_BASE_URL || 'https://webtrack.itecknologi.com/InternalCommunicationSystem'
 
 /**
  * Call external ICS Attendance System API to sync leave status.
@@ -1501,10 +1501,11 @@ async function fetchIcsDeptPendingLeaves(deptId, excludeEmployeeId) {
       if (!empCode) return
       const empName = [e.first_name, e.last_name].filter(Boolean).join(' ') || `Employee ${empCode}`
       try {
-        const response = await fetch(`${ICS_API_BASE_URL}/leaves/view-allocated-leaves-by-emp`, {
+        const response = await fetch(`${ICS_API_BASE_URL}/view-allocated-leaves-by-emp.php`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ emp_id: parseInt(empCode, 10), year: currentYear })
+          body: JSON.stringify({ emp_id: parseInt(empCode, 10), year: currentYear }),
+          signal: AbortSignal.timeout(10000)
         })
         if (!response.ok) {
           console.warn(`[ICS fetch] ${empCode}: HTTP ${response.status}`)
@@ -1728,7 +1729,7 @@ export async function getPendingCeo(employeeCode) {
  * Is idempotent — returns early if a portal record already exists for this leave.
  */
 
-const CRM_STATUS_URL = 'http://iot.itecknologi.com/crm/controller/attendance/update-status.php'
+const CRM_STATUS_URL = 'https://webtrack.itecknologi.com/InternalCommunicationSystem/update-status.php'
 
 /** Map portal leave status to CRM new_status code. */
 function toCrmStatus(portalStatus) {
@@ -1815,11 +1816,11 @@ export async function syncDepartmentIcsLeaves(hodEmployeeId) {
     const empCode = String(e.employee_code || '').trim()
     if (!empCode) return
     try {
-      const response = await fetch(`${ICS_API_BASE_URL}/leaves/view-allocated-leaves-by-emp`, {
+      const response = await fetch(`${ICS_API_BASE_URL}/view-allocated-leaves-by-emp.php`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ emp_id: parseInt(empCode, 10), year: currentYear }),
-        timeout: 8000
+        signal: AbortSignal.timeout(8000)
       })
       if (!response.ok) {
         console.warn(`[ICS sync] ${empCode}: HTTP ${response.status}`)
