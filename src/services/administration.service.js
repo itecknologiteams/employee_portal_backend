@@ -1,6 +1,7 @@
 import bcrypt from 'bcryptjs'
 import * as adminRepo from '../repositories/administration.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import * as historyService from './employeeHistory.service.js'
 
 const PERMISSION_KEYS = [
   'dashboard', 'profile', 'profile_update_requests', 'salary_slip', 'view_salary_slips',
@@ -399,6 +400,9 @@ export async function updateEmployee(id, body) {
   if (cityId && (resolvedStationId == null || resolvedStationId === '')) {
     resolvedStationId = await adminRepo.getStationIdByCityId(cityId)
   }
+  // Snapshot before-state for diff-based history auto-logging
+  const beforeRows = await adminRepo.getEmployeeById(id).catch(() => null)
+  const before = (Array.isArray(beforeRows) ? beforeRows[0] : beforeRows) || null
   await adminRepo.updateEmployee(id, {
     firstName, lastName, email, phone, departmentId: effectiveDepartmentId, designationId, employeeTypeId,
     stationId: resolvedStationId, cityId: cityId ?? null, position, employeeCode, isActive, joinDate: body.joinDate,
@@ -420,6 +424,21 @@ export async function updateEmployee(id, body) {
     ...(typeof body.salarySlipOnHold === 'boolean' ? { salarySlipOnHold: body.salarySlipOnHold } : {}),
     ...(body.lastWorkingDate !== undefined ? { lastWorkingDate: body.lastWorkingDate } : {})
   })
+  // After-state snapshot + auto-log any tracked field diffs into employee history
+  try {
+    const afterRows = await adminRepo.getEmployeeById(id)
+    const after = (Array.isArray(afterRows) ? afterRows[0] : afterRows) || null
+    const actorEmployeeId = body.actorEmployeeId || body.createdBy || null
+    if (before && after) {
+      await historyService.autoLogFromDiff({
+        employeeId: id, before, after,
+        effectiveDate: new Date().toISOString().slice(0, 10),
+        createdBy: actorEmployeeId
+      })
+    }
+  } catch (autoLogErr) {
+    console.warn('autoLogFromDiff failed (non-fatal):', autoLogErr.message)
+  }
   if (portalUsername !== undefined || portalPassword !== undefined || portalUserType !== undefined) {
     try {
       const existingUser = await adminRepo.findUserByEmpId(id)
