@@ -16,7 +16,19 @@
       "Bash(xargs -I {} bash -c 'echo \"{}\"; ls -lh \"{}\" 2>/dev/null | awk \"{print \\\\$5}\"')",
       "Bash(node *)",
       "Bash(Remove-Item *)",
-      "Bash(PGPASSWORD=\"EmP\\\\$D3v#2026!qR4\" psql *)"
+      "Bash(PGPASSWORD=\"EmP\\\\$D3v#2026!qR4\" psql *)",
+      "Bash(mkdir -p d:/Github/Emp_Portal_BackEnd/docs/superpowers/plans)",
+      "Bash(Get-ChildItem -Path \"d:\\\\Github\\\\Emp_Portal_FrontEnd\" -Directory)",
+      "Bash(Select-Object Name)",
+      "Bash(awk 'NR>=2568 && NR<=2762 {printf \"%d\\\\t%s\\\\n\", NR, $0}' d:/Github/Emp_Portal_FrontEnd/src/pages/RequisitionPending.jsx)",
+      "Bash(awk 'NR>=2688 && NR<=2765' d:/Github/Emp_Portal_FrontEnd/src/pages/RequisitionPending.jsx)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(grep -n \"^                  \\)}$\" src/pages/Administration.jsx)",
+      "Bash(npx vite *)"
+    ],
+    "additionalDirectories": [
+      "d:\\Github\\Emp_Portal_BackEnd\\docs\\superpowers"
     ]
   }
 }

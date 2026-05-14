@@ -97,7 +97,7 @@ export async function getCrmPool() {
   const serverAddress = await getEffectiveServerAddress(host, fallbackIp)
   lastHostTried = serverAddress
 
-  crmPool = new Mssql.ConnectionPool({
+  const newPool = new Mssql.ConnectionPool({
     server: serverAddress,
     port: Number.isNaN(port) ? undefined : port,
     database: stripEnvQuotes(process.env.CRM_DB) || 'ERP_Tracking',
@@ -112,7 +112,8 @@ export async function getCrmPool() {
     pool: { max: 5, idleTimeoutMillis: 30000 },
   })
 
-  await crmPool.connect()
+  await newPool.connect()
+  crmPool = newPool  // Only cache after a successful connect so a failed connect retries next time
   console.log(`✅ CRM SQL Server connected: ${serverAddress} (original: ${host}) / ${stripEnvQuotes(process.env.CRM_USER) || 'crm'} @ ${stripEnvQuotes(process.env.CRM_DB) || 'ERP_Tracking'}`)
   return crmPool
 }
@@ -138,8 +139,8 @@ export async function checkCrmLogin(username, password) {
   try {
     const Mssql = await getMssql()
     const request = pool.request()
-    request.input('U_ID', Mssql.VarChar(200), String(username))
-    request.input('PASS', Mssql.VarChar(200), String(password))
+    request.input('Uname', Mssql.VarChar(200), String(username))
+    request.input('Pass', Mssql.VarChar(200), String(password))
     const result = await request.execute('dbo.CheckLogin')
     const rows = result.recordset || (result.recordsets && result.recordsets[0]) || []
     if (!rows || rows.length === 0) return { valid: false }

@@ -1334,7 +1334,7 @@ export async function approveCommittee(body) {
     const itemId = it.item_id ?? it.itemId
     await reqRepo.updateItemCommitteeApprovedQty(itemId, byItemId[itemId])
   }
-  await reqRepo.approveCommittee(reqId)
+  await reqRepo.approveCommittee(reqId, eid)
 
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
@@ -1364,7 +1364,7 @@ export async function approveCommittee(body) {
   }
 
   // Amount < 100K and no category-specific routing: skip CEO → Procurement.
-  await reqRepo.approveCeo(reqId)
+  await reqRepo.approveCeo(reqId, eid)
   await setCurrentStage(reqId, 'procurement')
   await notifyBucketChanged(reqId, 'procurement')
   notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', reqRow[0]?.department_id))
@@ -1373,11 +1373,11 @@ export async function approveCommittee(body) {
 }
 
 /** Auto-approve CEO and move to Procurement when line total is under threshold (same rule as Committee approve). */
-async function applyCeoSkipToProcurementIfUnderThreshold(reqId) {
+async function applyCeoSkipToProcurementIfUnderThreshold(reqId, approverEid) {
   const lineItems = await reqRepo.getRequisitionItems(reqId)
   const lineTotal = computeCommitteeApprovedLineTotalPKR(lineItems)
   if (lineTotal >= REQUISITION_CEO_MIN_AMOUNT_PKR) return false
-  await reqRepo.approveCeo(reqId)
+  await reqRepo.approveCeo(reqId, approverEid ?? null)
   await setCurrentStage(reqId, 'procurement')
   await notifyBucketChanged(reqId, 'procurement')
   const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
@@ -1469,7 +1469,7 @@ export async function approveCeo(body) {
     }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
-  await reqRepo.approveCeo(reqId)
+  await reqRepo.approveCeo(reqId, eid)
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
   const stages = await reqRepo.getFlowStages()
@@ -1975,6 +1975,9 @@ export async function completePurchase(reqId, body) {
   const rows = await reqRepo.getRequisitionForCompletePurchase(reqIdNum)
   if (!rows.length) return { error: 'Requisition not found or not finance approved', status: 404 }
   if (isProcurement) {
+    if (!rows[0].req_forwarded_to_payable_at) {
+      return { error: 'Forward invoice to payable team before marking complete', status: 400 }
+    }
     await reqRepo.updatePurchaseCompleted(reqIdNum, eid)
     notifyCreatorAckRequired(reqIdNum).catch((e) => console.error('notifyCreatorAckRequired after completePurchase:', e?.message))
     const creatorC = await notifRepo.getRequisitionCreatorId(reqIdNum)
@@ -2279,6 +2282,301 @@ export async function approveFinance(body) {
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptFin[0]?.department_id))
   }
   return { message: isLoan ? 'Finance approved (Loan).' : 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: isLoan ? 'Completed' : 'Finance Approved - Ready for Purchase' }
+}
+
+function formatDatePKT(date) {
+  if (!date) return '—'
+  try {
+    return new Date(date).toLocaleString('en-PK', {
+      timeZone: 'Asia/Karachi',
+      day: '2-digit', month: '2-digit', year: 'numeric',
+      hour: '2-digit', minute: '2-digit', hour12: false
+    }).replace(',', '')
+  } catch (_) { return String(date) }
+}
+
+function buildAuditReportHtml(row, items, forwardedByName, creatorCrmEmail) {
+  const approvedIdx = row.req_approved_quotation_index
+  const quotationStatus = (i) => i === approvedIdx
+    ? '<span style="color:#16a34a;font-weight:bold">APPROVED</span>'
+    : '<span style="color:#dc2626;font-weight:bold">REJECTED</span>'
+
+  const nameOrDash = (first, last, code) => {
+    const full = `${first || ''} ${last || ''}`.trim()
+    if (!full) return '—'
+    return code ? `${full} (${code})` : full
+  }
+
+  const timelineRows = [
+    ['1', 'Requisition Created', row.req_created_at, nameOrDash(row.first_name, row.last_name, row.employee_code)],
+    ['2', 'HOD Approved', row.req_hod_approval_date, nameOrDash(row.hod_first_name, row.hod_last_name, row.hod_employee_code)],
+    ['3', 'Committee Approved', row.req_committee_approval_date, nameOrDash(row.com_first_name, row.com_last_name, row.com_employee_code)],
+    ...(row.req_ceo_approval === 1 ? [['4', 'CEO Approved', row.req_ceo_approval_date, nameOrDash(row.ceo_first_name, row.ceo_last_name, row.ceo_employee_code)]] : []),
+    ['5', 'Procurement Acknowledged', row.req_procurement_ack_date, nameOrDash(row.proc_first_name, row.proc_last_name, row.proc_employee_code)],
+    ['6', 'Quotations Uploaded', row.req_procurement_ack_date, nameOrDash(row.proc_first_name, row.proc_last_name, row.proc_employee_code)],
+    ['7', 'Handed to Finance', row.req_handed_to_finance_date, nameOrDash(row.proc_first_name, row.proc_last_name, row.proc_employee_code)],
+    ['8', `Finance Approved (Quotation #${approvedIdx} selected)`, row.req_finance_approval_date, nameOrDash(row.fin_first_name, row.fin_last_name, row.fin_employee_code)],
+    ['9', 'Invoice Uploaded by Procurement', row.req_invoice_uploaded_at, nameOrDash(row.proc_first_name, row.proc_last_name, row.proc_employee_code)],
+    ['10', 'Forwarded to Payable', new Date().toISOString(), forwardedByName || '—'],
+  ].map(([n, event, date, by]) => `
+    <tr style="background:${parseInt(n, 10) % 2 === 0 ? '#f8fafc' : '#fff'}">
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;color:#64748b">${n}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0">${event}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;white-space:nowrap">${formatDatePKT(date)}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0">${by}</td>
+    </tr>`).join('')
+
+  const itemRows = (items || []).map((item, i) => `
+    <tr style="background:${i % 2 === 0 ? '#fff' : '#f8fafc'}">
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center">${i + 1}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0">${item.item_desc || '—'}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0">${item.item_size || '—'}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0">${item.item_brand || '—'}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center">${item.item_qty || '—'}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:center;font-weight:bold;color:#16a34a">${item.committee_approved_qty != null ? item.committee_approved_qty : '—'}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0;text-align:right">${item.item_est_cost != null ? Number(item.item_est_cost).toLocaleString() : '—'}</td>
+      <td style="padding:6px 10px;border:1px solid #e2e8f0">${item.item_remarks || '—'}</td>
+    </tr>`).join('')
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8"><title>Audit Report — ${row.req_reference_no}</title></head>
+<body style="margin:0;padding:20px;font-family:Arial,sans-serif;font-size:13px;color:#1e293b;background:#f1f5f9">
+  <div style="max-width:900px;margin:0 auto;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.12)">
+    <div style="background:#1a3a5c;color:#fff;padding:20px 24px">
+      <h1 style="margin:0;font-size:18px;letter-spacing:.5px">REQUISITION AUDIT TRAIL REPORT</h1>
+      <p style="margin:4px 0 0;font-size:12px;opacity:.8">Reference: ${row.req_reference_no} &nbsp;|&nbsp; Generated: ${formatDatePKT(new Date().toISOString())} (PKT)</p>
+    </div>
+
+    <div style="padding:20px 24px">
+      <h2 style="color:#1a3a5c;font-size:14px;border-bottom:2px solid #1a3a5c;padding-bottom:4px;margin-top:0">REQUISITION DETAILS</h2>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:4px 8px;width:200px;color:#64748b">Reference No</td><td style="padding:4px 8px;font-weight:bold">${row.req_reference_no || '—'}</td></tr>
+        <tr style="background:#f8fafc"><td style="padding:4px 8px;color:#64748b">Category</td><td style="padding:4px 8px">${row.req_category || '—'}</td></tr>
+        <tr><td style="padding:4px 8px;color:#64748b">Business Unit</td><td style="padding:4px 8px">${row.req_business || '—'}</td></tr>
+        <tr style="background:#f8fafc"><td style="padding:4px 8px;color:#64748b">Location</td><td style="padding:4px 8px">${row.req_location || '—'}</td></tr>
+        <tr><td style="padding:4px 8px;color:#64748b">Material / Purpose</td><td style="padding:4px 8px">${row.req_material || '—'}</td></tr>
+        <tr style="background:#f8fafc"><td style="padding:4px 8px;color:#64748b">Status</td><td style="padding:4px 8px;color:#16a34a;font-weight:bold">Forwarded to Finance (Payable)</td></tr>
+      </table>
+    </div>
+
+    <div style="padding:0 24px 20px">
+      <h2 style="color:#1a3a5c;font-size:14px;border-bottom:2px solid #1a3a5c;padding-bottom:4px">CREATOR INFORMATION</h2>
+      <table style="width:100%;border-collapse:collapse">
+        <tr><td style="padding:4px 8px;width:200px;color:#64748b">Name</td><td style="padding:4px 8px">${row.first_name || ''} ${row.last_name || ''}</td></tr>
+        <tr style="background:#f8fafc"><td style="padding:4px 8px;color:#64748b">Employee Code</td><td style="padding:4px 8px">${row.employee_code || '—'}</td></tr>
+        <tr><td style="padding:4px 8px;color:#64748b">Department</td><td style="padding:4px 8px">${row.department_name || '—'}</td></tr>
+        <tr style="background:#f8fafc"><td style="padding:4px 8px;color:#64748b">Official Email (CRM)</td><td style="padding:4px 8px">${creatorCrmEmail || '—'}</td></tr>
+      </table>
+    </div>
+
+    <div style="padding:0 24px 20px">
+      <h2 style="color:#1a3a5c;font-size:14px;border-bottom:2px solid #1a3a5c;padding-bottom:4px">ITEMS REQUESTED &amp; COMMITTEE APPROVED QUANTITIES</h2>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#1a3a5c;color:#fff">
+          <th style="padding:8px 10px;border:1px solid #2d5a8e;text-align:center">#</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Description</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Size</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Brand</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e;text-align:center">Requested Qty</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e;text-align:center">Committee Approved Qty</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e;text-align:right">Unit Cost</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Remarks</th>
+        </tr></thead>
+        <tbody>${itemRows || '<tr><td colspan="8" style="padding:8px;text-align:center;color:#64748b">No items found</td></tr>'}</tbody>
+      </table>
+    </div>
+
+    <div style="padding:0 24px 20px">
+      <h2 style="color:#1a3a5c;font-size:14px;border-bottom:2px solid #1a3a5c;padding-bottom:4px">APPROVAL TIMELINE</h2>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#1a3a5c;color:#fff">
+          <th style="padding:8px 10px;border:1px solid #2d5a8e;width:30px">#</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Event</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Date &amp; Time (PKT)</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">By</th>
+        </tr></thead>
+        <tbody>${timelineRows}</tbody>
+      </table>
+    </div>
+
+    <div style="padding:0 24px 20px">
+      <h2 style="color:#1a3a5c;font-size:14px;border-bottom:2px solid #1a3a5c;padding-bottom:4px">QUOTATION SUMMARY</h2>
+      <table style="width:100%;border-collapse:collapse">
+        <thead><tr style="background:#1a3a5c;color:#fff">
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Quotation</th>
+          <th style="padding:8px 10px;border:1px solid #2d5a8e">Status</th>
+        </tr></thead>
+        <tbody>
+          <tr><td style="padding:8px 10px;border:1px solid #e2e8f0">Quotation 1</td><td style="padding:8px 10px;border:1px solid #e2e8f0">${quotationStatus(1)}</td></tr>
+          <tr style="background:#f8fafc"><td style="padding:8px 10px;border:1px solid #e2e8f0">Quotation 2</td><td style="padding:8px 10px;border:1px solid #e2e8f0">${quotationStatus(2)}</td></tr>
+          <tr><td style="padding:8px 10px;border:1px solid #e2e8f0">Quotation 3</td><td style="padding:8px 10px;border:1px solid #e2e8f0">${quotationStatus(3)}</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div style="background:#1a3a5c;color:#fff;padding:12px 24px;font-size:11px;text-align:center;opacity:.85">
+      End of Report &nbsp;|&nbsp; Generated by Requisition Management System &nbsp;|&nbsp; ${formatDatePKT(new Date().toISOString())} (PKT)
+    </div>
+  </div>
+</body>
+</html>`
+}
+
+function dataUrlToAttachment(dataUrl, filename) {
+  if (!dataUrl) return null
+  const match = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/)
+  if (!match) return null
+  return {
+    filename,
+    content: Buffer.from(match[2], 'base64'),
+    contentType: match[1]
+  }
+}
+
+export async function uploadInvoice(reqId, invoiceFile, body) {
+  const reqIdNum = parseInt(reqId, 10)
+  if (Number.isNaN(reqIdNum)) return { error: 'Valid requisition ID required', status: 400 }
+  const eid = await resolveApproverEmployeeId({
+    approvedByEmployeeId: body?.handedByEmployeeId,
+    approvedByEmployeeCode: body?.handedByEmployeeCode
+  })
+  if (eid == null) return { error: 'Valid handedByEmployeeId or handedByEmployeeCode is required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can upload the invoice', status: 403 }
+  const rows = await reqRepo.getRequisitionForInvoiceUpload(reqIdNum)
+  if (!rows.length) return { error: 'Requisition is not in the correct stage for invoice upload', status: 400 }
+  if (!invoiceFile || !invoiceFile.buffer) return { error: 'Invoice file is required', status: 400 }
+  const { fileToDataUrl } = await import('../utils/file.utils.js')
+  const invoiceDataUrl = fileToDataUrl(invoiceFile)
+  if (!invoiceDataUrl) return { error: 'Could not read invoice file data', status: 400 }
+  await reqRepo.saveInvoiceUrl(reqIdNum, invoiceDataUrl, eid)
+  return { message: 'Invoice uploaded successfully', invoiceUrl: invoiceDataUrl }
+}
+
+export async function forwardToPayable(body) {
+  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
+  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
+  const eid = await resolveApproverEmployeeId({
+    approvedByEmployeeId: body?.handedByEmployeeId,
+    approvedByEmployeeCode: body?.handedByEmployeeCode
+  })
+  if (eid == null) return { error: 'Valid handedByEmployeeId or handedByEmployeeCode is required', status: 400 }
+  const ok = await reqRepo.isProcurementMember(eid)
+  if (!ok) return { error: 'Only Procurement can forward to payable', status: 403 }
+  const rows = await reqRepo.getRequisitionForPayableForward(reqId)
+  if (!rows.length) return { error: 'Requisition not found, invoice not uploaded, or already forwarded to payable', status: 400 }
+  const row = rows[0]
+  if (!row.req_quotation_1_url || !row.req_quotation_2_url || !row.req_quotation_3_url) {
+    return { error: 'All 3 quotations must be uploaded before forwarding', status: 400 }
+  }
+  const items = await reqRepo.getItemsByReqId(reqId)
+  const approvedIdx = row.req_approved_quotation_index
+  const rejectedIdxs = [1, 2, 3].filter(i => i !== approvedIdx)
+  const approvedQuotationUrl = row[`req_quotation_${approvedIdx}_url`]
+  const rejectedUrls = rejectedIdxs.map(i => row[`req_quotation_${i}_url`])
+
+  let forwardedByName = `Procurement (ID: ${eid})`
+  let creatorCrmEmail = null
+  try {
+    const { getOfficialEmailFromCrm } = await import('../../config/crmDatabase.js')
+    if (row.employee_code) {
+      creatorCrmEmail = await getOfficialEmailFromCrm(row.employee_code)
+    }
+    const forwarderRow = await executeQuery(
+      'SELECT first_name, last_name, employee_code FROM employees WHERE employee_id = $1',
+      [eid]
+    )
+    if (forwarderRow[0]) {
+      const f = forwarderRow[0]
+      const fullName = `${f.first_name || ''} ${f.last_name || ''}`.trim()
+      if (fullName) forwardedByName = f.employee_code ? `${fullName} (${f.employee_code})` : fullName
+    }
+  } catch (e) {
+    console.warn('Audit enrich (CRM email / forwarder name) failed:', e?.message)
+  }
+
+  const auditHtml = buildAuditReportHtml(row, items, forwardedByName, creatorCrmEmail)
+
+  const ext = (url) => {
+    if (!url) return 'file'
+    const m = String(url).match(/^data:([^;]+);/)
+    if (m) {
+      const mime = m[1]
+      if (mime.includes('pdf')) return 'pdf'
+      if (mime.includes('png')) return 'png'
+      if (mime.includes('webp')) return 'webp'
+      if (mime.includes('gif')) return 'gif'
+      return 'jpg'
+    }
+    return String(url).split('.').pop() || 'file'
+  }
+
+  const attachments = [
+    dataUrlToAttachment(approvedQuotationUrl, `approved_quotation_${approvedIdx}_${row.req_reference_no}.${ext(approvedQuotationUrl)}`),
+    dataUrlToAttachment(rejectedUrls[0], `rejected_quotation_${rejectedIdxs[0]}_${row.req_reference_no}.${ext(rejectedUrls[0])}`),
+    dataUrlToAttachment(rejectedUrls[1], `rejected_quotation_${rejectedIdxs[1]}_${row.req_reference_no}.${ext(rejectedUrls[1])}`),
+    dataUrlToAttachment(row.req_invoice_url, `invoice_${row.req_reference_no}.${ext(row.req_invoice_url)}`),
+    { filename: `audit_report_${row.req_reference_no}.html`, content: auditHtml, contentType: 'text/html' }
+  ].filter(Boolean)
+
+  await reqRepo.markForwardedToPayable(reqId, eid)
+
+  const payableRecipient = process.env.PAYABLE_EMAIL || 'payable@itecknologi.com'
+  let emailWarning = null
+  let emailInfo = null
+  try {
+    const { getEmailTransport, EMAIL_FROM } = await import('../../config/email.js')
+    const trans = getEmailTransport()
+    if (!trans) throw new Error('SMTP not configured (set SMTP_HOST, SMTP_USER, SMTP_PASSWORD in .env)')
+    console.log(`📧 [Payable] Attempting send: from=${EMAIL_FROM} → to=${payableRecipient} | attachments=${attachments.length} | totalBytes=${attachments.reduce((s, a) => s + (a?.content?.length || 0), 0)}`)
+    const info = await trans.sendMail({
+      from: EMAIL_FROM,
+      to: payableRecipient,
+      subject: `[Payable Action Required] Requisition ${row.req_reference_no} — Invoice Submitted`,
+      html: `<p>Dear Payable Team,</p>
+<p>Procurement has submitted the invoice for Requisition <strong>${row.req_reference_no}</strong> (${row.req_category}). Finance has selected <strong>Quotation #${approvedIdx}</strong>.</p>
+<p>Please find attached:</p>
+<ul>
+  <li>✅ Approved Quotation (Quotation #${approvedIdx})</li>
+  <li>❌ Rejected Quotation (Quotation #${rejectedIdxs[0]})</li>
+  <li>❌ Rejected Quotation (Quotation #${rejectedIdxs[1]})</li>
+  <li>📄 Invoice / Bill</li>
+  <li>📊 Full Audit Trail Report (HTML)</li>
+</ul>
+<p>Requested By: ${row.first_name} ${row.last_name} (${row.department_name || '—'})</p>
+<p>This is an automated notification from the Requisition Management System.</p>`,
+      attachments
+    })
+    console.log(`📧 [Payable] SMTP response for ${row.req_reference_no}:`, JSON.stringify({
+      messageId: info.messageId,
+      accepted: info.accepted,
+      rejected: info.rejected,
+      response: info.response
+    }))
+    emailInfo = {
+      to: payableRecipient,
+      accepted: info.accepted || [],
+      rejected: info.rejected || [],
+      response: info.response || null
+    }
+    if (emailInfo.rejected.length > 0 || emailInfo.accepted.length === 0) {
+      emailWarning = `SMTP accepted the request but did not deliver to: ${payableRecipient}. Rejected: ${JSON.stringify(emailInfo.rejected)}. Response: ${emailInfo.response}`
+    }
+  } catch (err) {
+    console.error('📧 [Payable] Email send failed:', err.message)
+    emailWarning = err.message
+  }
+
+  const result = {
+    message: emailWarning
+      ? `Forwarded to payable but email issue: ${emailWarning}`
+      : `Invoice and quotations forwarded. Email delivered to ${payableRecipient}.`,
+    status: 'Pending Payment',
+    emailInfo
+  }
+  if (emailWarning) result.emailError = emailWarning
+  return result
 }
 
 export async function getTatReport(query) {

@@ -1,6 +1,6 @@
 import express from 'express'
 import * as requisitionController from '../controllers/requisition.controller.js'
-import { quotationUpload, supportDocUpload } from '../utils/file.utils.js'
+import { quotationUpload, supportDocUpload, invoiceUpload } from '../utils/file.utils.js'
 
 const router = express.Router()
 
@@ -109,6 +109,16 @@ router.get('/pending/hod-reverted/:employeeCode', requisitionController.getPendi
 
 // GET /requisition/my-reverted/:employeeCode - Get reverted requisitions for a specific employee (creator view)
 router.get('/my-reverted/:employeeCode', requisitionController.getMyRevertedRequisitions)
+
+// Procurement: upload invoice after Finance selects quotation
+router.post(
+  '/invoice/:reqId/upload',
+  invoiceUpload.single('invoice'),
+  requisitionController.uploadInvoice
+)
+
+// Procurement: forward invoice + quotations to payable@itecknologi.com
+router.post('/forward-to-payable', requisitionController.forwardToPayable)
 
 router.get('/:reqId', requisitionController.getById)
 

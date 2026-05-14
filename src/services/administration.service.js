@@ -54,7 +54,7 @@ export async function listDesignationsSearchPaginated(search, page = 1, limit = 
   const searchTerm = (search && String(search).trim()) || ''
   const searchPattern = searchTerm ? `%${searchTerm}%` : '%'
   const safePage = Math.max(1, parseInt(page, 10) || 1)
-  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const safeLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 10))
   const offset = (safePage - 1) * safeLimit
   const [data, total] = await Promise.all([
     adminRepo.listDesignationsSearchPaginated(searchPattern, safeLimit, offset),
@@ -91,7 +91,7 @@ export async function listEmployeeTypes() {
 
 export async function listEmployeeTypesPaginated(page = 1, limit = 10) {
   const safePage = Math.max(1, parseInt(page, 10) || 1)
-  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const safeLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 10))
   const offset = (safePage - 1) * safeLimit
   const [data, total] = await Promise.all([
     adminRepo.listEmployeeTypesPaginated(safeLimit, offset),
@@ -150,7 +150,7 @@ export async function listCitiesSearchPaginated(search, page = 1, limit = 10) {
   const searchTerm = (search && String(search).trim()) || ''
   const searchPattern = searchTerm ? `%${searchTerm}%` : '%'
   const safePage = Math.max(1, parseInt(page, 10) || 1)
-  const safeLimit = Math.min(100, Math.max(1, parseInt(limit, 10) || 10))
+  const safeLimit = Math.min(1000, Math.max(1, parseInt(limit, 10) || 10))
   const offset = (safePage - 1) * safeLimit
   const [data, total] = await Promise.all([
     adminRepo.listCitiesSearchPaginated(searchPattern, safeLimit, offset),

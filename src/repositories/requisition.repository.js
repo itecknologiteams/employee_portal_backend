@@ -715,17 +715,17 @@ export async function updateItemCommitteeApprovedQty(itemId, qty) {
   )
 }
 
-export async function approveCommittee(requisitionId) {
+export async function approveCommittee(requisitionId, employeeId) {
   return executeQuery(
-    'UPDATE requisition SET req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
-    [requisitionId]
+    'UPDATE requisition SET req_committee_approval = 1, req_committee_approval_date = CURRENT_TIMESTAMP, req_committee_approved_by = $2 WHERE req_id = $1',
+    [requisitionId, employeeId ?? null]
   )
 }
 
-export async function approveCeo(requisitionId) {
+export async function approveCeo(requisitionId, employeeId) {
   return executeQuery(
-    'UPDATE requisition SET req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP WHERE req_id = $1',
-    [requisitionId]
+    'UPDATE requisition SET req_ceo_approval = 1, req_ceo_approval_date = CURRENT_TIMESTAMP, req_ceo_approved_by = $2 WHERE req_id = $1',
+    [requisitionId, employeeId ?? null]
   )
 }
 
@@ -781,7 +781,7 @@ export async function getPendingAdminExecutionRequisitions() {
 /** Requisition eligible for Procurement to mark complete (finance approved, not rejected). */
 export async function getRequisitionForCompletePurchase(reqId) {
   return executeQuery(
-    'SELECT req_id FROM requisition WHERE req_id = $1 AND COALESCE(req_is_rejected, 0) = 0 AND COALESCE(req_finance_approval, 0) = 1',
+    'SELECT req_id, req_forwarded_to_payable_at FROM requisition WHERE req_id = $1 AND COALESCE(req_is_rejected, 0) = 0 AND COALESCE(req_finance_approval, 0) = 1',
     [reqId]
   )
 }
@@ -2232,4 +2232,76 @@ export async function getPendingHodRevertedRequisitions(departmentId, department
     }
     throw err
   }
+}
+
+export async function saveInvoiceUrl(reqId, invoiceUrl, uploadedByEid) {
+  await executeQuery(
+    `UPDATE requisition
+     SET req_invoice_url = $2,
+         req_invoice_uploaded_at = CURRENT_TIMESTAMP,
+         req_invoice_uploaded_by = $3
+     WHERE req_id = $1`,
+    [reqId, invoiceUrl, uploadedByEid]
+  )
+}
+
+export async function getRequisitionForInvoiceUpload(reqId) {
+  return executeQuery(
+    `SELECT req_id, req_approved_quotation_index,
+            req_quotation_1_url, req_quotation_2_url, req_quotation_3_url,
+            req_invoice_url
+     FROM requisition
+     WHERE req_id = $1
+       AND req_current_stage_key = 'procurement'
+       AND req_finance_approval = 1
+       AND req_approved_quotation_index IS NOT NULL`,
+    [reqId]
+  )
+}
+
+export async function getRequisitionForPayableForward(reqId) {
+  return executeQuery(
+    `SELECT r.*,
+            e.first_name, e.last_name, e.email AS creator_email,
+            e.employee_code,
+            d.department_name,
+            hod_emp.first_name AS hod_first_name, hod_emp.last_name AS hod_last_name, hod_emp.employee_code AS hod_employee_code,
+            com_emp.first_name AS com_first_name, com_emp.last_name AS com_last_name, com_emp.employee_code AS com_employee_code,
+            ceo_emp.first_name AS ceo_first_name, ceo_emp.last_name AS ceo_last_name, ceo_emp.employee_code AS ceo_employee_code,
+            proc_emp.first_name AS proc_first_name, proc_emp.last_name AS proc_last_name, proc_emp.employee_code AS proc_employee_code,
+            fin_emp.first_name AS fin_first_name, fin_emp.last_name AS fin_last_name, fin_emp.employee_code AS fin_employee_code
+     FROM requisition r
+     JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN employees hod_emp ON r.req_hod_approved_by = hod_emp.employee_id
+     LEFT JOIN employees com_emp ON r.req_committee_approved_by = com_emp.employee_id
+     LEFT JOIN employees ceo_emp ON r.req_ceo_approved_by = ceo_emp.employee_id
+     LEFT JOIN employees proc_emp ON r.req_procurement_ack_by = proc_emp.employee_id
+     LEFT JOIN employees fin_emp ON r.req_finance_approved_by = fin_emp.employee_id
+     WHERE r.req_id = $1
+       AND r.req_current_stage_key = 'procurement'
+       AND r.req_finance_approval = 1
+       AND r.req_invoice_url IS NOT NULL
+       AND r.req_forwarded_to_payable_at IS NULL`,
+    [reqId]
+  )
+}
+
+export async function getItemsByReqId(reqId) {
+  return executeQuery(
+    `SELECT item_desc, item_size, item_brand, item_qty, committee_approved_qty, item_est_cost, item_remarks
+     FROM requisition_items
+     WHERE req_id = $1`,
+    [reqId]
+  )
+}
+
+export async function markForwardedToPayable(reqId, eid) {
+  await executeQuery(
+    `UPDATE requisition
+     SET req_forwarded_to_payable_at = CURRENT_TIMESTAMP,
+         req_forwarded_to_payable_by = $2
+     WHERE req_id = $1`,
+    [reqId, eid]
+  )
 }

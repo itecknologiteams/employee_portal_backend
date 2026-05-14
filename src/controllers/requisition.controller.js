@@ -873,3 +873,34 @@ export async function getMyRevertedRequisitions(req, res) {
     res.status(500).json({ error: 'Failed to fetch reverted requisitions' })
   }
 }
+
+export async function uploadInvoice(req, res) {
+  try {
+    const reqId = parseInt(req.params.reqId, 10)
+    if (!reqId || isNaN(reqId)) return res.status(400).json({ error: 'Invalid requisition ID' })
+    const invoiceFile = req.file
+    if (!invoiceFile) return res.status(400).json({ error: 'Invoice file is required' })
+    const result = await requisitionService.uploadInvoice(reqId, invoiceFile, req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Upload invoice error:', error)
+    res.status(500).json({ error: 'Failed to upload invoice' })
+  }
+}
+
+export async function forwardToPayable(req, res) {
+  try {
+    const result = await requisitionService.forwardToPayable(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({
+      message: result.message,
+      status: result.status,
+      ...(result.emailError ? { emailError: result.emailError } : {}),
+      ...(result.emailInfo ? { emailInfo: result.emailInfo } : {})
+    })
+  } catch (error) {
+    console.error('Forward to payable error:', error)
+    res.status(500).json({ error: 'Failed to forward to payable' })
+  }
+}
