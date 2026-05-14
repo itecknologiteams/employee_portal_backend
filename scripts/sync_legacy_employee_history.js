@@ -31,10 +31,10 @@ dotenv.config()
 
 // ====== EDIT THESE TO MATCH YOUR LEGACY DB ===================================
 const LEGACY_TABLES = {
-  history: 'Emp_Update',              // table holding history rows
-  departments: 'Department',          // lookup: Dept_ID → Dept_Name
-  designations: 'Designation',        // lookup: Dsg_ID → Dsg_Name
-  grades: 'Grade',                    // lookup: Grade_ID → Grade_Name
+  history: 'HR_Emp_Sal_Update_Mstr',              // table holding history rows
+  departments: 'HR_Department',          // lookup: Dept_ID → Dept_Name
+  designations: 'HR_Designation',        // lookup: Dsg_ID → Dsg_Name
+  grades: 'HR_Grade',                    // lookup: Grade_ID → Grade_Name
 }
 
 const LEGACY_COLUMNS = {
@@ -48,9 +48,9 @@ const LEGACY_COLUMNS = {
     gradeId:        'Grade_ID',
     remarks:        'Remarks',
   },
-  departments:  { id: 'Dept_ID',  name: 'Dept_Name' },
-  designations: { id: 'Dsg_ID',   name: 'Dsg_Name' },
-  grades:       { id: 'Grade_ID', name: 'Grade_Name' },
+  departments:  { id: 'Dept_ID',  name: 'Dept_Descr' },
+  designations: { id: 'DSG_ID',   name: 'DSG_Descr' },
+  grades:       { id: 'Grade_ID', name: 'Grade_Descr' },
 }
 // =============================================================================
 
@@ -64,10 +64,10 @@ let mssqlConn = null
 
 async function connectLegacy() {
   const mssql = (await import('mssql')).default
-  const host = (process.env.LEGACY_HR_HOST || '').replace(/^['"]|['"]$/g, '').trim()
-  const user = (process.env.LEGACY_HR_USER || '').replace(/^['"]|['"]$/g, '').trim()
-  const pass = (process.env.LEGACY_HR_PASS || '').replace(/^['"]|['"]$/g, '').trim()
-  const db   = (process.env.LEGACY_HR_DB   || '').replace(/^['"]|['"]$/g, '').trim()
+  const host = (process.env.LEGACY_HR_HOST || '192.168.20.166').replace(/^['"]|['"]$/g, '').trim()
+  const user = (process.env.LEGACY_HR_USER || 'tech').replace(/^['"]|['"]$/g, '').trim()
+  const pass = (process.env.LEGACY_HR_PASS || 'tech').replace(/^['"]|['"]$/g, '').trim()
+  const db   = (process.env.LEGACY_HR_DB   || 'ATS_HRMS').replace(/^['"]|['"]$/g, '').trim()
   const port = parseInt(process.env.LEGACY_HR_PORT || '1433', 10)
   if (!host || !user || !pass || !db) {
     throw new Error('Missing LEGACY_HR_* env vars (HOST, USER, PASS, DB)')
