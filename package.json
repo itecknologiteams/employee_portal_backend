@@ -15,7 +15,8 @@
     "update-password": "node scripts/update-user-password.js",
     "import-old-slips": "node scripts/import-old-salary-slips.js",
     "consumer:requisition": "node scripts/requisition-consumer.js",
-    "sync-cards-pictures": "node scripts/sync-cards-profile-pictures.js"
+    "sync-cards-pictures": "node scripts/sync-cards-profile-pictures.js",
+    "migrate:legacy-history": "node scripts/sync_legacy_employee_history.js"
   },
   "dependencies": {
     "amqplib": "^0.10.9",
