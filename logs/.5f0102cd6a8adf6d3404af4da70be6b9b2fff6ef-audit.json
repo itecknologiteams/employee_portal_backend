@@ -49,6 +49,11 @@
             "date": 1778734552151,
             "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\request-2026-05-14.log",
             "hash": "0690def2e148757fa9490ef683c0596c14a5dc995fc6c172eb19edc1c6c6cf59"
+        },
+        {
+            "date": 1778785231913,
+            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\request-2026-05-15.log",
+            "hash": "6da86ccb6f278f372f238e953e8f665285f3bb5060460ed8d016d06a35dc78b8"
         }
     ],
     "hashType": "sha256"
