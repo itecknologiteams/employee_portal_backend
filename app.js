@@ -97,8 +97,9 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }))
-app.use(bodyParser.json())
-app.use(bodyParser.urlencoded({ extended: true }))
+// Raised to 25mb so loan-form PDFs (base64 data URLs) sent at Finance approval fit in the request body.
+app.use(bodyParser.json({ limit: '25mb' }))
+app.use(bodyParser.urlencoded({ extended: true, limit: '25mb' }))
 const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000
 const SESSION_MAX_AGE_MS =
   parseInt(process.env.SESSION_MAX_AGE_MS || String(TWENTY_FOUR_HOURS_MS), 10) || TWENTY_FOUR_HOURS_MS

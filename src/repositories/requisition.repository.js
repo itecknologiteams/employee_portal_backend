@@ -500,6 +500,23 @@ export async function isFinanceHod(employeeId) {
   }
 }
 
+/** True if employee is a "Manager of Finance" (employee_type or designation match). */
+export async function isManagerFinance(employeeId) {
+  try {
+    const rows = await executeQuery(
+      `SELECT 1 FROM employees e
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name ILIKE '%manager%finance%'
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name ILIKE '%manager%finance%'
+       WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+      [employeeId]
+    )
+    return rows.length > 0
+  } catch (err) {
+    if (err.code === '42P01') return false
+    throw err
+  }
+}
+
 /** True if employee is HR (employee_type or designation contains HR) or has portal role Admin/Staff (can view all leaves). */
 export async function isHrMember(employeeId) {
   try {
@@ -660,12 +677,73 @@ export async function saveHrApprovedInstallments(reqId, installments) {
 
 export async function approveHrCheck(reqId, eid) {
   await executeQuery(
-    `UPDATE requisition 
-     SET req_hr_check_approved_by = $1, 
+    `UPDATE requisition
+     SET req_hr_check_approved_by = $1,
          req_hr_check_approved_at = NOW()
      WHERE req_id = $2`,
     [eid, reqId]
   )
+}
+
+/** Manager of Finance: persist Start Progress click. */
+export async function managerFinanceStartProgress(reqId, eid) {
+  try {
+    await executeQuery(
+      `UPDATE requisition
+         SET req_manager_finance_status = 'in_progress',
+             req_manager_finance_started_by = $1,
+             req_manager_finance_started_at = NOW()
+       WHERE req_id = $2`,
+      [eid, reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return
+    throw err
+  }
+}
+
+/** Manager of Finance: persist Progress Completed click. */
+export async function managerFinanceCompleteProgress(reqId) {
+  try {
+    await executeQuery(
+      `UPDATE requisition
+         SET req_manager_finance_status = 'completed',
+             req_manager_finance_completed_at = NOW()
+       WHERE req_id = $1`,
+      [reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return
+    throw err
+  }
+}
+
+/** Manager of Finance: stamp the Hand Over to HR action. Stage transition handled by service. */
+export async function managerFinanceHandover(reqId) {
+  try {
+    await executeQuery(
+      `UPDATE requisition
+         SET req_manager_finance_handover_at = NOW()
+       WHERE req_id = $1`,
+      [reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return
+    throw err
+  }
+}
+
+/** Save the captured loan-form PDF (base64 data URL) for later attachment / audit. */
+export async function saveLoanFormPdf(reqId, dataUrl) {
+  try {
+    await executeQuery(
+      `UPDATE requisition SET req_loan_form_pdf_url = $1 WHERE req_id = $2`,
+      [dataUrl, reqId]
+    )
+  } catch (err) {
+    if (err.code === '42703') return
+    throw err
+  }
 }
 
 /** Admin approves (e.g. Stationary/Vehicle Maintenance after HOD For Info). Sets stage to null (done). */

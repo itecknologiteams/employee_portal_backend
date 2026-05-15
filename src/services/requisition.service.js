@@ -1127,13 +1127,9 @@ export async function approveHR(body) {
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
   let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hr') : 'committee'
-  // Loan & Advance Salary: Amount <=50K -> Finance only; >50K -> CEO then Finance
-  // Use req_hr_approved_amount if HR set one, otherwise fall back to loan_advance_amount
+  // Loan & Advance Salary: every request goes through CEO after HR, regardless of amount.
   if (isCategoryHrAfterHod(categoryName)) {
-    const hrAmt = parseFloat(String(reqRow[0]?.req_hr_approved_amount ?? '').replace(/,/g, ''))
-    const loanAmt = parseFloat(String(reqRow[0]?.loan_advance_amount ?? '0').replace(/,/g, ''))
-    const loanTotal = !isNaN(hrAmt) && hrAmt > 0 ? hrAmt : (isNaN(loanAmt) ? 0 : loanAmt)
-    nextKey = loanTotal <= 50000 ? 'finance' : 'ceo'
+    nextKey = 'ceo'
   }
   await setCurrentStage(reqId, nextKey || 'committee')
   await notifyBucketChanged(reqId, nextKey || 'committee')
@@ -2271,17 +2267,198 @@ export async function approveFinance(body) {
   await reqRepo.approveFinance(reqId, eid, idx)
   const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
   if (isLoan) {
-    // Loan category: Finance ke baad HR Check stage pe bhejo
-    await setCurrentStage(reqId, 'hr_check')
-    await notifyBucketChanged(reqId, 'hr_check')
-    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr_check', deptFin[0]?.department_id))
+    // Loan & Advance Salary: after Finance approval, route to Manager of Finance bucket
+    // (not HR Check yet — that's only after Manager hands over).
+    await setCurrentStage(reqId, 'manager_finance')
+    await notifyBucketChanged(reqId, 'manager_finance')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'manager_finance', deptFin[0]?.department_id))
+
+    // Fire-and-forget email to Payable + Receivable, CC HR. PDF is generated server-side
+    // from the requisition data, so this works regardless of which approval path was used.
+    sendLoanFinanceApprovedEmail(reqId).catch((e) =>
+      console.error('📧 [Loan Finance Approved] email failed:', e?.message)
+    )
   } else {
     // Normal category: set stage to procurement so it appears in their bucket
     await setCurrentStage(reqId, 'procurement')
     await notifyBucketChanged(reqId, 'procurement')
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'procurement', deptFin[0]?.department_id))
   }
-  return { message: isLoan ? 'Finance approved (Loan).' : 'Finance approved; quotation selected. Forwarded to Procurement for purchase.', status: isLoan ? 'Completed' : 'Finance Approved - Ready for Purchase' }
+  return {
+    message: isLoan
+      ? 'Finance approved (Loan). Forwarded to Manager of Finance.'
+      : 'Finance approved; quotation selected. Forwarded to Procurement for purchase.',
+    status: isLoan ? 'Pending Manager of Finance' : 'Finance Approved - Ready for Purchase'
+  }
+}
+
+/**
+ * Send the Loan/Advance approval email to Payable + Receivable (CC HR).
+ * The Loan / Advance Salary form PDF is generated server-side from the requisition
+ * data (see loanFormPdf.service.js) and attached.
+ */
+async function sendLoanFinanceApprovedEmail(reqId) {
+  // SELECT r.* so optional columns (req_hr_approved_installments, req_employment_status, …)
+  // come back as undefined when the corresponding migration has not been applied,
+  // instead of throwing 42703 and killing the email.
+  const reqRow = await executeQuery(
+    `SELECT r.*,
+            e.first_name, e.last_name, e.employee_code,
+            d.department_name
+       FROM requisition r
+       JOIN employees e ON r.req_emp_id = e.employee_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+      WHERE r.req_id = $1`,
+    [reqId]
+  )
+  if (!reqRow.length) return
+  const row = reqRow[0]
+
+  const isLoanType = String(row.loan_advance_type || '').toLowerCase() === 'loan'
+  const amount = Number(row.req_hr_approved_amount || row.loan_advance_amount || 0)
+  const installments = row.req_hr_approved_installments || row.loan_installment_months || 1
+  const monthly = amount ? Math.ceil(amount / installments) : 0
+  const refNo = row.req_reference_no || `REQ-${row.req_id}`
+  const empName = `${row.first_name || ''} ${row.last_name || ''}`.trim() || row.employee_code
+
+  // Build the PDF server-side from the requisition data — no dependence on the
+  // frontend capture, so this works for every approval path (modal button, inline
+  // approve button, or programmatic).
+  const attachments = []
+  try {
+    const { buildLoanFormPdfBuffer } = await import('./loanFormPdf.service.js')
+    const pdfBuffer = await buildLoanFormPdfBuffer(reqId)
+    if (pdfBuffer) {
+      attachments.push({
+        filename: `LoanForm-${row.employee_code || 'emp'}-${refNo}.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf'
+      })
+      console.log(`📄 [Loan Finance Email] PDF generated (${pdfBuffer.length} bytes)`)
+    } else {
+      console.warn('📄 [Loan Finance Email] buildLoanFormPdfBuffer returned null — sending without PDF.')
+    }
+  } catch (err) {
+    console.error('📄 [Loan Finance Email] PDF generation failed:', err?.message)
+  }
+
+  const subject = `[Action Required] ${isLoanType ? 'Loan' : 'Advance Salary'} ${refNo} — Finance Approved`
+  const html = `<p>Dear Payable / Receivable Team,</p>
+<p>Finance has approved the following ${isLoanType ? 'Loan' : 'Advance Salary'} request. It now sits with the <strong>Manager of Finance</strong> for processing.</p>
+<table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px">
+  <tr><td style="padding:4px 12px 4px 0"><strong>Reference</strong></td><td>${refNo}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0"><strong>Type</strong></td><td>${isLoanType ? 'Loan' : 'Advance Salary'}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0"><strong>Employee</strong></td><td>${empName} (${row.employee_code || '—'})</td></tr>
+  <tr><td style="padding:4px 12px 4px 0"><strong>Department</strong></td><td>${row.department_name || '—'}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0"><strong>Employment Status</strong></td><td>${row.req_employment_status || '—'}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0"><strong>Approved Amount</strong></td><td>PKR ${amount.toLocaleString()}</td></tr>
+  ${isLoanType ? `<tr><td style="padding:4px 12px 4px 0"><strong>Installments</strong></td><td>${installments}</td></tr>
+  <tr><td style="padding:4px 12px 4px 0"><strong>Monthly Deduction</strong></td><td>PKR ${monthly.toLocaleString()}</td></tr>` : ''}
+</table>
+<p>${attachments.length ? 'The signed loan form (PDF) is attached.' : 'PDF attachment not available for this requisition.'}</p>
+<p style="color:#6b7280;font-size:12px">Automated notification — Requisition Management System.</p>`
+
+  try {
+    const { getEmailTransport, EMAIL_FROM } = await import('../../config/email.js')
+    const trans = getEmailTransport()
+    if (!trans) {
+      console.warn('📧 [Loan Finance Approved] SMTP not configured; email skipped.')
+      return
+    }
+    const to = (process.env.PAYABLE_EMAIL || 'ali.asif@itecknologi.com') + ', ' + (process.env.RECEIVABLE_EMAIL || 'ali.asif@itecknologi.com')
+    const cc = process.env.HR_EMAIL || 'ali.asif@itecknologi.com'
+    console.log(`📧 [Loan Finance Approved] Sending: to=${to} | cc=${cc} | attachments=${attachments.length}`)
+    const info = await trans.sendMail({
+      from: EMAIL_FROM,
+      to,
+      cc,
+      subject,
+      html,
+      attachments
+    })
+    console.log(`📧 [Loan Finance Approved] SMTP response for ${refNo}:`, JSON.stringify({
+      messageId: info.messageId,
+      accepted: info.accepted,
+      rejected: info.rejected,
+      response: info.response
+    }))
+  } catch (err) {
+    console.error('📧 [Loan Finance Approved] send failed:', err.message)
+  }
+}
+
+/** Manager of Finance: Start Progress. */
+export async function managerFinanceStartProgress(body) {
+  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
+  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
+  const eid = await resolveApproverEmployeeId({
+    approvedByEmployeeId: body?.employeeId,
+    approvedByEmployeeCode: body?.employeeCode
+  })
+  if (eid == null) return { error: 'Valid employeeId or employeeCode is required', status: 400 }
+  const ok = await reqRepo.isManagerFinance(eid)
+  if (!ok) return { error: 'Only Manager of Finance can start progress', status: 403 }
+  const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!deptFin.length) return { error: 'Requisition not found', status: 404 }
+  await reqRepo.managerFinanceStartProgress(reqId, eid)
+  // Notify the chain that progress has started
+  await notifyBucketChanged(reqId, 'manager_finance')
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'manager_finance', deptFin[0]?.department_id))
+  return { message: 'Progress started', status: 'In Progress' }
+}
+
+/** Manager of Finance: Progress Completed. */
+export async function managerFinanceCompleteProgress(body) {
+  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
+  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
+  const eid = await resolveApproverEmployeeId({
+    approvedByEmployeeId: body?.employeeId,
+    approvedByEmployeeCode: body?.employeeCode
+  })
+  if (eid == null) return { error: 'Valid employeeId or employeeCode is required', status: 400 }
+  const ok = await reqRepo.isManagerFinance(eid)
+  if (!ok) return { error: 'Only Manager of Finance can mark progress completed', status: 403 }
+  await reqRepo.managerFinanceCompleteProgress(reqId)
+  return { message: 'Progress marked completed', status: 'Progress Completed' }
+}
+
+/** Manager of Finance: Hand Over to HR (moves stage to hr_check). */
+export async function managerFinanceHandover(body) {
+  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
+  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
+  const eid = await resolveApproverEmployeeId({
+    approvedByEmployeeId: body?.employeeId,
+    approvedByEmployeeCode: body?.employeeCode
+  })
+  if (eid == null) return { error: 'Valid employeeId or employeeCode is required', status: 400 }
+  const ok = await reqRepo.isManagerFinance(eid)
+  if (!ok) return { error: 'Only Manager of Finance can hand over to HR', status: 403 }
+  const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!deptFin.length) return { error: 'Requisition not found', status: 404 }
+  await reqRepo.managerFinanceHandover(reqId)
+  await setCurrentStage(reqId, 'hr_check')
+  await notifyBucketChanged(reqId, 'hr_check')
+  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr_check', deptFin[0]?.department_id))
+  return { message: 'Handed over to HR for Check Receiving', status: 'Pending HR Check' }
+}
+
+export async function getPendingManagerFinance(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return []
+  const ok = await reqRepo.isManagerFinance(eid)
+  if (!ok) return []
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('manager_finance')
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({
+    ...req,
+    status: req.req_manager_finance_status === 'in_progress'
+      ? 'In Progress'
+      : req.req_manager_finance_status === 'completed'
+        ? 'Progress Completed'
+        : 'Pending Manager of Finance',
+    items: items.filter(i => i.req_id === req.req_id)
+  }))
 }
 
 function formatDatePKT(date) {
@@ -2425,12 +2602,21 @@ function buildAuditReportHtml(row, items, forwardedByName, creatorCrmEmail) {
 
 function dataUrlToAttachment(dataUrl, filename) {
   if (!dataUrl) return null
-  const match = String(dataUrl).match(/^data:([^;]+);base64,(.+)$/)
-  if (!match) return null
+  // Accept optional parameters between the MIME type and `;base64,` — jsPDF v4's
+  // output('datauristring') produces `data:application/pdf;filename=generated.pdf;base64,…`,
+  // which the older strict regex rejected. We capture the MIME type and the base64 body
+  // separately and ignore anything in between.
+  const s = String(dataUrl)
+  const baseIdx = s.indexOf(';base64,')
+  if (!s.startsWith('data:') || baseIdx < 0) return null
+  const mimeEnd = s.indexOf(';', 5)
+  const contentType = (mimeEnd > 0 && mimeEnd < baseIdx ? s.substring(5, mimeEnd) : s.substring(5, baseIdx)) || 'application/octet-stream'
+  const base64 = s.substring(baseIdx + ';base64,'.length)
+  if (!base64) return null
   return {
     filename,
-    content: Buffer.from(match[2], 'base64'),
-    contentType: match[1]
+    content: Buffer.from(base64, 'base64'),
+    contentType
   }
 }
 
