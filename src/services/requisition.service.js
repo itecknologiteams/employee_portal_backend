@@ -2365,8 +2365,8 @@ async function sendLoanFinanceApprovedEmail(reqId) {
       console.warn('📧 [Loan Finance Approved] SMTP not configured; email skipped.')
       return
     }
-    const to = (process.env.PAYABLE_EMAIL || 'ali.asif@itecknologi.com') + ', ' + (process.env.RECEIVABLE_EMAIL || 'ali.asif@itecknologi.com')
-    const cc = process.env.HR_EMAIL || 'ali.asif@itecknologi.com'
+    const to = (process.env.PAYABLE_EMAIL || 'payable@itecknologi.com') + ', ' + (process.env.RECEIVABLE_EMAIL || 'receivable@itecknologi.com')
+    const cc = process.env.HR_EMAIL || 'hr@itecknologi.com'
     console.log(`📧 [Loan Finance Approved] Sending: to=${to} | cc=${cc} | attachments=${attachments.length}`)
     const info = await trans.sendMail({
       from: EMAIL_FROM,
