@@ -6,16 +6,6 @@
     "auditLog": "D:\\Github\\Emp_Portal_BackEnd\\logs\\.c5400ae8d451c1bd11f65a9eb305f41045178467-audit.json",
     "files": [
         {
-            "date": 1777702834757,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-02.log",
-            "hash": "0b66d1eb7ad4fa1170160a57e43af660f6c1581308d291a7627b91d56daecbde"
-        },
-        {
-            "date": 1777874272627,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-04.log",
-            "hash": "9a0d2f451243a9033ded7f1acaa58948105dfa4e71462f2b1a4e1096e4e65f89"
-        },
-        {
             "date": 1777960632709,
             "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-05.log",
             "hash": "1bf54fcf05dab239742df418c713c90fbaa79ee7fd5963e4b900b3d4031a2e63"
@@ -49,6 +39,11 @@
             "date": 1778832238427,
             "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-15.log",
             "hash": "273030eb93a0272bd5eee9b85ab3962c49a7b722b9c648664293c434b2bb13b0"
+        },
+        {
+            "date": 1779141490014,
+            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-19.log",
+            "hash": "b68af814510009ebc52778b13f32ccb29fa62960de44dc16328c25890bc09c1c"
         }
     ],
     "hashType": "sha256"
