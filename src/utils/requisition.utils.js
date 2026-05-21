@@ -26,13 +26,18 @@ export function computeCommitteeApprovedLineTotalPKR(items) {
 function isExecutionDone(row) {
   return row.req_admin_approval === 1 ||
     row.req_purchase_completed === 1 ||
-    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)) && row.req_current_stage_key !== 'hr_check')
+    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)) && row.req_current_stage_key !== 'hr_check' && row.req_current_stage_key !== 'manager_finance')
 }
 
 export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   if (row.req_is_rejected === 1) return 'Rejected'
   if (row.req_creator_acknowledged === 1) return 'Closed'
   if (row.req_current_stage_key === 'hr_check') return 'Pending HR Check'
+  if (row.req_current_stage_key === 'manager_finance') {
+    if (row.req_manager_finance_status === 'in_progress') return 'Manager of Finance: In Progress'
+    if (row.req_manager_finance_status === 'completed') return 'Manager of Finance: Progress Completed'
+    return 'Pending Manager of Finance'
+  }
   if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Pending your acknowledgment'
   if (row.req_admin_approval === 1) return 'Completed'
   if (row.req_hod_acknowledged === 1) return 'Completed'
@@ -85,6 +90,7 @@ export function getPendingAt(status) {
   if (status === 'Pending HR' || status === 'Pending HR Check') return 'HR'
   if (status === 'Pending Admin') return 'Admin'
   if (status === 'Pending HOD') return 'HOD'
+  if (status === 'Pending Manager of Finance' || status.startsWith('Manager of Finance:')) return 'Manager of Finance'
   if (status === 'Pending your acknowledgment') return 'Creator'
   if (status === 'Closed') return 'Closed'
   return null
