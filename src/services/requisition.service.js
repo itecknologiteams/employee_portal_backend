@@ -120,7 +120,7 @@ export async function getCategories() {
   return { categories: [...REQUISITION_CATEGORIES], flow: null }
 }
 
-const VALID_BUCKETS = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover']
+const VALID_BUCKETS = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover', 'manager_finance', 'hr_check']
 
 /** Categories where HOD can approve without BOQ (no size/brand/price per piece required). */
 const REQUISITION_CATEGORIES_NO_BOQ = [
