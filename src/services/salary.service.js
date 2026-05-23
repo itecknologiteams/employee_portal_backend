@@ -208,7 +208,9 @@ export async function getSlipById(rawId, employeeId, options = {}) {
       mobileInstallment26: parseFloat(slip.cellphone_installment_deduction ?? 0) || 0,
       foodPanda27: parseFloat(slip.foodpanda_deduction ?? 0) || 0,
       vehicleFuel22: parseFloat(slip.fuel_overusage_deduction ?? 0) || 0,
-      overUtilizationMobile21: parseFloat(slip.over_utilization_mobile_deduction ?? 0) || 0
+      overUtilizationMobile21: parseFloat(slip.over_utilization_mobile_deduction ?? 0) || 0,
+      pandamic23: parseFloat(slip.pandamic_deduction_23 ?? 0) || 0,
+      leaves29: parseFloat(slip.leaves_29 ?? 0) || 0
     }
   }
 
