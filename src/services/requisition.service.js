@@ -1382,6 +1382,40 @@ async function applyCeoSkipToProcurementIfUnderThreshold(reqId, approverEid) {
 }
 
 /**
+ * Loan & Advance Salary anomaly repair: detects loans stuck in the 'ceo' bucket whose
+ * actual data shows they've already moved past CEO (either CEO is already approved, or
+ * Finance is already approved which implies CEO must be past). Auto-fixes by marking
+ * CEO approved if needed and forwarding the stage to whichever downstream bucket the
+ * existing flags indicate (finance / manager_finance / hr_check / null).
+ * Returns true if a repair was applied (caller should skip the row from the CEO list).
+ */
+async function repairLoanCeoIfStuck(row) {
+  if (!row) return false
+  if (!isCategoryHrAfterHod(row.req_category)) return false
+  const ceoApproved = Number(row.req_ceo_approval) === 1
+  const financeApproved = Number(row.req_finance_approval) === 1
+  // Only repair when the row's actual flags say it's past the CEO stage.
+  if (!ceoApproved && !financeApproved) return false
+  const reqId = row.req_id
+  if (!ceoApproved) {
+    await reqRepo.approveCeo(reqId, null)
+  }
+  let nextStage
+  if (Number(row.req_creator_acknowledged) === 1) nextStage = null
+  else if (row.req_hr_check_approved_by != null) nextStage = null
+  else if (row.req_manager_finance_handover_at != null) nextStage = 'hr_check'
+  else if (financeApproved) nextStage = 'manager_finance'
+  else nextStage = 'finance'
+  await reqRepo.setRequisitionCurrentStage(reqId, nextStage)
+  if (nextStage) {
+    await notifyBucketChanged(reqId, nextStage)
+    const deptRow = await reqRepo.getRequisitionAndDepartment(reqId)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextStage, deptRow[0]?.department_id))
+  }
+  return true
+}
+
+/**
  * Fix stuck rows: DB stage CEO but committee line total is below CEO threshold (e.g. after raising REQUISITION_CEO_MIN_AMOUNT_PKR).
  * Safe to call from diagnostics lookup or CEO pending list.
  */
@@ -1416,6 +1450,8 @@ export async function getPendingCeo(employeeId) {
   let rows = await reqRepo.getPendingRequisitionsByCurrentStage('ceo')
   const repaired = []
   for (const r of rows) {
+    // Loan & Advance Salary: if CEO/Finance already approved but stage still 'ceo', repair and skip.
+    if (await repairLoanCeoIfStuck(r)) continue
     const hodOk = Number(r.req_hod_approval) === 1
     const committeeOk = Number(r.req_committee_approval) === 1
     const ceoPending = r.req_ceo_approval == null || Number(r.req_ceo_approval) === 0

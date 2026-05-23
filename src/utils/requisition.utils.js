@@ -26,7 +26,7 @@ export function computeCommitteeApprovedLineTotalPKR(items) {
 function isExecutionDone(row) {
   return row.req_admin_approval === 1 ||
     row.req_purchase_completed === 1 ||
-    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)) && row.req_current_stage_key !== 'hr_check' && row.req_current_stage_key !== 'manager_finance')
+    (row.req_finance_approval === 1 && row.req_category && /loan/i.test(String(row.req_category)) && row.req_hr_check_approved_by != null)
 }
 
 export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
