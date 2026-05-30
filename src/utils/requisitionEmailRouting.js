@@ -169,6 +169,7 @@ export async function getEmployeeCodesByRole(roleName) {
 export async function getEmailsForBucket(bucket, departmentIdOrIds) {
   let codes = []
   if (bucket === 'hod') codes = await getHodEmployeeCodesForDepartments(departmentIdOrIds)
+  else if (bucket === 'it') codes = await getEmployeeCodesByRole('IT')
   else if (bucket === 'hr') codes = await getEmployeeCodesByRole('HR')
   else if (bucket === 'committee') codes = await getEmployeeCodesByRole('Committee')
   else if (bucket === 'ceo') codes = await getEmployeeCodesByRole('CEO')
@@ -183,6 +184,7 @@ export async function getEmailsForBucket(bucket, departmentIdOrIds) {
 
 export const BUCKET_LABELS = {
   hod: 'Pending HOD',
+  it: 'Pending IT',
   hr: 'Pending HR',
   committee: 'Pending Committee',
   ceo: 'Pending CEO',

@@ -567,7 +567,7 @@ export async function isAdminMember(employeeId) {
 
 export async function getRequisitionAndDepartment(requisitionId) {
   return executeQuery(
-    'SELECT r.req_id, r.req_category, r.loan_advance_amount, r.req_hr_approved_amount, e.department_id FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id WHERE r.req_id = $1',
+    'SELECT r.req_id, r.req_category, r.req_current_stage_key, r.loan_advance_amount, r.req_hr_approved_amount, e.department_id FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id WHERE r.req_id = $1',
     [requisitionId]
   )
 }
@@ -630,6 +630,42 @@ export async function approveHod(requisitionId, approverEmployeeId) {
     'UPDATE requisition SET req_hod_approval = 1, req_hod_approval_date = CURRENT_TIMESTAMP, req_hod_approved_by = $2 WHERE req_id = $1',
     [requisitionId, approverEmployeeId]
   )
+}
+
+/** IT stage: record the forward action with timestamp + approver id. */
+export async function approveIt(requisitionId, employeeId) {
+  return executeQuery(
+    'UPDATE requisition SET req_it_approval = 1, req_it_approval_date = CURRENT_TIMESTAMP, req_it_approved_by = $2 WHERE req_id = $1',
+    [requisitionId, employeeId ?? null]
+  )
+}
+
+/** IT stage: replace all items for a requisition with the provided rows.
+ *  Used when IT translates the employee's description into structured items.
+ *  Each item: { itemDesc, itemSize, itemBrand, itemQty, itemEstCost, itemRemarks }. */
+export async function replaceRequisitionItems(requisitionId, items) {
+  const safeItems = Array.isArray(items) ? items : []
+  
+  // Pehle delete karo
+  await executeQuery('DELETE FROM requisition_items WHERE req_id = $1', [requisitionId])
+  
+  // Phir insert karo one by one
+  for (const it of safeItems) {
+    const desc = String(it.item_desc ?? it.itemDesc ?? '').slice(0, 255)
+    const size = it.item_size ?? it.itemSize ?? null
+    const brand = it.item_brand ?? it.itemBrand ?? null
+    const qty = parseInt(it.item_qty ?? it.itemQty ?? 0, 10) || 0
+    const cost = it.item_est_cost ?? it.itemEstCost ?? null
+    const remarks = it.item_remarks ?? it.itemRemarks ?? null
+    await executeQuery(
+      `INSERT INTO requisition_items
+         (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [requisitionId, desc, size, brand, qty, cost == null ? null : String(cost), remarks]
+    )
+  }
+  
+  return { replaced: safeItems.length }
 }
 
 export async function approveHr(requisitionId) {
@@ -1379,6 +1415,9 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
     } else if (stageKey === 'hod') {
       // HOD: explicit stage key (not yet approved by HOD, not completed) OR legacy NULL stage with no approvals
       bucketCondition = ` AND ((r.req_current_stage_key = $1 AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 0) OR (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0))`
+    } else if (stageKey === 'it') {
+      // IT: explicit stage key only (IT stage is opt-in per category — no legacy fallback).
+      bucketCondition = ` AND r.req_current_stage_key = $1 AND COALESCE(r.req_it_approval, 0) = 0`
     } else if (stageKey === 'committee') {
       // Committee: explicit stage key OR (HOD approved AND Committee not approved AND stage is NULL)
       bucketCondition = ` AND (r.req_current_stage_key = $1 OR (r.req_current_stage_key IS NULL AND r.req_hod_approval = 1 AND COALESCE(r.req_committee_approval, 0) = 0))`

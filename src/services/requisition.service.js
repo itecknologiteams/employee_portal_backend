@@ -120,7 +120,7 @@ export async function getCategories() {
   return { categories: [...REQUISITION_CATEGORIES], flow: null }
 }
 
-const VALID_BUCKETS = ['hod', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover', 'manager_finance', 'hr_check']
+const VALID_BUCKETS = ['hod', 'it', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover', 'manager_finance', 'hr_check']
 
 /** Categories where HOD can approve without BOQ (no size/brand/price per piece required). */
 const REQUISITION_CATEGORIES_NO_BOQ = [
@@ -1019,12 +1019,110 @@ export async function approveHod(body) {
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(requisitionId, resolvedNext, deptIdForReq))
   }
   const statusLabel = resolvedNext === 'hr' ? 'Pending HR'
+    : resolvedNext === 'it' ? 'Pending IT'
     : resolvedNext === 'committee' ? 'Pending Committee'
     : resolvedNext === 'ceo' ? 'Pending CEO'
     : resolvedNext === 'procurement' ? 'Forwarded to Procurement'
     : resolvedNext === 'finance' ? 'Pending Finance'
     : `Pending ${resolvedNext}`
   return { message: 'HOD approval recorded', status: statusLabel }
+}
+
+// ---------- IT stage ----------
+
+export async function getPendingIt(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'it') : false
+  if (!ok) return []
+  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('it')
+  const reqIds = rows.map((r) => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map((req) => ({
+    ...req,
+    status: 'Pending IT',
+    items: items.filter((i) => i.req_id === req.req_id)
+  }))
+}
+
+/**
+ * IT user forwards the requisition (after editing items + pricing) OR rejects it.
+ * Body:
+ *  - requisitionId (required)
+ *  - approved: true to forward, false to reject
+ *  - approvedByEmployeeId / approvedByEmployeeCode (required)
+ *  - items: [{ itemDesc, itemSize, itemBrand, itemQty, itemEstCost, itemRemarks }] (required when approved=true)
+ *  - rejectionReason: string (required when approved=false)
+ */
+export async function approveIt(body) {
+  const { requisitionId, approved, items } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId(body)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
+  }
+  const ok = await reqRepo.isEmployeeTypeForStage(eid, 'it')
+  if (!ok) return { error: 'Only IT employees can perform this action', status: 403 }
+
+  const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!reqRow.length) return { error: 'Requisition not found', status: 404 }
+  if (reqRow[0].req_current_stage_key !== 'it') {
+    return { error: `Requisition is not at IT stage (current: ${reqRow[0].req_current_stage_key || 'none'})`, status: 400 }
+  }
+
+  if (approved === false) {
+    const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
+    if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
+    const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
+    await rejectWithReason(reqId, reason, eid, 'it')
+    if (creatorId) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: creatorId,
+        type: 'requisition_rejected',
+        title: 'Requisition rejected by IT',
+        body: `Your requisition was rejected by IT. Reason: ${reason}`,
+        url: '/requisition/history',
+        relatedEntityType: 'requisition',
+        relatedEntityId: reqId
+      }))
+    }
+    return { message: 'Requisition rejected', status: 'Rejected' }
+  }
+
+  // Approving: items array must be non-empty and every row must have desc + qty + price.
+  const safeItems = Array.isArray(items) ? items : []
+  if (!safeItems.length) {
+    return { error: 'At least one item is required. Please add items with description, quantity, and unit price.', status: 400 }
+  }
+  for (const it of safeItems) {
+    const desc = String(it.itemDesc ?? it.item_desc ?? '').trim()
+    const qty = parseInt(it.itemQty ?? it.item_qty ?? 0, 10)
+    const costStr = String(it.itemEstCost ?? it.item_est_cost ?? '').trim()
+    const cost = parseNumericCostPkr(costStr)
+    if (!desc) return { error: 'Every item must have a description', status: 400 }
+    if (!Number.isFinite(qty) || qty <= 0) return { error: 'Every item must have a positive quantity', status: 400 }
+    if (cost == null || cost < 0) return { error: 'Every item must have a valid unit price (PKR)', status: 400 }
+  }
+
+  await reqRepo.replaceRequisitionItems(reqId, safeItems)
+  await reqRepo.approveIt(reqId, eid)
+
+  // Advance to next configured stage (typically Committee for IT Equipments).
+  const categoryName = reqRow[0]?.req_category
+  const nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'it') : null
+  const resolvedNext = nextKey || 'committee'
+  await setCurrentStage(reqId, resolvedNext)
+  if (VALID_BUCKETS.includes(resolvedNext)) {
+    await notifyBucketChanged(reqId, resolvedNext)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, resolvedNext, reqRow[0]?.department_id))
+  }
+  const statusLabel = resolvedNext === 'committee' ? 'Pending Committee'
+    : resolvedNext === 'ceo' ? 'Pending CEO'
+    : resolvedNext === 'procurement' ? 'Forwarded to Procurement'
+    : resolvedNext === 'finance' ? 'Pending Finance'
+    : `Pending ${resolvedNext}`
+  return { message: 'IT review recorded; items saved and forwarded.', status: statusLabel }
 }
 
 export async function getPendingHR(employeeId) {
@@ -2135,7 +2233,7 @@ export async function getPendingCount(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { count: 0 }
   const f = (r) => (Array.isArray(r) ? r.length : 0)
-  const [hod, hr, admin, committee, ceo, procurement, finance, hodAck, adminExec, adminAck, adminHo, creatorAck] = await Promise.all([
+  const [hod, hr, admin, committee, ceo, procurement, finance, hodAck, adminExec, adminAck, adminHo, creatorAck, it] = await Promise.all([
     getPendingHod(employeeId),
     getPendingHR(employeeId),
     getPendingHRCheck(employeeId),
@@ -2148,9 +2246,10 @@ export async function getPendingCount(employeeId) {
     getPendingAdminExecution(employeeId),
     getPendingAdminAcknowledge(employeeId),
     getPendingAdminHandover(employeeId),
-    getPendingCreatorAcknowledge(employeeId)
+    getPendingCreatorAcknowledge(employeeId),
+    getPendingIt(employeeId)
   ])
-  const count = f(hod) + f(hr) + f(admin) + f(committee) + f(ceo) + f(procurement) + f(finance) + f(hodAck) + f(adminExec) + f(adminAck) + f(adminHo) + f(creatorAck)
+  const count = f(hod) + f(hr) + f(admin) + f(committee) + f(ceo) + f(procurement) + f(finance) + f(hodAck) + f(adminExec) + f(adminAck) + f(adminHo) + f(creatorAck) + f(it)
   return { count }
 }
 

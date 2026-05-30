@@ -22,6 +22,7 @@ router.get('/debug/:employeeCode', requisitionController.getDebug)
 router.get('/report/all/:employeeCode', requisitionController.getReportAll)
 router.get('/pending/count/:employeeCode', requisitionController.getPendingCount)
 router.get('/pending/hod/:employeeCode', requisitionController.getPendingHod)
+router.get('/pending/it/:employeeCode', requisitionController.getPendingIt)      // ← added route for pending IT review
 router.get('/approved-by-hod/:employeeCode', requisitionController.getApprovedByHod)
 router.get('/approved-by-committee/:employeeCode', requisitionController.getApprovedByCommittee)
 router.get('/approved-by-ceo/:employeeCode', requisitionController.getApprovedByCeo)
@@ -30,6 +31,7 @@ router.get('/approved-by-finance/:employeeCode', requisitionController.getApprov
 router.get('/approved-by-procurement/:employeeCode', requisitionController.getApprovedByProcurement)
 router.get('/approved-by-hr/:employeeCode', requisitionController.getApprovedByHR)
 router.post('/approve/hod', requisitionController.approveHod)
+router.post('/approve/it', requisitionController.approveIt)                       // ← added route for approving IT review
 router.get('/pending/hr/:employeeCode', requisitionController.getPendingHR)
 router.post('/approve/hr', requisitionController.approveHR)
 router.get('/pending/hr-check/', requisitionController.getPendingHRCheck)
