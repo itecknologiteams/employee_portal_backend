@@ -40,7 +40,11 @@ export function getReminderRedisKey(reqId) {
 }
 
 export function isBullMQEnabled() {
-  return process.env.BULLMQ_REMINDER_ENABLED === '1' || process.env.REDIS_HOST
+  // Explicit opt-in only. Do NOT auto-enable just because REDIS_HOST is set:
+  // on an incompatible Redis (< 5.0.0) the BullMQ worker cannot run, so jobs would
+  // be enqueued but never processed and transactional emails would be silently lost.
+  // notify* functions fall back to sending synchronously when this is false.
+  return process.env.BULLMQ_REMINDER_ENABLED === '1'
 }
 
 /**

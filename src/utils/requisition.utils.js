@@ -6,6 +6,48 @@ import { getEffectiveUnitPricePkrFromItem } from './requisitionAmountParse.js'
  */
 export const REQUISITION_CEO_MIN_AMOUNT_PKR = parseInt(process.env.REQUISITION_CEO_MIN_AMOUNT_PKR || '100000', 10)
 
+/** Sales tax rate applied to IT Equipment requisition items (Pakistan GST on goods). */
+export const REQUISITION_SALES_TAX_RATE = 0.18
+
+/** True when the category is the IT Equipments category (case/space-insensitive). */
+export function isItEquipmentCategory(category) {
+  if (category == null || category === '') return false
+  return String(category).trim().toLowerCase() === 'it equipments'
+}
+
+/** Effective quantity for an item: committee-approved qty when present, else item qty. */
+function effectiveQtyForItem(it) {
+  const c = it.committee_approved_qty ?? it.committeeApprovedQty
+  if (c != null && !Number.isNaN(Number(c))) return Number(c)
+  const q = it.item_qty ?? it.itemQty
+  return (q != null && !Number.isNaN(Number(q))) ? Number(q) : 0
+}
+
+/**
+ * Sales tax (PKR) for a single item = round(effectiveUnitPrice x effectiveQty x rate).
+ * Returns null when the effective unit price is null (no priced cost yet).
+ */
+export function computeItemTaxAmountPkr(it, rate = REQUISITION_SALES_TAX_RATE) {
+  const unit = getEffectiveUnitPricePkrFromItem(it)
+  if (unit == null || Number.isNaN(unit) || unit < 0) return null
+  const qty = effectiveQtyForItem(it)
+  return Math.round(unit * qty * rate)
+}
+
+/** Grand total including tax (PKR) across items: sum of (lineTotal + itemTax). */
+export function computeItGrandTotalWithTaxPkr(items, rate = REQUISITION_SALES_TAX_RATE) {
+  if (!items || !items.length) return 0
+  let total = 0
+  for (const it of items) {
+    const unit = getEffectiveUnitPricePkrFromItem(it)
+    if (unit == null || Number.isNaN(unit) || unit < 0) continue
+    const qty = effectiveQtyForItem(it)
+    const tax = computeItemTaxAmountPkr(it, rate) ?? 0
+    total += unit * qty + tax
+  }
+  return Math.round(total)
+}
+
 /**
  * Sum of (committee_approved_qty × unit price) for all items — same formula as Committee approve → CEO skip rule.
  * Unit price from stored numeric `item_est_cost` / `hod_item_est_cost` (digits only).
@@ -32,12 +74,7 @@ function isExecutionDone(row) {
 export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   if (row.req_is_rejected === 1) return 'Rejected'
   if (row.req_creator_acknowledged === 1) return 'Closed'
-  if (row.req_current_stage_key === 'hr_check') return 'Pending HR Check'
-  if (row.req_current_stage_key === 'manager_finance') {
-    if (row.req_manager_finance_status === 'in_progress') return 'Manager of Finance: In Progress'
-    if (row.req_manager_finance_status === 'completed') return 'Manager of Finance: Progress Completed'
-    return 'Pending Manager of Finance'
-  }
+  if (row.req_current_stage_key === 'hr_check') return 'Pending HR Cheque Receiving'
   if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Pending your acknowledgment'
   if (row.req_admin_approval === 1) return 'Completed'
   if (row.req_hod_acknowledged === 1) return 'Completed'
@@ -88,11 +125,10 @@ export function getPendingAt(status) {
   if (status === 'Forwarded to Procurement') return 'Procurement'
   if (status === 'Pending CEO') return 'CEO'
   if (status === 'Pending Committee') return 'Committee'
-  if (status === 'Pending HR' || status === 'Pending HR Check') return 'HR'
+  if (status === 'Pending HR' || status === 'Pending HR Cheque Receiving') return 'HR'
   if (status === 'Pending Admin') return 'Admin'
   if (status === 'Pending HOD') return 'HOD'
   if (status === 'Pending IT') return 'IT'
-  if (status === 'Pending Manager of Finance' || status.startsWith('Manager of Finance:')) return 'Manager of Finance'
   if (status === 'Pending your acknowledgment') return 'Creator'
   if (status === 'Closed') return 'Closed'
   return null

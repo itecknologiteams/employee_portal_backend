@@ -11,7 +11,7 @@ export async function getRequisitionsByEmployeeId(employeeId) {
 export async function getRequisitionItemsByReqIds(reqIds) {
   if (!reqIds.length) return []
   return executeQuery(
-    'SELECT item_id, req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks FROM requisition_items WHERE req_id = ANY($1)',
+    'SELECT item_id, req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks, item_tax_amount FROM requisition_items WHERE req_id = ANY($1)',
     [reqIds]
   )
 }
@@ -500,23 +500,6 @@ export async function isFinanceHod(employeeId) {
   }
 }
 
-/** True if employee is a "Manager of Finance" (employee_type or designation match). */
-export async function isManagerFinance(employeeId) {
-  try {
-    const rows = await executeQuery(
-      `SELECT 1 FROM employees e
-       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name ILIKE '%manager%finance%'
-       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND desg.desg_name ILIKE '%manager%finance%'
-       WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
-      [employeeId]
-    )
-    return rows.length > 0
-  } catch (err) {
-    if (err.code === '42P01') return false
-    throw err
-  }
-}
-
 /** True if employee is HR (employee_type or designation contains HR) or has portal role Admin/Staff (can view all leaves). */
 export async function isHrMember(employeeId) {
   try {
@@ -721,54 +704,6 @@ export async function approveHrCheck(reqId, eid) {
   )
 }
 
-/** Manager of Finance: persist Start Progress click. */
-export async function managerFinanceStartProgress(reqId, eid) {
-  try {
-    await executeQuery(
-      `UPDATE requisition
-         SET req_manager_finance_status = 'in_progress',
-             req_manager_finance_started_by = $1,
-             req_manager_finance_started_at = NOW()
-       WHERE req_id = $2`,
-      [eid, reqId]
-    )
-  } catch (err) {
-    if (err.code === '42703') return
-    throw err
-  }
-}
-
-/** Manager of Finance: persist Progress Completed click. */
-export async function managerFinanceCompleteProgress(reqId) {
-  try {
-    await executeQuery(
-      `UPDATE requisition
-         SET req_manager_finance_status = 'completed',
-             req_manager_finance_completed_at = NOW()
-       WHERE req_id = $1`,
-      [reqId]
-    )
-  } catch (err) {
-    if (err.code === '42703') return
-    throw err
-  }
-}
-
-/** Manager of Finance: stamp the Hand Over to HR action. Stage transition handled by service. */
-export async function managerFinanceHandover(reqId) {
-  try {
-    await executeQuery(
-      `UPDATE requisition
-         SET req_manager_finance_handover_at = NOW()
-       WHERE req_id = $1`,
-      [reqId]
-    )
-  } catch (err) {
-    if (err.code === '42703') return
-    throw err
-  }
-}
-
 /** Save the captured loan-form PDF (base64 data URL) for later attachment / audit. */
 export async function saveLoanFormPdf(reqId, dataUrl) {
   try {
@@ -826,6 +761,62 @@ export async function updateItemCommitteeApprovedQty(itemId, qty) {
   return executeQuery(
     'UPDATE requisition_items SET committee_approved_qty = $1 WHERE item_id = $2',
     [qty, itemId]
+  )
+}
+
+/** Set the per-item sales tax amount (PKR). Pass null to clear it. */
+export async function updateItemTaxAmount(itemId, taxAmount) {
+  return executeQuery(
+    'UPDATE requisition_items SET item_tax_amount = $1 WHERE item_id = $2',
+    [taxAmount, itemId]
+  )
+}
+
+/** Latest sales tax rate as a fraction (e.g. 0.18). Falls back to 0.18. */
+export async function getCurrentSalesTaxRate() {
+  try {
+    const r = await executeQuery('SELECT rate_percent FROM sales_tax_rate ORDER BY id DESC LIMIT 1')
+    const pct = r && r[0] ? Number(r[0].rate_percent) : null
+    return (pct != null && !Number.isNaN(pct)) ? pct / 100 : 0.18
+  } catch (_) {
+    return 0.18
+  }
+}
+
+/** Full rate history, newest first, with changer name. */
+export async function getSalesTaxRateHistory() {
+  return executeQuery(
+    `SELECT s.id, s.rate_percent, s.created_at, s.created_by,
+            e.first_name, e.last_name
+       FROM sales_tax_rate s
+       LEFT JOIN employees e ON e.employee_id = s.created_by
+      ORDER BY s.id DESC`
+  )
+}
+
+/** Insert a new rate row (append-only). */
+export async function addSalesTaxRate(ratePercent, employeeId) {
+  return executeQuery(
+    'INSERT INTO sales_tax_rate (rate_percent, created_by) VALUES ($1, $2)',
+    [ratePercent, employeeId ?? null]
+  )
+}
+
+/** Latest sales tax rate row { id, rate_percent } (or null if none). */
+export async function getCurrentSalesTaxRateRow() {
+  try {
+    const r = await executeQuery('SELECT id, rate_percent FROM sales_tax_rate ORDER BY id DESC LIMIT 1')
+    return (r && r[0]) ? { id: r[0].id, rate_percent: Number(r[0].rate_percent) } : null
+  } catch (_) {
+    return null
+  }
+}
+
+/** Record which sales tax rate (id + percent snapshot) was applied to a requisition. Pass nulls to clear. */
+export async function updateRequisitionTaxRate(reqId, rateId, ratePercent) {
+  return executeQuery(
+    'UPDATE requisition SET req_tax_rate_id = $1, req_tax_rate_percent = $2 WHERE req_id = $3',
+    [rateId ?? null, ratePercent ?? null, reqId]
   )
 }
 

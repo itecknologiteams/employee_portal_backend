@@ -70,6 +70,10 @@ export async function buildLoanFormPdfBuffer(reqId) {
   const startDate = new Date(startBase.getFullYear(), startBase.getMonth() + 1, 1)
   const installmentStartFmt = startDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
 
+  const fmtLong = (d) => d ? new Date(d).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : ''
+  const financeApprovedDate = fmtLong(row.req_finance_approval_date)
+  const ceoApprovedDate = fmtLong(row.req_ceo_approval_date)
+
   // ----- Build PDF -----
   const doc = new PDFDocument({ size: 'A4', margin: 40 })
   const chunks = []
@@ -90,7 +94,7 @@ export async function buildLoanFormPdfBuffer(reqId) {
   doc.fontSize(10).fillColor('#475569').font('Helvetica-Bold').text(`Ref: ${refNo}`, { align: 'center' })
   doc.moveDown(0.4)
   doc.moveTo(margin, doc.y).lineTo(margin + contentW, doc.y)
-     .strokeColor('#0f172a').lineWidth(1.2).stroke()
+     .strokeColor('#2563eb').lineWidth(2).stroke()
   doc.moveDown(0.6)
 
   // ============ Section 1 ============
@@ -135,9 +139,12 @@ export async function buildLoanFormPdfBuffer(reqId) {
      .font('Helvetica-Bold').text(String(installmentMonths), { continued: true })
      .font('Helvetica').text(' installment (for Advance not more than 1 & for Loan not more than 10). In case of my separation from the Company, I hereby, authorize the Company to deduct the full outstanding Loan/Advance amount, if any, from my full & final settlement.')
 
-  doc.moveDown(1.4)
-  drawSignatureRow(doc, margin, contentW, 'Employee Signature', 'Date:')
-  doc.moveDown(0.8)
+  doc.moveDown(1.0)
+  {
+    const by = doc.y
+    drawStatusBadge(doc, margin, by, contentW / 2 - 8, 'submitted', `Employee — ${empName}`, requestDate)
+    doc.y = by + 42
+  }
 
   // ============ Section 3 — HR Department ============
   drawSectionHeader(doc, 'Section 3:', 'TO BE FILLED BY HR DEPARTMENT', margin, contentW)
@@ -160,7 +167,9 @@ export async function buildLoanFormPdfBuffer(reqId) {
      .text(`PKR ${monthlyDeduction.toLocaleString()}`, margin + contentW / 2, fullY + 6, { width: contentW / 2 - 10, align: 'right' })
   doc.y = fullY + 36
 
-  drawSignatureRow(doc, margin, contentW, 'Verified By:  Finance & HR', 'Approved By:  CEO')
+  drawBadgeRow(doc, margin, contentW,
+    ['approved', 'Verified — Finance & HR', financeApprovedDate],
+    ['approved', 'Approved — CEO', ceoApprovedDate])
   doc.moveDown(0.4)
 
   // Footer
@@ -178,9 +187,12 @@ export async function buildLoanFormPdfBuffer(reqId) {
 
 function drawSectionHeader(doc, sectionLabel, sectionTitle, x, width) {
   const y = doc.y
-  doc.rect(x, y, width, 24).fillAndStroke('#e2e8f0', '#94a3b8')
-  doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(10.5).text(sectionLabel, x + 10, y + 7)
-  doc.fillColor('#1e293b').font('Helvetica-Bold').fontSize(10.5).text(sectionTitle, x + 90, y + 7, { width: width - 100 })
+  const h = 24
+  doc.rect(x, y, width, h).fillAndStroke('#f1f5f9', '#cbd5e1')
+  // Blue left accent bar
+  doc.rect(x, y, 4, h).fill('#2563eb')
+  doc.fillColor('#1e3a8a').font('Helvetica-Bold').fontSize(10.5).text(sectionLabel, x + 12, y + 7)
+  doc.fillColor('#334155').font('Helvetica-Bold').fontSize(10.5).text(sectionTitle, x + 92, y + 7, { width: width - 102 })
   doc.y = y + 30
   doc.fillColor('#111827')
 }
@@ -238,12 +250,45 @@ function drawCheckbox(doc, x, y, checked, size = 10) {
   }
 }
 
-function drawSignatureRow(doc, x, width, leftLabel, rightLabel) {
+/** Small vector check mark (Helvetica has no ✓ glyph in WinAnsi, so draw it). */
+function drawCheckMark(doc, cx, cy, size, color) {
+  doc.save()
+  doc.lineWidth(Math.max(1, size * 0.14)).strokeColor(color).lineCap('round').lineJoin('round')
+  doc.moveTo(cx - size * 0.28, cy + size * 0.02)
+     .lineTo(cx - size * 0.04, cy + size * 0.24)
+     .lineTo(cx + size * 0.30, cy - size * 0.22)
+     .stroke()
+  doc.restore()
+}
+
+/**
+ * Rounded status pill replacing a handwritten signature.
+ * kind: 'approved' (green) | 'submitted' (blue).
+ */
+function drawStatusBadge(doc, x, y, w, kind, role, dateStr) {
+  const h = 34
+  const p = kind === 'approved'
+    ? { bg: '#ecfdf5', border: '#34d399', circle: '#16a34a', title: '#15803d', label: 'APPROVED' }
+    : { bg: '#eff6ff', border: '#93c5fd', circle: '#2563eb', title: '#1d4ed8', label: 'SUBMITTED' }
+  doc.roundedRect(x, y, w, h, 6).fillAndStroke(p.bg, p.border)
+  const r = 8.5
+  const ccx = x + 18
+  const ccy = y + h / 2
+  doc.circle(ccx, ccy, r).fill(p.circle)
+  drawCheckMark(doc, ccx, ccy, r * 1.6, '#ffffff')
+  doc.fillColor(p.title).font('Helvetica-Bold').fontSize(10.5)
+     .text(p.label, x + 34, y + 6, { width: w - 42, lineBreak: false })
+  doc.fillColor('#475569').font('Helvetica').fontSize(7.5)
+     .text(`${role}${dateStr ? '  ·  ' + dateStr : ''}`, x + 34, y + 20, { width: w - 42, lineBreak: false })
+  doc.fillColor('#111827')
+}
+
+/** Two side-by-side status badges. left/right = [kind, role, dateStr]. */
+function drawBadgeRow(doc, x, width, left, right) {
   const y = doc.y
-  const lineW = (width / 2) - 30
-  doc.moveTo(x, y).lineTo(x + lineW, y).strokeColor('#0f172a').lineWidth(0.7).stroke()
-  doc.moveTo(x + width - lineW, y).lineTo(x + width, y).stroke()
-  doc.fillColor('#0f172a').font('Helvetica-Bold').fontSize(9).text(leftLabel, x, y + 4, { width: lineW })
-  doc.text(rightLabel, x + width - lineW, y + 4, { width: lineW, align: 'right' })
-  doc.y = y + 20
+  const gap = 16
+  const w = (width - gap) / 2
+  drawStatusBadge(doc, x, y, w, left[0], left[1], left[2])
+  drawStatusBadge(doc, x + w + gap, y, w, right[0], right[1], right[2])
+  doc.y = y + 40
 }

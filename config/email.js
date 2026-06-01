@@ -8,6 +8,14 @@ let transporter = null
  */
 export const EMAIL_BCC = (process.env.EMAIL_BCC || 'ali.asif@itecknologi.com').trim()
 
+/**
+ * Loan / Advance Salary finance-approval notification recipients.
+ * Override via .env: PAYABLE_EMAIL / RECEIVABLE_EMAIL / HR_EMAIL.
+ */
+export const PAYABLE_EMAIL = (process.env.PAYABLE_EMAIL || 'payable@itecknologi.com').trim()
+export const RECEIVABLE_EMAIL = (process.env.RECEIVABLE_EMAIL || 'receivable@itecknologi.com').trim()
+export const HR_EMAIL = (process.env.HR_EMAIL || 'hr@itecknologi.com').trim()
+
 function mergeBcc(existing) {
   if (!EMAIL_BCC) return existing
   if (!existing) return EMAIL_BCC

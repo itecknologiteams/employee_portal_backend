@@ -4,7 +4,7 @@ import { sendRequisitionReminder, isEmailConfigured, EMAIL_FROM } from '../../co
 import { getEmailsForBucket } from '../utils/requisitionEmailRouting.js'
 import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
-import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
+import { getEmployeeIdByCode, getUserTypeByEmployeeId } from '../repositories/auth.repository.js'
 import {
   getRequisitionStatus,
   getPendingAt,
@@ -14,7 +14,9 @@ import {
   formatTotalTime,
   tatReportStatusCondition,
   computeCommitteeApprovedLineTotalPKR,
-  REQUISITION_CEO_MIN_AMOUNT_PKR
+  REQUISITION_CEO_MIN_AMOUNT_PKR,
+  isItEquipmentCategory,
+  computeItemTaxAmountPkr
 } from '../utils/requisition.utils.js'
 import { parseNumericCostPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
 import * as notifRepo from '../repositories/notification.repository.js'
@@ -120,7 +122,7 @@ export async function getCategories() {
   return { categories: [...REQUISITION_CATEGORIES], flow: null }
 }
 
-const VALID_BUCKETS = ['hod', 'it', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover', 'manager_finance', 'hr_check']
+const VALID_BUCKETS = ['hod', 'it', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover', 'hr_check']
 
 /** Categories where HOD can approve without BOQ (no size/brand/price per piece required). */
 const REQUISITION_CATEGORIES_NO_BOQ = [
@@ -359,6 +361,76 @@ function isCategoryNoDate(category) {
   return REQUISITION_CATEGORIES_NO_DATE.some((cat) => cat.trim().toLowerCase() === c)
 }
 
+/**
+ * Recompute and persist item_tax_amount for every item of a requisition.
+ * IT Equipments category: tax = computeItemTaxAmountPkr(item) per item.
+ * Any other category: explicitly clear tax to NULL (never carry stale tax).
+ * Safe to call after any item mutation; tolerant of a missing column (pre-migration).
+ */
+async function refreshRequisitionItemTaxes(reqId) {
+  const id = parseInt(reqId, 10)
+  if (Number.isNaN(id)) return
+  try {
+    const rows = await reqRepo.getRequisitionById(id)
+    const category = rows?.[0]?.req_category ?? null
+    const items = await reqRepo.getRequisitionItems(id)
+    const isIt = isItEquipmentCategory(category)
+    const rateRow = isIt ? await reqRepo.getCurrentSalesTaxRateRow() : null
+    const ratePercent = rateRow ? Number(rateRow.rate_percent) : null
+    const rate = ratePercent != null ? ratePercent / 100 : null
+    for (const it of items) {
+      const tax = isIt ? computeItemTaxAmountPkr(it, rate) : null
+      await reqRepo.updateItemTaxAmount(it.item_id, tax)
+    }
+    // Stamp which rate was applied (going-forward only); clear for non-IT.
+    await reqRepo.updateRequisitionTaxRate(id, isIt ? (rateRow?.id ?? null) : null, isIt ? ratePercent : null)
+  } catch (_) {
+    /* column may not exist yet (pre-migration); ignore */
+  }
+}
+
+/** Resolve an employee code (or numeric id) to an employee_id. */
+async function resolveEmployeeIdFromCode(code) {
+  if (code == null || String(code).trim() === '') return null
+  const byCode = await getEmployeeIdByCode(String(code).trim()).catch(() => null)
+  if (byCode != null) return byCode
+  return parseEmployeeId(String(code))
+}
+
+/** SuperAdmin check that works on this deployment (users.user_type), matching the frontend. */
+async function isSuperAdminEmployee(eid) {
+  const t = await getUserTypeByEmployeeId(eid).catch(() => null)
+  return String(t || '').trim().toLowerCase() === 'superadmin'
+}
+
+/** SuperAdmin: read current sales tax rate (percent) + history. */
+export async function getSalesTaxSettings(employeeCode) {
+  const eid = await resolveEmployeeIdFromCode(employeeCode)
+  if (eid == null) return { error: 'Valid employee is required', status: 400 }
+  if (!(await isSuperAdminEmployee(eid))) return { error: 'Only SuperAdmin can view tax settings', status: 403 }
+  const history = await reqRepo.getSalesTaxRateHistory()
+  const currentPercent = history.length ? Number(history[0].rate_percent) : 18
+  return { ratePercent: currentPercent, history }
+}
+
+/** SuperAdmin: add a new sales tax rate (percent). Append-only; takes effect immediately for new saves. */
+export async function addSalesTaxRateSetting(employeeCode, ratePercent) {
+  const eid = await resolveEmployeeIdFromCode(employeeCode)
+  if (eid == null) return { error: 'Valid employee is required', status: 400 }
+  if (!(await isSuperAdminEmployee(eid))) return { error: 'Only SuperAdmin can change the tax rate', status: 403 }
+  const raw = String(ratePercent ?? '').trim()
+  const pct = Number(raw)
+  if (raw === '' || Number.isNaN(pct) || pct < 0 || pct > 100) {
+    return { error: 'Rate must be a percent between 0 and 100', status: 400 }
+  }
+  if (!/^\d+(\.\d{1,2})?$/.test(raw)) {
+    return { error: 'Rate may have at most 2 decimals', status: 400 }
+  }
+  await reqRepo.addSalesTaxRate(pct, eid)
+  const history = await reqRepo.getSalesTaxRateHistory()
+  return { ratePercent: pct, history }
+}
+
 export async function createRequisition(body) {
   const { employeeId, location, material, requiredByDate, business, items, category, loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths, isUrgent } = body
   const categoryTrimmed = category?.trim() || ''
@@ -451,6 +523,7 @@ export async function createRequisition(body) {
       return { error: normErr.message || 'Invalid item amount', status: normErr.status || 400 }
     }
     await reqRepo.insertRequisitionItemsBatch(reqId, normalizedItems)
+    await refreshRequisitionItemTaxes(reqId)
   }
 
   // Category-based flow: if category has HOD "For Info" only (no approval), auto-advance past HOD to next real stage (1.csv)
@@ -966,6 +1039,7 @@ export async function approveHod(body) {
       const estCost = (estCostVal != null && String(estCostVal).trim() !== '') ? String(estCostVal).trim() : null
       await reqRepo.updateItemHodBoq(itemId, requisitionId, size, brand, qty, estCost)
     }
+    await refreshRequisitionItemTaxes(requisitionId)
   }
 
   const items = await reqRepo.getRequisitionItems(requisitionId)
@@ -1106,6 +1180,7 @@ export async function approveIt(body) {
   }
 
   await reqRepo.replaceRequisitionItems(reqId, safeItems)
+  await refreshRequisitionItemTaxes(reqId)
   await reqRepo.approveIt(reqId, eid)
 
   // Advance to next configured stage (typically Committee for IT Equipments).
@@ -1428,6 +1503,7 @@ export async function approveCommittee(body) {
     const itemId = it.item_id ?? it.itemId
     await reqRepo.updateItemCommitteeApprovedQty(itemId, byItemId[itemId])
   }
+  await refreshRequisitionItemTaxes(reqId)
   await reqRepo.approveCommittee(reqId, eid)
 
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
@@ -1484,7 +1560,7 @@ async function applyCeoSkipToProcurementIfUnderThreshold(reqId, approverEid) {
  * actual data shows they've already moved past CEO (either CEO is already approved, or
  * Finance is already approved which implies CEO must be past). Auto-fixes by marking
  * CEO approved if needed and forwarding the stage to whichever downstream bucket the
- * existing flags indicate (finance / manager_finance / hr_check / null).
+ * existing flags indicate (finance / hr_check / null).
  * Returns true if a repair was applied (caller should skip the row from the CEO list).
  */
 async function repairLoanCeoIfStuck(row) {
@@ -1501,8 +1577,7 @@ async function repairLoanCeoIfStuck(row) {
   let nextStage
   if (Number(row.req_creator_acknowledged) === 1) nextStage = null
   else if (row.req_hr_check_approved_by != null) nextStage = null
-  else if (row.req_manager_finance_handover_at != null) nextStage = 'hr_check'
-  else if (financeApproved) nextStage = 'manager_finance'
+  else if (financeApproved) nextStage = 'hr_check'
   else nextStage = 'finance'
   await reqRepo.setRequisitionCurrentStage(reqId, nextStage)
   if (nextStage) {
@@ -1862,6 +1937,7 @@ export async function updateItemsByHod(reqId, body) {
       item_remarks
     })
   }
+  await refreshRequisitionItemTaxes(reqIdNum)
   return { message: 'Items updated' }
 }
 
@@ -1921,6 +1997,7 @@ export async function addItemByHod(reqId, body) {
     item.item_est_cost = String(n)
   }
   await reqRepo.insertRequisitionItem(reqIdNum, item)
+  await refreshRequisitionItemTaxes(reqIdNum)
   return { message: 'Item added' }
 }
 
@@ -2402,11 +2479,11 @@ export async function approveFinance(body) {
   await reqRepo.approveFinance(reqId, eid, idx)
   const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
   if (isLoan) {
-    // Loan & Advance Salary: after Finance approval, route to Manager of Finance bucket
-    // (not HR Check yet — that's only after Manager hands over).
-    await setCurrentStage(reqId, 'manager_finance')
-    await notifyBucketChanged(reqId, 'manager_finance')
-    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'manager_finance', deptFin[0]?.department_id))
+    // Loan & Advance Salary: after Finance approval, route straight to HR Cheque Receiving.
+    // (Manager of Finance stage removed.) Employee acknowledgment follows HR Cheque Receiving.
+    await setCurrentStage(reqId, 'hr_check')
+    await notifyBucketChanged(reqId, 'hr_check')
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr_check', deptFin[0]?.department_id))
 
     // Fire-and-forget email to Payable + Receivable, CC HR. PDF is generated server-side
     // from the requisition data, so this works regardless of which approval path was used.
@@ -2421,9 +2498,9 @@ export async function approveFinance(body) {
   }
   return {
     message: isLoan
-      ? 'Finance approved (Loan). Forwarded to Manager of Finance.'
+      ? 'Finance approved (Loan). Forwarded to HR for Cheque Receiving.'
       : 'Finance approved; quotation selected. Forwarded to Procurement for purchase.',
-    status: isLoan ? 'Pending Manager of Finance' : 'Finance Approved - Ready for Purchase'
+    status: isLoan ? 'Pending HR Cheque Receiving' : 'Finance Approved - Ready for Purchase'
   }
 }
 
@@ -2432,7 +2509,7 @@ export async function approveFinance(body) {
  * The Loan / Advance Salary form PDF is generated server-side from the requisition
  * data (see loanFormPdf.service.js) and attached.
  */
-async function sendLoanFinanceApprovedEmail(reqId) {
+export async function sendLoanFinanceApprovedEmail(reqId) {
   // SELECT r.* so optional columns (req_hr_approved_installments, req_employment_status, …)
   // come back as undefined when the corresponding migration has not been applied,
   // instead of throwing 42703 and killing the email.
@@ -2479,7 +2556,7 @@ async function sendLoanFinanceApprovedEmail(reqId) {
 
   const subject = `[Action Required] ${isLoanType ? 'Loan' : 'Advance Salary'} ${refNo} — Finance Approved`
   const html = `<p>Dear Payable / Receivable Team,</p>
-<p>Finance has approved the following ${isLoanType ? 'Loan' : 'Advance Salary'} request. It now sits with the <strong>Manager of Finance</strong> for processing.</p>
+<p>Finance has approved the following ${isLoanType ? 'Loan' : 'Advance Salary'} request. It now sits with <strong>HR for Cheque Receiving</strong>.</p>
 <table style="border-collapse:collapse;font-family:Arial,sans-serif;font-size:13px">
   <tr><td style="padding:4px 12px 4px 0"><strong>Reference</strong></td><td>${refNo}</td></tr>
   <tr><td style="padding:4px 12px 4px 0"><strong>Type</strong></td><td>${isLoanType ? 'Loan' : 'Advance Salary'}</td></tr>
@@ -2494,14 +2571,14 @@ async function sendLoanFinanceApprovedEmail(reqId) {
 <p style="color:#6b7280;font-size:12px">Automated notification — Requisition Management System.</p>`
 
   try {
-    const { getEmailTransport, EMAIL_FROM } = await import('../../config/email.js')
+    const { getEmailTransport, EMAIL_FROM, PAYABLE_EMAIL, RECEIVABLE_EMAIL, HR_EMAIL } = await import('../../config/email.js')
     const trans = getEmailTransport()
     if (!trans) {
       console.warn('📧 [Loan Finance Approved] SMTP not configured; email skipped.')
       return
     }
-    const to = (process.env.PAYABLE_EMAIL || 'payable@itecknologi.com') + ', ' + (process.env.RECEIVABLE_EMAIL || 'receivable@itecknologi.com')
-    const cc = process.env.HR_EMAIL || 'hr@itecknologi.com'
+    const to = `${PAYABLE_EMAIL}, ${RECEIVABLE_EMAIL}`
+    const cc = HR_EMAIL
     console.log(`📧 [Loan Finance Approved] Sending: to=${to} | cc=${cc} | attachments=${attachments.length}`)
     const info = await trans.sendMail({
       from: EMAIL_FROM,
@@ -2520,80 +2597,6 @@ async function sendLoanFinanceApprovedEmail(reqId) {
   } catch (err) {
     console.error('📧 [Loan Finance Approved] send failed:', err.message)
   }
-}
-
-/** Manager of Finance: Start Progress. */
-export async function managerFinanceStartProgress(body) {
-  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
-  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
-  const eid = await resolveApproverEmployeeId({
-    approvedByEmployeeId: body?.employeeId,
-    approvedByEmployeeCode: body?.employeeCode
-  })
-  if (eid == null) return { error: 'Valid employeeId or employeeCode is required', status: 400 }
-  const ok = await reqRepo.isManagerFinance(eid)
-  if (!ok) return { error: 'Only Manager of Finance can start progress', status: 403 }
-  const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
-  if (!deptFin.length) return { error: 'Requisition not found', status: 404 }
-  await reqRepo.managerFinanceStartProgress(reqId, eid)
-  // Notify the chain that progress has started
-  await notifyBucketChanged(reqId, 'manager_finance')
-  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'manager_finance', deptFin[0]?.department_id))
-  return { message: 'Progress started', status: 'In Progress' }
-}
-
-/** Manager of Finance: Progress Completed. */
-export async function managerFinanceCompleteProgress(body) {
-  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
-  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
-  const eid = await resolveApproverEmployeeId({
-    approvedByEmployeeId: body?.employeeId,
-    approvedByEmployeeCode: body?.employeeCode
-  })
-  if (eid == null) return { error: 'Valid employeeId or employeeCode is required', status: 400 }
-  const ok = await reqRepo.isManagerFinance(eid)
-  if (!ok) return { error: 'Only Manager of Finance can mark progress completed', status: 403 }
-  await reqRepo.managerFinanceCompleteProgress(reqId)
-  return { message: 'Progress marked completed', status: 'Progress Completed' }
-}
-
-/** Manager of Finance: Hand Over to HR (moves stage to hr_check). */
-export async function managerFinanceHandover(body) {
-  const reqId = body?.requisitionId != null ? parseInt(body.requisitionId, 10) : null
-  if (reqId == null || Number.isNaN(reqId)) return { error: 'Valid requisitionId is required', status: 400 }
-  const eid = await resolveApproverEmployeeId({
-    approvedByEmployeeId: body?.employeeId,
-    approvedByEmployeeCode: body?.employeeCode
-  })
-  if (eid == null) return { error: 'Valid employeeId or employeeCode is required', status: 400 }
-  const ok = await reqRepo.isManagerFinance(eid)
-  if (!ok) return { error: 'Only Manager of Finance can hand over to HR', status: 403 }
-  const deptFin = await reqRepo.getRequisitionAndDepartment(reqId)
-  if (!deptFin.length) return { error: 'Requisition not found', status: 404 }
-  await reqRepo.managerFinanceHandover(reqId)
-  await setCurrentStage(reqId, 'hr_check')
-  await notifyBucketChanged(reqId, 'hr_check')
-  notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr_check', deptFin[0]?.department_id))
-  return { message: 'Handed over to HR for Check Receiving', status: 'Pending HR Check' }
-}
-
-export async function getPendingManagerFinance(employeeId) {
-  const eid = parseEmployeeId(employeeId)
-  if (eid == null) return []
-  const ok = await reqRepo.isManagerFinance(eid)
-  if (!ok) return []
-  const rows = await reqRepo.getPendingRequisitionsByCurrentStage('manager_finance')
-  const reqIds = rows.map(r => r.req_id)
-  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map(req => ({
-    ...req,
-    status: req.req_manager_finance_status === 'in_progress'
-      ? 'In Progress'
-      : req.req_manager_finance_status === 'completed'
-        ? 'Progress Completed'
-        : 'Pending Manager of Finance',
-    items: items.filter(i => i.req_id === req.req_id)
-  }))
 }
 
 function formatDatePKT(date) {
@@ -2843,7 +2846,8 @@ export async function forwardToPayable(body) {
 
   await reqRepo.markForwardedToPayable(reqId, eid)
 
-  const payableRecipient = process.env.PAYABLE_EMAIL || 'payable@itecknologi.com'
+  const { PAYABLE_EMAIL } = await import('../../config/email.js')
+  const payableRecipient = PAYABLE_EMAIL
   let emailWarning = null
   let emailInfo = null
   try {
@@ -3059,6 +3063,7 @@ export async function getById(reqId) {
       item_est_cost: i.item_est_cost,
       hod_item_est_cost: i.hod_item_est_cost ?? null,
       committee_approved_qty: i.committee_approved_qty ?? null,
+      item_tax_amount: i.item_tax_amount ?? null,
       item_remarks: i.item_remarks
     }))
   }

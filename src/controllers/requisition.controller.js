@@ -392,54 +392,6 @@ export async function approveHRCheck(req, res) {
   }
 }
 
-export async function getPendingManagerFinance(req, res) {
-  try {
-    const empCode = req.query.empCode || req.params.employeeCode
-    if (!empCode) return res.json([])
-    const employeeId = await getEmployeeIdByCode(String(empCode).trim())
-    if (!employeeId) return res.json([])
-    const result = await requisitionService.getPendingManagerFinance(employeeId)
-    if (result?.error) return res.status(result.status).json({ error: result.error })
-    res.json(result)
-  } catch (error) {
-    console.error('getPendingManagerFinance error:', error)
-    res.status(500).json({ error: 'Failed to fetch Manager of Finance pending list' })
-  }
-}
-
-export async function managerFinanceStartProgress(req, res) {
-  try {
-    const result = await requisitionService.managerFinanceStartProgress(req.body)
-    if (result.error) return res.status(result.status).json({ error: result.error })
-    res.json({ message: result.message, status: result.status })
-  } catch (error) {
-    console.error('managerFinanceStartProgress error:', error)
-    res.status(500).json({ error: 'Failed to start progress' })
-  }
-}
-
-export async function managerFinanceCompleteProgress(req, res) {
-  try {
-    const result = await requisitionService.managerFinanceCompleteProgress(req.body)
-    if (result.error) return res.status(result.status).json({ error: result.error })
-    res.json({ message: result.message, status: result.status })
-  } catch (error) {
-    console.error('managerFinanceCompleteProgress error:', error)
-    res.status(500).json({ error: 'Failed to mark progress completed' })
-  }
-}
-
-export async function managerFinanceHandover(req, res) {
-  try {
-    const result = await requisitionService.managerFinanceHandover(req.body)
-    if (result.error) return res.status(result.status).json({ error: result.error })
-    res.json({ message: result.message, status: result.status })
-  } catch (error) {
-    console.error('managerFinanceHandover error:', error)
-    res.status(500).json({ error: 'Failed to hand over to HR' })
-  }
-}
-
 export async function getPendingAdmin(req, res) {
   try {
     const employeeId = await getEmployeeIdByCode(req.params.employeeCode)
@@ -831,6 +783,31 @@ export async function getById(req, res) {
   } catch (error) {
     console.error('Get requisition error:', error)
     res.status(500).json({ error: 'Failed to fetch requisition' })
+  }
+}
+
+/** SuperAdmin: get current sales tax rate + history. */
+export async function getSalesTax(req, res) {
+  try {
+    const result = await requisitionService.getSalesTaxSettings(req.params.employeeCode)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Get sales tax error:', error)
+    res.status(500).json({ error: 'Failed to fetch sales tax settings' })
+  }
+}
+
+/** SuperAdmin: add a new sales tax rate entry. */
+export async function addSalesTax(req, res) {
+  try {
+    const { employeeCode, ratePercent } = req.body
+    const result = await requisitionService.addSalesTaxRateSetting(employeeCode, ratePercent)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Add sales tax error:', error)
+    res.status(500).json({ error: 'Failed to add sales tax rate' })
   }
 }
 
