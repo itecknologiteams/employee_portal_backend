@@ -964,9 +964,12 @@ export async function getPendingHrLeaves() {
   }
 }
 
-/** Total count of all leave requests (for HR list pagination). */
+/** Total count of all leave requests (for HR list pagination). Excludes 'Pending CEO' — those belong to the CEO queue, not HR. */
 export async function countAllLeavesForHr() {
-  const rows = await executeQuery('SELECT COUNT(*)::int AS total FROM leave_requests', [])
+  const rows = await executeQuery(
+    "SELECT COUNT(*)::int AS total FROM leave_requests WHERE status IS DISTINCT FROM 'Pending CEO'",
+    []
+  )
   return rows[0]?.total ?? 0
 }
 
@@ -982,6 +985,7 @@ export async function getAllLeavesForHr(limit, offset) {
        JOIN employees e ON lr.employee_id = e.employee_id
        LEFT JOIN departments d ON e.department_id = d.department_id
        LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+       WHERE lr.status IS DISTINCT FROM 'Pending CEO'
        ORDER BY lr.created_at DESC
        LIMIT $1 OFFSET $2`,
       [limit, offset]
@@ -997,6 +1001,7 @@ export async function getAllLeavesForHr(limit, offset) {
          JOIN employees e ON lr.employee_id = e.employee_id
          LEFT JOIN departments d ON e.department_id = d.department_id
          LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
+         WHERE lr.status IS DISTINCT FROM 'Pending CEO'
          ORDER BY lr.created_at DESC
          LIMIT $1 OFFSET $2`,
         [limit, offset]
@@ -1067,7 +1072,7 @@ export async function getPendingCeoLeaves() {
      JOIN employees e ON lr.employee_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN leave_types lt ON lr.leave_type_id = lt.leave_type_id
-     INNER JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND et.emp_type_name = 'HOD'
+     LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
      WHERE lr.status = 'Pending CEO'
         OR (lr.status = 'Pending'
             AND lr.leave_type_id NOT IN (1, 2)

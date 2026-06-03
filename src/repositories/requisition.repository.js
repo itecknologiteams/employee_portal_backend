@@ -2180,8 +2180,15 @@ export async function employeeHasPermission(employeeId, permission) {
 
 /** Check if an employee is SuperAdmin. */
 export async function isSuperAdmin(employeeId) {
+  // Primary signal in this deployment: users.user_type (matches the frontend + auth layer).
   try {
-    // Check from user_roles table
+    const u = await executeQuery('SELECT user_type FROM users WHERE emp_id = $1', [employeeId])
+    if (u && u[0] && String(u[0].user_type || '').trim().toLowerCase() === 'superadmin') return true
+  } catch (_) {
+    /* users table shape may differ in some envs — fall through */
+  }
+  // Legacy fallback: user_roles/roles tables when present.
+  try {
     const r = await executeQuery(
       `SELECT COUNT(*) AS cnt FROM user_roles
        JOIN roles ON user_roles.role_id = roles.role_id
@@ -2189,20 +2196,10 @@ export async function isSuperAdmin(employeeId) {
       [employeeId]
     )
     if (r && r[0] && parseInt(r[0].cnt, 10) > 0) return true
-
-    // Fallback: check if employee_type contains 'super' or isAdmin flag
-    const r2 = await executeQuery(
-      `SELECT employee_type FROM employees WHERE employee_id = $1`,
-      [employeeId]
-    )
-    if (r2 && r2[0]) {
-      const type = String(r2[0].employee_type || '').toLowerCase()
-      return type.includes('super') || type.includes('admin')
-    }
-    return false
   } catch (err) {
-    return false
+    if (err.code !== '42P01') throw err
   }
+  return false
 }
 
 /** ================= REVERT & REVIEW FEATURE ================= */

@@ -8,6 +8,46 @@ import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/e
 /** External ICS Attendance System API Base URL */
 const ICS_API_BASE_URL = process.env.ICS_API_BASE_URL || 'https://webtrack.itecknologi.com/InternalCommunicationSystem'
 
+/** Leave type ids that stay with HR even for an HOD applicant: Casual (1), Sick (2). */
+export const CASUAL_SICK_TYPE_IDS = new Set([1, 2])
+
+/**
+ * Pure routing decision for a newly created leave request.
+ * - Senior executives (CEO/COO/Director) → HR (checked first so a CEO never routes to themselves).
+ * - HOD applying for own leave → Casual/Sick stay with HR, everything else goes to CEO.
+ * - Everyone else → HOD approval (Pending).
+ * @param {{ isSenior: boolean, isHod: boolean, leaveTypeId: number|string }} facts
+ * @returns {'Pending' | 'Pending HR' | 'Pending CEO'}
+ */
+export function decideInitialLeaveStatus({ isSenior, isHod, leaveTypeId }) {
+  if (isSenior) return 'Pending HR'
+  if (isHod) {
+    return CASUAL_SICK_TYPE_IDS.has(Number(leaveTypeId)) ? 'Pending HR' : 'Pending CEO'
+  }
+  return 'Pending'
+}
+
+/**
+ * Resolve the initial status for a leave request by gathering the routing facts from the
+ * repositories, then applying the pure {@link decideInitialLeaveStatus} rule.
+ * @param {number|string} employeeId
+ * @param {number|string} leaveTypeId
+ * @returns {Promise<'Pending' | 'Pending HR' | 'Pending CEO'>}
+ */
+export async function resolveInitialLeaveStatus(employeeId, leaveTypeId) {
+  const eid = Number(employeeId)
+  const isSenior = await reqRepo.isSeniorExecutiveForLeave(eid)
+  let isHod = false
+  if (!isSenior) {
+    const emp = await reqRepo.getEmployeeDept(employeeId)
+    if (emp?.department_id != null) {
+      const hodId = await reqRepo.getHodByDepartment(emp.department_id)
+      isHod = hodId != null && Number(hodId) === eid
+    }
+  }
+  return decideInitialLeaveStatus({ isSenior, isHod, leaveTypeId })
+}
+
 /**
  * Call external ICS Attendance System API to sync leave status.
  * This is used when HOD approves/rejects a leave request.
@@ -1005,17 +1045,9 @@ export async function receiveIcsLeaveRequest(data) {
 
   const normalizedTypeName = leaveTypeDetails.leave_type_name
 
-  // --- Determine initial status (HOD skip logic same as portal) ---
-  let initialStatus = 'Pending' // will go to HOD
+  // --- Determine initial status: HOD's own Annual/long leaves → CEO, Casual/Sick → HR, others → HOD ---
   const emp = await reqRepo.getEmployeeDept(employeeId)
-  if (emp?.department_id != null) {
-    const hodId = await reqRepo.getHodByDepartment(emp.department_id)
-    if (hodId === employeeId) initialStatus = 'Pending HR' // applicant is HOD — skip to HR
-  }
-  if (initialStatus === 'Pending') {
-    const isSenior = await reqRepo.isSeniorExecutiveForLeave(employeeId)
-    if (isSenior) initialStatus = 'Pending HR'
-  }
+  const initialStatus = await resolveInitialLeaveStatus(employeeId, typeId)
 
   // --- Persist with source='ics' ---
   const result = await leaveRepo.createLeaveRequest(
@@ -1030,7 +1062,17 @@ export async function receiveIcsLeaveRequest(data) {
   // --- Notify approver ---
   try {
     const deptId = emp?.department_id
-    if (initialStatus === 'Pending HR') {
+    if (initialStatus === 'Pending CEO') {
+      const ceoIds = await notifRepo.getEmployeeIdsByRoleType('CEO')
+      notifSvc.notifySafe(notifSvc.notifyMany(ceoIds, {
+        type: 'leave_pending_ceo',
+        title: 'New ICS leave request',
+        body: `ICS ${normalizedTypeName} request #${leaveRequestId} from ${code} (HOD) is pending your (CEO) approval.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: leaveRequestId
+      }))
+    } else if (initialStatus === 'Pending HR') {
       const hrIds = await notifRepo.getHrEmployeeIds()
       notifSvc.notifySafe(notifSvc.notifyMany(hrIds, {
         type: 'leave_pending_hr',
@@ -1130,18 +1172,9 @@ export async function createLeaveRequest(data) {
     }
   }
 
-  let initialStatus = 'Pending'
-  if (eid != null) {
-    const emp = await reqRepo.getEmployeeDept(employeeId)
-    if (emp?.department_id != null) {
-      const hodId = await reqRepo.getHodByDepartment(emp.department_id)
-      if (hodId === eid) initialStatus = 'Pending HR'
-    }
-    if (initialStatus === 'Pending') {
-      const isSenior = await reqRepo.isSeniorExecutiveForLeave(eid)
-      if (isSenior) initialStatus = 'Pending HR'
-    }
-  }
+  const initialStatus = eid != null
+    ? await resolveInitialLeaveStatus(employeeId, finalLeaveTypeId)
+    : 'Pending'
   const result = await leaveRepo.createLeaveRequest(employeeId, finalLeaveTypeId, normalizedTypeName, startDate, endDate, reason, initialStatus)
   const leaveRequestId = result[0].leave_request_id
 
@@ -1178,7 +1211,17 @@ export async function createLeaveRequest(data) {
   try {
     const applicantDept = await reqRepo.getEmployeeDept(employeeId)
     const deptId = applicantDept?.department_id
-    if (initialStatus === 'Pending HR') {
+    if (initialStatus === 'Pending CEO') {
+      const ceoIds = await notifRepo.getEmployeeIdsByRoleType('CEO')
+      notifSvc.notifySafe(notifSvc.notifyMany(ceoIds, {
+        type: 'leave_pending_ceo',
+        title: 'New leave request',
+        body: `Leave request #${leaveRequestId} from HOD (employee ${employeeId}) is pending your (CEO) approval.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: leaveRequestId
+      }))
+    } else if (initialStatus === 'Pending HR') {
       const hrIds = await notifRepo.getHrEmployeeIds()
       notifSvc.notifySafe(notifSvc.notifyMany(hrIds, {
         type: 'leave_pending_hr',
@@ -1392,6 +1435,50 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         type: normalizedStatus === 'Approved' ? 'leave_approved' : 'leave_rejected',
         title: normalizedStatus === 'Approved' ? 'Leave approved' : 'Leave rejected',
         body: `Your leave request #${reqId} was ${normalizedStatus.toLowerCase()} by HR.`,
+        url: '/leave',
+        relatedEntityType: 'leave',
+        relatedEntityId: reqId
+      }))
+    }
+    return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
+  }
+
+  if (current === 'Pending CEO') {
+    if (normalizedStatus !== 'Approved' && normalizedStatus !== 'Rejected') {
+      return { error: 'CEO can set status to Approved or Rejected', status: 400 }
+    }
+    const isCeo = await reqRepo.isCeoMember(eid)
+    if (!isCeo) return { error: 'Only CEO can approve or reject at this stage', status: 403 }
+    if (normalizedStatus === 'Approved') {
+      const ar = await approveWithAnnualDeduction(leave, reqId, 'Pending CEO', 'Approved')
+      if (ar.error) return ar
+    } else {
+      const rej = await leaveRepo.updateLeaveRequestStatus(reqId, normalizedStatus, 'Pending CEO')
+      if (!rej || rej.length === 0) return { error: 'Could not update status', status: 400 }
+    }
+
+    // Sync leave status to external ICS Attendance System (CEO final approval - non-blocking)
+    const empDataCeo = await findEmployeeByEmployeeId(leave.employee_id)
+    const employeeCodeCeo = empDataCeo?.employee_code || empDataCeo?.code
+    if (employeeCodeCeo) {
+      syncLeaveStatusToICS({
+        employeeCode: employeeCodeCeo,
+        leaveId: reqId,
+        status: normalizedStatus,
+        leaveType: leave.leave_type || 'Annual',
+        startDate: leave.start_date,
+        endDate: leave.end_date
+      }).catch(err => console.error('ICS sync error (non-blocking):', err?.message))
+      syncStatusToCrm(leave.ics_leave_id, employeeCodeCeo, normalizedStatus)
+    }
+
+    const applicantIdCeo = parseInt(leave.employee_id, 10)
+    if (!Number.isNaN(applicantIdCeo)) {
+      notifSvc.notifySafe(notifSvc.notify({
+        recipientEmployeeId: applicantIdCeo,
+        type: normalizedStatus === 'Approved' ? 'leave_approved' : 'leave_rejected',
+        title: normalizedStatus === 'Approved' ? 'Leave approved' : 'Leave rejected',
+        body: `Your leave request #${reqId} was ${normalizedStatus.toLowerCase()} by CEO.`,
         url: '/leave',
         relatedEntityType: 'leave',
         relatedEntityId: reqId
@@ -1694,10 +1781,10 @@ export async function getPendingCeo(employeeCode) {
   if (!code) return { error: 'Employee code is required', status: 400 }
 
   // Check if requester is CEO
-  const emp = await findEmployeeByEmployeeCode(code)
-  if (!emp) return { error: 'Employee not found', status: 404 }
+  const employeeId = await getEmployeeIdByCode(code)
+  if (!employeeId) return { error: 'Employee not found', status: 404 }
 
-  const isCeo = await reqRepo.isCeoMember(emp.employee_id || emp.id)
+  const isCeo = await reqRepo.isCeoMember(employeeId)
   if (!isCeo) return { error: 'Only CEO can view this list', status: 403 }
 
   const rows = await leaveRepo.getPendingCeoLeaves()
@@ -1771,16 +1858,7 @@ export async function syncIcsLeaveToPortal(employeeCode, icsLeave) {
   const existing = await leaveRepo.findIcsLeaveInPortal(employeeId, typeId, startDate)
   if (existing) return existing
 
-  let initialStatus = 'Pending'
-  const emp = await reqRepo.getEmployeeDept(employeeId)
-  if (emp?.department_id != null) {
-    const hodId = await reqRepo.getHodByDepartment(emp.department_id)
-    if (hodId === employeeId) initialStatus = 'Pending HR'
-  }
-  if (initialStatus === 'Pending') {
-    const isSenior = await reqRepo.isSeniorExecutiveForLeave(employeeId)
-    if (isSenior) initialStatus = 'Pending HR'
-  }
+  const initialStatus = await resolveInitialLeaveStatus(employeeId, typeId)
 
   const typeName = String(icsLeave.leave_type_name || icsLeave.leave_type || 'Casual').trim()
   const icsLeaveId = icsLeave.leave_id ?? icsLeave.id ?? null

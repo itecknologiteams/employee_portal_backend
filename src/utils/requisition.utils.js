@@ -98,6 +98,10 @@ export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   }
   // Flow-driven stage: show current bucket so e.g. Devices/Accessories shows Finance/CEO, not Procurement
   if (row.req_current_stage_key === 'finance') return 'Pending Finance Approval'
+  // Committee stage: when a category skips HOD (e.g. General Procurements), the requisition
+  // is routed straight here with req_hod_approval = 0. Honor the explicit stage so the status
+  // reads 'Pending Committee' instead of falling through to the HOD-approval fallback below.
+  if (row.req_current_stage_key === 'committee') return 'Pending Committee'
   if (row.req_current_stage_key === 'ceo') return 'Pending CEO'
   if (row.req_current_stage_key === 'procurement') return 'Forwarded to Procurement'
   if (row.req_current_stage_key === 'it') return 'Pending IT'
