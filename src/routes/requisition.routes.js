@@ -47,6 +47,14 @@ router.post('/approve/ceo', requisitionController.approveCeo)
 router.get('/pending/procurement/:employeeCode', requisitionController.getPendingProcurement)
 router.post('/acknowledge/procurement', requisitionController.acknowledgeProcurement)
 router.post('/reject/procurement', requisitionController.rejectProcurement)
+
+// Procurement "item unavailable" + Committee review
+router.post('/item/:itemId/flag', requisitionController.flagItemUnavailable)
+router.post('/item/:itemId/restore', requisitionController.restoreFlaggedItem)
+router.get('/pending/item-review/:employeeCode', requisitionController.getItemReviewQueue)
+router.post('/item/:itemId/review', requisitionController.reviewFlaggedItem)
+router.get('/:reqId/item-events', requisitionController.getRequisitionItemEvents)
+router.post('/:reqId/revise', requisitionController.reviseRequisition)
 router.put('/quotations/:reqId', requisitionController.updateQuotations)
 router.post(
   '/quotations/:reqId/upload',

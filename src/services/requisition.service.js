@@ -16,7 +16,10 @@ import {
   computeCommitteeApprovedLineTotalPKR,
   REQUISITION_CEO_MIN_AMOUNT_PKR,
   isItEquipmentCategory,
-  computeItemTaxAmountPkr
+  computeItemTaxAmountPkr,
+  isItemExcluded,
+  buildRevisionReference,
+  canReviseRequisition
 } from '../utils/requisition.utils.js'
 import { parseNumericCostPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
 import * as notifRepo from '../repositories/notification.repository.js'
@@ -271,6 +274,8 @@ export async function getHistory(employeeId, query = {}) {
   const rows = await reqRepo.getTrackRecordsByEmployee(eid, limit, offset, search || undefined)
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getRequisitionItemsByReqIds(reqIds) : []
+  const procSet = await reqRepo.getProcurementInvolvedCategoryNames().catch(() => new Set())
+  const today = new Date().toISOString().slice(0, 10)
   const data = rows.map(req => ({
     id: req.req_id,
     referenceNo: req.req_reference_no,
@@ -283,6 +288,13 @@ export async function getHistory(employeeId, query = {}) {
     business: req.req_business,
     category: req.req_category || null,
     status: getRequisitionStatus(req),
+    canRevise: canReviseRequisition({
+      isRejected: req.req_is_rejected === 1,
+      isClosed: getRequisitionStatus(req) === 'Closed',
+      requiredByDate: toYmd(req.req_required_by_date),
+      procurementInvolved: procSet.has(String(req.req_category || '').trim().toLowerCase()),
+      today
+    }),
     hodApproval: req.req_hod_approval === 1,
     hodApprovalDate: req.req_hod_approval_date,
     committeeApproval: req.req_committee_approval === 1,
@@ -379,7 +391,8 @@ async function refreshRequisitionItemTaxes(reqId) {
     const ratePercent = rateRow ? Number(rateRow.rate_percent) : null
     const rate = ratePercent != null ? ratePercent / 100 : null
     for (const it of items) {
-      const tax = isIt ? computeItemTaxAmountPkr(it, rate) : null
+      // Excluded items (flagged unavailable / dropped) carry no tax — they are not purchased.
+      const tax = (isIt && !isItemExcluded(it)) ? computeItemTaxAmountPkr(it, rate) : null
       await reqRepo.updateItemTaxAmount(it.item_id, tax)
     }
     // Stamp which rate was applied (going-forward only); clear for non-IT.
@@ -3289,4 +3302,195 @@ export async function getMyRevertedRequisitions(employeeId) {
     status: 'Reverted to HOD for Correction',
     items: items.filter(i => i.req_id === req.req_id)
   }))
+}
+
+/** ============ Procurement "item unavailable" + Committee review ============ */
+
+/** Normalize a DB date/timestamp value to 'YYYY-MM-DD' (or null). */
+function toYmd(value) {
+  if (!value) return null
+  const d = new Date(value)
+  if (Number.isNaN(d.getTime())) return String(value).slice(0, 10)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Revise a requisition: create a fresh copy (creator-edited items) with a revised reference,
+ * routed through the full normal flow from HOD. The original is left unchanged.
+ * Allowed only for the creator, on a procurement-involved requisition whose required-by date
+ * has passed and which is neither closed nor rejected.
+ */
+export async function reviseRequisition(body) {
+  const reqId = parseInt(body?.reqId, 10)
+  const eid = await resolveApproverEmployeeId(body)
+  if (Number.isNaN(reqId)) return { error: 'Valid reqId is required', status: 400 }
+  if (eid == null) return { error: 'Valid creator (approvedByEmployeeId/Code) is required', status: 400 }
+
+  const orig = await reqRepo.getRequisitionForReviseById(reqId)
+  if (!orig) return { error: 'Requisition not found', status: 404 }
+  if (parseInt(orig.req_emp_id, 10) !== eid) return { error: 'Only the creator can revise this requisition', status: 403 }
+
+  // Revise is available on any requisition the creator owns.
+  const today = new Date().toISOString().slice(0, 10)
+
+  // Reuse the standard creation flow so the revision behaves exactly like a normal requisition.
+  const created = await createRequisition({
+    employeeId: eid,
+    location: orig.req_location,
+    material: orig.req_material,
+    requiredByDate: body.requiredByDate || null,
+    business: orig.req_business,
+    items: Array.isArray(body.items) ? body.items : [],
+    category: orig.req_category,
+    isUrgent: false
+  })
+  if (created.error) return created
+
+  // Stamp the revised reference (based on the ORIGINAL reference) and link back.
+  const revNum = (await reqRepo.countRevisionsOf(reqId)) + 1
+  const ref = buildRevisionReference(orig.req_reference_no, today.replace(/-/g, ''), revNum)
+  await reqRepo.setRevisionReferenceAndLink(created.requisitionId, ref, reqId)
+
+  return { message: 'Requisition revised successfully', requisitionId: created.requisitionId, referenceNo: ref, revisedFrom: reqId }
+}
+
+/** Audit trail of item-review actions for a requisition (newest first). */
+export async function getRequisitionItemEvents(reqId) {
+  const id = parseInt(reqId, 10)
+  if (Number.isNaN(id)) return []
+  const map = await reqRepo.getItemEventsByReqIds([id])
+  return map.get(id) || []
+}
+
+/** Committee-approved line total for a requisition over its CURRENT (non-excluded) items. */
+async function approvedTotalForReq(reqId) {
+  const items = await reqRepo.getItemsByReqIds([reqId])
+  return computeCommitteeApprovedLineTotalPKR(items)
+}
+
+/**
+ * Procurement flags a requisition item as unavailable at the vendor (mandatory reason).
+ * The item is set aside (pending_review), excluded from totals, and sent to the Committee.
+ */
+export async function flagItemUnavailable(body) {
+  const itemId = parseInt(body?.itemId, 10)
+  const reason = body?.reason != null ? String(body.reason).trim() : ''
+  const eid = await resolveApproverEmployeeId(body)
+  if (Number.isNaN(itemId) || eid == null) return { error: 'Valid itemId and approver are required', status: 400 }
+  if (!reason) return { error: 'A reason is required to mark an item unavailable.', status: 400 }
+  if (!(await reqRepo.isProcurementMember(eid))) return { error: 'Only Procurement can mark items unavailable.', status: 403 }
+
+  const item = await reqRepo.getRequisitionItemWithReq(itemId)
+  if (!item) return { error: 'Item not found', status: 404 }
+  if (Number(item.req_is_rejected) === 1) return { error: 'Requisition is rejected', status: 400 }
+  if (Number(item.req_purchase_completed) === 1) return { error: 'Requisition purchase already completed', status: 400 }
+  if (item.req_current_stage_key !== 'procurement') return { error: 'Items can only be set aside while the requisition is at the Procurement stage', status: 400 }
+  if (item.item_review_status !== 'active') return { error: 'Item is not in an active state', status: 400 }
+
+  const before = await approvedTotalForReq(item.req_id)
+  const res = await reqRepo.flagItemUnavailable(itemId, item.req_id, reason, eid)
+  if (!res || res.length === 0) return { error: 'Could not flag item', status: 400 }
+  await refreshRequisitionItemTaxes(item.req_id)
+  const after = await approvedTotalForReq(item.req_id)
+  await reqRepo.insertRequisitionItemEvent({ reqId: item.req_id, itemId, eventType: 'flagged_unavailable', reason, amountBefore: before, amountAfter: after, ceoRequired: false, actorEmployeeId: eid })
+
+  try {
+    const committeeIds = await notifRepo.getEmployeeIdsByRoleType('Committee')
+    notifSvc.notifySafe(notifSvc.notifyMany(committeeIds, {
+      type: 'requisition_item_review',
+      title: 'Item flagged unavailable — review needed',
+      body: `Procurement marked an item on ${item.req_reference_no} as unavailable: "${reason}". Please review if it is required.`,
+      url: '/requisition', relatedEntityType: 'requisition', relatedEntityId: item.req_id
+    }))
+  } catch (_) {}
+
+  return { message: 'Item marked unavailable and sent to Committee for review', itemId, status: 'pending_review' }
+}
+
+/** Procurement restores a flagged item back to active (undo). */
+export async function restoreFlaggedItem(body) {
+  const itemId = parseInt(body?.itemId, 10)
+  const eid = await resolveApproverEmployeeId(body)
+  if (Number.isNaN(itemId) || eid == null) return { error: 'Valid itemId and approver are required', status: 400 }
+  if (!(await reqRepo.isProcurementMember(eid))) return { error: 'Only Procurement can restore items.', status: 403 }
+
+  const item = await reqRepo.getRequisitionItemWithReq(itemId)
+  if (!item) return { error: 'Item not found', status: 404 }
+  if (item.item_review_status !== 'pending_review') return { error: 'Only a pending item can be restored', status: 400 }
+
+  const before = await approvedTotalForReq(item.req_id)
+  const res = await reqRepo.restoreFlaggedItem(itemId, item.req_id)
+  if (!res || res.length === 0) return { error: 'Could not restore item', status: 400 }
+  await refreshRequisitionItemTaxes(item.req_id)
+  const after = await approvedTotalForReq(item.req_id)
+  await reqRepo.insertRequisitionItemEvent({ reqId: item.req_id, itemId, eventType: 'restored', reason: null, amountBefore: before, amountAfter: after, ceoRequired: false, actorEmployeeId: eid })
+  return { message: 'Item restored', itemId, status: 'active' }
+}
+
+/** Committee queue: items flagged by Procurement awaiting a required/not-required decision. */
+export async function getItemReviewQueue(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  if (!(await reqRepo.isCommitteeMember(eid))) return { error: 'Only Committee can view this list', status: 403 }
+  return reqRepo.getItemsPendingReview()
+}
+
+/**
+ * Committee decision on a flagged item.
+ *  - required     → item re-included (active). If the approved total rises, the requisition is
+ *                   re-routed to the CEO for re-approval; otherwise it continues at Procurement.
+ *  - not_required → item dropped (excluded permanently).
+ */
+export async function reviewFlaggedItem(body) {
+  const itemId = parseInt(body?.itemId, 10)
+  const decision = String(body?.decision || '').trim().toLowerCase()
+  const eid = await resolveApproverEmployeeId(body)
+  if (Number.isNaN(itemId) || eid == null) return { error: 'Valid itemId and approver are required', status: 400 }
+  if (!['required', 'not_required'].includes(decision)) return { error: "decision must be 'required' or 'not_required'", status: 400 }
+  if (!(await reqRepo.isCommitteeMember(eid))) return { error: 'Only Committee can review flagged items.', status: 403 }
+
+  const item = await reqRepo.getRequisitionItemWithReq(itemId)
+  if (!item) return { error: 'Item not found', status: 404 }
+  if (item.item_review_status !== 'pending_review') return { error: 'Item is not awaiting review', status: 400 }
+
+  const before = await approvedTotalForReq(item.req_id)
+  const res = await reqRepo.reviewFlaggedItem(itemId, item.req_id, decision, eid)
+  if (!res || res.length === 0) return { error: 'Could not record decision', status: 400 }
+  await refreshRequisitionItemTaxes(item.req_id)
+  const after = await approvedTotalForReq(item.req_id)
+
+  // CEO re-check: re-including an item raises the total → require CEO again.
+  let ceoRequired = false
+  if (decision === 'required' && after > before) {
+    ceoRequired = true
+    await reqRepo.setRequisitionCurrentStage(item.req_id, 'ceo')
+    await executeQuery('UPDATE requisition SET req_ceo_approval = 0 WHERE req_id = $1', [item.req_id]).catch(() => {})
+    try { notifSvc.notifySafe(inAppNotifyRequisitionBucket(item.req_id, 'ceo', null)) } catch (_) {}
+  }
+
+  await reqRepo.insertRequisitionItemEvent({
+    reqId: item.req_id, itemId,
+    eventType: decision === 'required' ? 'committee_required' : 'committee_not_required',
+    reason: null, amountBefore: before, amountAfter: after, ceoRequired, actorEmployeeId: eid
+  })
+
+  try {
+    const procIds = await notifRepo.getEmployeeIdsByRoleType('Procurement')
+    const decisionLabel = decision === 'required' ? 'required (kept in the order)' : 'not required (removed)'
+    notifSvc.notifySafe(notifSvc.notifyMany(procIds, {
+      type: 'requisition_item_reviewed',
+      title: 'Committee reviewed a flagged item',
+      body: `Committee marked an item on ${item.req_reference_no} as ${decisionLabel}.${ceoRequired ? ' Requisition sent to CEO for re-approval.' : ''}`,
+      url: '/requisition', relatedEntityType: 'requisition', relatedEntityId: item.req_id
+    }))
+    const creatorId = await notifRepo.getRequisitionCreatorId(item.req_id)
+    if (creatorId) notifSvc.notifySafe(notifSvc.notify({
+      recipientEmployeeId: creatorId, type: 'requisition_item_reviewed',
+      title: 'An item on your requisition was reviewed',
+      body: `Committee marked an item on ${item.req_reference_no} as ${decisionLabel}.`,
+      url: '/requisition', relatedEntityType: 'requisition', relatedEntityId: item.req_id
+    }))
+  } catch (_) {}
+
+  return { message: `Item marked ${decision === 'required' ? 'required' : 'not required'}`, itemId, status: decision === 'required' ? 'active' : 'dropped', ceoRequired }
 }

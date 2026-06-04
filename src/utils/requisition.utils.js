@@ -15,6 +15,17 @@ export function isItEquipmentCategory(category) {
   return String(category).trim().toLowerCase() === 'it equipments'
 }
 
+/**
+ * True if an item has been set aside (flagged unavailable by Procurement and awaiting
+ * Committee review, or dropped after review). Excluded items are removed from all totals
+ * and shown in red wherever requisition details appear.
+ */
+export function isItemExcluded(it) {
+  if (!it) return false
+  const s = String(it.item_review_status ?? it.itemReviewStatus ?? 'active').toLowerCase()
+  return s === 'pending_review' || s === 'dropped'
+}
+
 /** Effective quantity for an item: committee-approved qty when present, else item qty. */
 function effectiveQtyForItem(it) {
   const c = it.committee_approved_qty ?? it.committeeApprovedQty
@@ -39,6 +50,7 @@ export function computeItGrandTotalWithTaxPkr(items, rate = REQUISITION_SALES_TA
   if (!items || !items.length) return 0
   let total = 0
   for (const it of items) {
+    if (isItemExcluded(it)) continue
     const unit = getEffectiveUnitPricePkrFromItem(it)
     if (unit == null || Number.isNaN(unit) || unit < 0) continue
     const qty = effectiveQtyForItem(it)
@@ -56,6 +68,7 @@ export function computeCommitteeApprovedLineTotalPKR(items) {
   if (!items || !items.length) return 0
   let total = 0
   for (const it of items) {
+    if (isItemExcluded(it)) continue
     const qtyRaw = it.committee_approved_qty ?? it.committeeApprovedQty
     const qty = (qtyRaw != null && !Number.isNaN(Number(qtyRaw))) ? Number(qtyRaw) : 0
     const pricePerPiece = getEffectiveUnitPricePkrFromItem(it)
@@ -136,6 +149,26 @@ export function getPendingAt(status) {
   if (status === 'Pending your acknowledgment') return 'Creator'
   if (status === 'Closed') return 'Closed'
   return null
+}
+
+/** Build a revised requisition reference: `${originalRef}-REV-${ymd}-${NNN}` (NNN zero-padded to 3). */
+export function buildRevisionReference(originalRef, ymd, revNum) {
+  return `${originalRef}-REV-${ymd}-${String(revNum).padStart(3, '0')}`
+}
+
+/**
+ * Whether a requisition may be revised by its creator.
+ * True when procurement is involved, the required-by date has passed, and it is not closed.
+ * Rejected requisitions ARE revisable (creator can re-submit a revised version).
+ * @param {{isClosed:boolean, requiredByDate:?string, procurementInvolved:boolean, today:string}} o
+ */
+export function canReviseRequisition({ isClosed, requiredByDate, procurementInvolved, today }) {
+  if (isClosed) return false
+  if (!procurementInvolved) return false
+  if (!requiredByDate) return false
+  const due = String(requiredByDate).slice(0, 10)
+  const now = String(today).slice(0, 10)
+  return due < now // strictly past due
 }
 
 export function parseEmployeeId(employeeId) {

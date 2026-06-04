@@ -3,7 +3,8 @@ import * as reqRepo from '../repositories/requisition.repository.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 import { getEmployeeIdByCode, findEmployeeByEmployeeId } from '../repositories/auth.repository.js'
-import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
+import { EMAIL_FROM, HR_EMAIL, getEmailTransport, isEmailConfigured } from '../../config/email.js'
+import { renderLeaveEmail } from '../utils/leaveEmailTemplate.js'
 
 /** External ICS Attendance System API Base URL */
 const ICS_API_BASE_URL = process.env.ICS_API_BASE_URL || 'https://webtrack.itecknologi.com/InternalCommunicationSystem'
@@ -46,6 +47,75 @@ export async function resolveInitialLeaveStatus(employeeId, leaveTypeId) {
     }
   }
   return decideInitialLeaveStatus({ isSenior, isHod, leaveTypeId })
+}
+
+/** findEmployeeByEmployeeId returns an array of rows; this returns the single row (or null). */
+async function getEmployeeRow(employeeId) {
+  const rows = await findEmployeeByEmployeeId(employeeId)
+  return Array.isArray(rows) ? (rows[0] || null) : (rows || null)
+}
+
+/** Format a date for leave emails (e.g. "3 Jun 2026"); null/invalid → null. */
+function fmtLeaveDate(d) {
+  if (!d) return null
+  const dt = new Date(d)
+  if (Number.isNaN(dt.getTime())) return null
+  return dt.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+/** Send a templated leave email. Never throws (logs and swallows). No-op if SMTP unconfigured or no recipient. */
+async function sendLeaveEmailSafe(to, subject, templateOpts) {
+  if (!to || !isEmailConfigured()) return
+  const transport = getEmailTransport()
+  if (!transport) return
+  const { html, text } = renderLeaveEmail(templateOpts)
+  try {
+    await transport.sendMail({ from: EMAIL_FROM, to, subject, html, text })
+  } catch (err) {
+    console.error('[Leave] email FAILED:', err.message)
+  }
+}
+
+/** Human "N days" label, or null. */
+function daysLabel(days) {
+  if (days == null) return null
+  return `${days} ${Number(days) === 1 ? 'day' : 'days'}`
+}
+
+/**
+ * Email the applicant that their leave was approved/rejected.
+ * @param {object} leave  Row from getLeaveRequestById (has leave_type, start/end_date, days, reason, created_at).
+ * @param {number} reqId
+ * @param {'Approved'|'Rejected'} decision
+ * @param {string} byRole e.g. 'CEO', 'HR', 'HOD' — who took the action.
+ */
+async function emailApplicantLeaveDecision(leave, reqId, decision, byRole) {
+  const emp = await getEmployeeRow(leave.employee_id)
+  const to = emp?.email
+  if (!to) return
+  const approved = decision === 'Approved'
+  const name = emp ? `${emp.first_name || ''} ${emp.last_name || ''}`.trim() : ''
+  const reference = formatLeaveReference(reqId, leave.created_at)
+  await sendLeaveEmailSafe(
+    to,
+    `Leave Request ${approved ? 'Approved' : 'Rejected'} — ${reference}`,
+    {
+      title: `Leave Request ${approved ? 'Approved' : 'Rejected'}`,
+      accent: approved ? 'green' : 'red',
+      greeting: name ? `Dear ${name},` : 'Dear Applicant,',
+      introLines: [`Your leave request has been ${approved ? 'approved' : 'rejected'} by the ${byRole}.`],
+      details: [
+        { label: 'Reference', value: reference },
+        { label: 'Employee Code', value: emp?.employee_code || null },
+        { label: 'Type', value: leave.leave_type },
+        { label: 'Start Date', value: fmtLeaveDate(leave.start_date) },
+        { label: 'End Date', value: fmtLeaveDate(leave.end_date) },
+        { label: 'Days', value: daysLabel(leave.days) },
+        { label: 'Status', value: decision }
+      ],
+      reason: leave.reason || null
+    }
+  )
 }
 
 /**
@@ -1178,34 +1248,39 @@ export async function createLeaveRequest(data) {
   const result = await leaveRepo.createLeaveRequest(employeeId, finalLeaveTypeId, normalizedTypeName, startDate, endDate, reason, initialStatus)
   const leaveRequestId = result[0].leave_request_id
 
-  if (isEmailConfigured()) {
-    const transport = getEmailTransport()
-    if (transport) {
-      try {
-        const to = getLeaveNotificationEmail()
-        const subject = `New Leave Request - ${normalizedTypeName}`
-        const body = [
-          `Leave Request ID: ${leaveRequestId}`,
-          `Employee ID: ${employeeId}`,
-          `Leave Type: ${normalizedTypeName || '???'}`,
-          `Start Date: ${startDate || '???'}`,
-          `End Date: ${endDate || '???'}`,
-          '',
-          'Reason:',
-          reason ? String(reason).trim() : '???'
-        ].join('\n')
-        console.log('📧 [Leave] Sending to:', to, '| Subject:', subject)
-        await transport.sendMail({
-          from: EMAIL_FROM,
-          to,
-          subject,
-          text: body
-        })
-        console.log('📧 [Leave] SENT OK ✅', to)
-      } catch (err) {
-        console.error('📧 [Leave] FAILED ❌', to, '| Error:', err.message)
-      }
+  // Notify the leave-approval mailbox of the new request (branded HTML).
+  {
+    const applicant = await getEmployeeRow(employeeId)
+    const applicantName = applicant ? `${applicant.first_name || ''} ${applicant.last_name || ''}`.trim() : ''
+    const applicantCode = applicant?.employee_code || null
+    const pendingWhom = initialStatus === 'Pending CEO' ? 'CEO approval'
+      : initialStatus === 'Pending HR' ? 'HR approval' : 'HOD approval'
+    // Recipients: the leave mailbox always; for an HOD's own leave (routed to CEO) the CEO(s) too.
+    const recipients = [getLeaveNotificationEmail()]
+    if (initialStatus === 'Pending CEO') {
+      const ceoEmails = await notifRepo.getEmployeeEmailsByRoleType('CEO').catch(() => [])
+      recipients.push(...ceoEmails)
     }
+    const toList = [...new Set(recipients.filter(Boolean))].join(', ')
+    await sendLeaveEmailSafe(
+      toList,
+      `New Leave Request — ${normalizedTypeName}`,
+      {
+        title: 'New Leave Request',
+        accent: 'blue',
+        introLines: [`A new ${normalizedTypeName} request has been submitted${applicantName ? ` by ${applicantName}` : ''} and is now pending ${pendingWhom}.`],
+        details: [
+          { label: 'Reference', value: formatLeaveReference(leaveRequestId) },
+          { label: 'Employee', value: applicantName || `#${employeeId}` },
+          { label: 'Employee Code', value: applicantCode },
+          { label: 'Type', value: normalizedTypeName },
+          { label: 'Start Date', value: fmtLeaveDate(startDate) },
+          { label: 'End Date', value: fmtLeaveDate(endDate) },
+          { label: 'Status', value: initialStatus }
+        ],
+        reason: reason ? String(reason).trim() : null
+      }
+    )
   }
 
   try {
@@ -1287,7 +1362,7 @@ export async function updateLeaveStatus(leaveRequestId, body) {
       }
 
       // Sync leave status to external ICS Attendance System (HR approval - non-blocking)
-      const empData = await findEmployeeByEmployeeId(leave.employee_id)
+      const empData = await getEmployeeRow(leave.employee_id)
       const employeeCode = empData?.employee_code || empData?.code
       if (employeeCode) {
         syncLeaveStatusToICS({
@@ -1337,7 +1412,7 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     }
 
     // Sync status to ICS and CRM
-    const empData = await findEmployeeByEmployeeId(leave.employee_id)
+    const empData = await getEmployeeRow(leave.employee_id)
     const employeeCode = empData?.employee_code || empData?.code
     if (employeeCode) {
       syncLeaveStatusToICS({
@@ -1354,29 +1429,27 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     }
 
     // Notify HR by email when HOD approves so they are aware the employee will be on leave
-    if (normalizedStatus === 'Approved' && isEmailConfigured()) {
-      const transport = getEmailTransport()
-      if (transport) {
-        try {
-          const empName = empData ? `${empData.first_name || ''} ${empData.last_name || ''}`.trim() : `Employee #${leave.employee_id}`
-          const subject = `Leave Approved — ${empName} on leave (ID: ${reqId})`
-          const body = [
-            'This is an informational notification. No action is required from HR.',
-            '',
-            `Leave Request ID : ${reqId}`,
-            `Employee        : ${empName}`,
-            `Leave Type      : ${leave.leave_type || '???'}`,
-            `Start Date      : ${leave.start_date || '???'}`,
-            `End Date        : ${leave.end_date || '???'}`,
-            '',
-            'Reason:',
-            (leave.reason && String(leave.reason).trim()) || '—'
-          ].join('\n')
-          await transport.sendMail({ from: EMAIL_FROM, to: 'hr@itecknologi.com', subject, text: body })
-        } catch (err) {
-          console.error('[Leave] HR notify email FAILED:', err.message)
+    if (normalizedStatus === 'Approved') {
+      const empName = empData ? `${empData.first_name || ''} ${empData.last_name || ''}`.trim() : `Employee #${leave.employee_id}`
+      await sendLeaveEmailSafe(
+        HR_EMAIL,
+        `Leave Approved — ${empName} on leave (${formatLeaveReference(reqId, leave.created_at)})`,
+        {
+          title: 'Leave Approved (HOD)',
+          accent: 'green',
+          introLines: [`${empName}'s leave has been approved by their HOD. This is an informational notice — no action is required from HR.`],
+          details: [
+            { label: 'Reference', value: formatLeaveReference(reqId, leave.created_at) },
+            { label: 'Employee', value: empName },
+            { label: 'Employee Code', value: empData?.employee_code || null },
+            { label: 'Type', value: leave.leave_type },
+            { label: 'Start Date', value: fmtLeaveDate(leave.start_date) },
+            { label: 'End Date', value: fmtLeaveDate(leave.end_date) },
+            { label: 'Days', value: daysLabel(leave.days) }
+          ],
+          reason: (leave.reason && String(leave.reason).trim()) || null
         }
-      }
+      )
     }
 
     // In-app notification to the employee
@@ -1414,7 +1487,7 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     }
 
     // Sync leave status to external ICS Attendance System (HR final approval - non-blocking)
-    const empDataHr = await findEmployeeByEmployeeId(leave.employee_id)
+    const empDataHr = await getEmployeeRow(leave.employee_id)
     const employeeCodeHr = empDataHr?.employee_code || empDataHr?.code
     if (employeeCodeHr) {
       syncLeaveStatusToICS({
@@ -1458,7 +1531,7 @@ export async function updateLeaveStatus(leaveRequestId, body) {
     }
 
     // Sync leave status to external ICS Attendance System (CEO final approval - non-blocking)
-    const empDataCeo = await findEmployeeByEmployeeId(leave.employee_id)
+    const empDataCeo = await getEmployeeRow(leave.employee_id)
     const employeeCodeCeo = empDataCeo?.employee_code || empDataCeo?.code
     if (employeeCodeCeo) {
       syncLeaveStatusToICS({
@@ -1484,6 +1557,10 @@ export async function updateLeaveStatus(leaveRequestId, body) {
         relatedEntityId: reqId
       }))
     }
+
+    // Email the applicant the CEO's decision
+    await emailApplicantLeaveDecision(leave, reqId, normalizedStatus, 'CEO')
+
     return { message: `Leave request ${normalizedStatus.toLowerCase()}`, status: normalizedStatus }
   }
 
@@ -1743,32 +1820,24 @@ export async function hodActOnIcsLeave(body) {
   }
 
   // HOD approved — notify HR by email (informational only, no action required)
-  if (isEmailConfigured()) {
-    const transport = getEmailTransport()
-    if (transport) {
-      try {
-        await transport.sendMail({
-          from: EMAIL_FROM,
-          to: 'hr@itecknologi.com',
-          subject: `Leave Approved — Employee on leave (ICS ID: ${icsLeaveId})`,
-          text: [
-            'This is an informational notification. No action is required from HR.',
-            '',
-            `ICS Leave ID   : ${icsLeaveId}`,
-            `Portal Leave ID: ${portalLeaveId || '—'}`,
-            `Employee Code  : ${empCode}`,
-            `Leave Type     : ${typeName}`,
-            `Start Date     : ${startDate}`,
-            `End Date       : ${endDate || startDate}`,
-            '',
-            `Reason: ${reason || '—'}`
-          ].join('\n')
-        })
-      } catch (err) {
-        console.error('[Leave] HR notify email FAILED:', err.message)
-      }
+  await sendLeaveEmailSafe(
+    HR_EMAIL,
+    `Leave Approved — Employee on leave (${portalLeaveId ? formatLeaveReference(portalLeaveId) : `ICS ${icsLeaveId}`})`,
+    {
+      title: 'Leave Approved (HOD)',
+      accent: 'green',
+      introLines: ['An employee\'s leave has been approved by their HOD. This is an informational notice — no action is required from HR.'],
+      details: [
+        { label: 'Reference', value: portalLeaveId ? formatLeaveReference(portalLeaveId) : null },
+        { label: 'ICS Leave ID', value: icsLeaveId },
+        { label: 'Employee Code', value: empCode },
+        { label: 'Type', value: typeName },
+        { label: 'Start Date', value: fmtLeaveDate(startDate) },
+        { label: 'End Date', value: fmtLeaveDate(endDate || startDate) }
+      ],
+      reason: reason || null
     }
-  }
+  )
 
   return { message: 'Leave request approved', status: 'Approved', portalLeaveId }
 }

@@ -2067,6 +2067,170 @@ export async function getItemsByReqIds(reqIds) {
   return executeQuery('SELECT * FROM requisition_items WHERE req_id = ANY($1)', [reqIds])
 }
 
+/** ===== Procurement "item unavailable" + Committee review ===== */
+
+/** Single item with its requisition's stage/status, for guards. */
+export async function getRequisitionItemWithReq(itemId) {
+  const rows = await executeQuery(
+    `SELECT i.*, r.req_current_stage_key, r.req_emp_id, r.req_reference_no,
+            COALESCE(r.req_purchase_completed, 0) AS req_purchase_completed,
+            COALESCE(r.req_is_rejected, 0) AS req_is_rejected
+     FROM requisition_items i JOIN requisition r ON r.req_id = i.req_id
+     WHERE i.item_id = $1`,
+    [itemId]
+  )
+  return rows[0] || null
+}
+
+/** Procurement flags an item unavailable (active → pending_review). Returns affected rows. */
+export async function flagItemUnavailable(itemId, reqId, reason, employeeId) {
+  return executeQuery(
+    `UPDATE requisition_items
+     SET item_review_status = 'pending_review', item_unavailable_reason = $3,
+         item_flagged_by = $4, item_flagged_at = CURRENT_TIMESTAMP,
+         item_reviewed_by = NULL, item_reviewed_at = NULL
+     WHERE item_id = $1 AND req_id = $2 AND item_review_status = 'active'
+     RETURNING item_id`,
+    [itemId, reqId, String(reason).slice(0, 255), employeeId ?? null]
+  )
+}
+
+/** Procurement restores a flagged item (pending_review → active). */
+export async function restoreFlaggedItem(itemId, reqId) {
+  return executeQuery(
+    `UPDATE requisition_items
+     SET item_review_status = 'active', item_unavailable_reason = NULL,
+         item_flagged_by = NULL, item_flagged_at = NULL,
+         item_reviewed_by = NULL, item_reviewed_at = NULL
+     WHERE item_id = $1 AND req_id = $2 AND item_review_status = 'pending_review'
+     RETURNING item_id`,
+    [itemId, reqId]
+  )
+}
+
+/** Committee decision on a flagged item: required → active, not_required → dropped. */
+export async function reviewFlaggedItem(itemId, reqId, decision, employeeId) {
+  const nextStatus = decision === 'required' ? 'active' : 'dropped'
+  return executeQuery(
+    `UPDATE requisition_items
+     SET item_review_status = $3, item_reviewed_by = $4, item_reviewed_at = CURRENT_TIMESTAMP
+     WHERE item_id = $1 AND req_id = $2 AND item_review_status = 'pending_review'
+     RETURNING item_id`,
+    [itemId, reqId, nextStatus, employeeId ?? null]
+  )
+}
+
+/** All items currently awaiting committee review, with requisition + requester context. */
+export async function getItemsPendingReview() {
+  return executeQuery(
+    `SELECT i.*, r.req_reference_no, r.req_category, r.req_id,
+            e.first_name, e.last_name, e.employee_code, d.department_name,
+            flagger.first_name AS flagged_by_first_name, flagger.last_name AS flagged_by_last_name
+     FROM requisition_items i
+     JOIN requisition r ON r.req_id = i.req_id
+     JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN employees flagger ON i.item_flagged_by = flagger.employee_id
+     WHERE i.item_review_status = 'pending_review'
+       AND COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
+     ORDER BY i.item_flagged_at ASC NULLS LAST`
+  )
+}
+
+/** Append an audit row for an item-review action. Defensive if the table is absent. */
+export async function insertRequisitionItemEvent(ev) {
+  try {
+    await executeQuery(
+      `INSERT INTO requisition_item_events
+         (req_id, item_id, event_type, reason, amount_before, amount_after, ceo_required, actor_employee_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+      [ev.reqId, ev.itemId, ev.eventType, ev.reason ?? null,
+        ev.amountBefore ?? null, ev.amountAfter ?? null, !!ev.ceoRequired, ev.actorEmployeeId ?? null]
+    )
+    return true
+  } catch (err) {
+    if (err.code === '42P01') return null
+    throw err
+  }
+}
+
+/** Audit events for requisitions, newest first. Returns Map<reqId, events[]>. */
+export async function getItemEventsByReqIds(reqIds) {
+  if (!Array.isArray(reqIds) || reqIds.length === 0) return new Map()
+  try {
+    const rows = await executeQuery(
+      `SELECT ev.*, i.item_desc,
+              a.first_name AS actor_first_name, a.last_name AS actor_last_name
+       FROM requisition_item_events ev
+       LEFT JOIN requisition_items i ON i.item_id = ev.item_id
+       LEFT JOIN employees a ON ev.actor_employee_id = a.employee_id
+       WHERE ev.req_id = ANY($1)
+       ORDER BY ev.created_at DESC`,
+      [reqIds]
+    )
+    const map = new Map()
+    for (const r of rows || []) {
+      if (!map.has(r.req_id)) map.set(r.req_id, [])
+      map.get(r.req_id).push(r)
+    }
+    return map
+  } catch (err) {
+    if (err.code === '42P01') return new Map()
+    throw err
+  }
+}
+
+/** ===== Revise Requisition ===== */
+
+/** Original requisition fields needed to validate + seed a revision. */
+export async function getRequisitionForReviseById(reqId) {
+  const rows = await executeQuery(
+    `SELECT req_id, req_reference_no, req_emp_id, req_location, req_material, req_business,
+            req_category, req_required_by_date, req_is_urgent,
+            COALESCE(req_is_rejected, 0) AS req_is_rejected,
+            COALESCE(req_creator_acknowledged, 0) AS req_creator_acknowledged
+     FROM requisition WHERE req_id = $1`,
+    [reqId]
+  )
+  return rows[0] || null
+}
+
+/** Number of existing revisions of an original requisition. */
+export async function countRevisionsOf(originalReqId) {
+  try {
+    const r = await executeQuery('SELECT COUNT(*)::int AS c FROM requisition WHERE req_revision_of = $1', [originalReqId])
+    return r[0]?.c ?? 0
+  } catch (err) {
+    if (err.code === '42703') return 0
+    throw err
+  }
+}
+
+/** Stamp the custom revised reference and link a newly-created revision to its original. */
+export async function setRevisionReferenceAndLink(newReqId, reference, originalReqId) {
+  return executeQuery(
+    'UPDATE requisition SET req_reference_no = $2, req_revision_of = $3 WHERE req_id = $1 RETURNING req_id, req_reference_no',
+    [newReqId, reference, originalReqId]
+  )
+}
+
+/** Set of category names (lowercased) whose flow includes a non-skipped Procurement stage. */
+export async function getProcurementInvolvedCategoryNames() {
+  try {
+    const rows = await executeQuery(
+      `SELECT DISTINCT TRIM(c.name) AS name
+       FROM requisition_category_stage cs
+       JOIN requisition_flow_stage fs ON fs.id = cs.flow_stage_id AND fs.stage_key = 'procurement'
+       JOIN requisition_category c ON c.id = cs.category_id
+       WHERE cs.behavior IS NOT NULL AND cs.behavior <> 'skip'`
+    )
+    return new Set((rows || []).map(r => String(r.name).trim().toLowerCase()))
+  } catch (err) {
+    if (err.code === '42P01') return new Set()
+    throw err
+  }
+}
+
 // Debug
 export async function getEmployeeForDebug(employeeId) {
   return executeQuery(
