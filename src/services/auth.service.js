@@ -20,12 +20,28 @@ const DEFAULT_USER_PERMISSIONS = [
 /** Technicians: profile, leave, feedback only — no requisition (add/create/history/pending/approved/reports). */
 const TECHNICIAN_PERMISSIONS = [
   'profile', 'profile_update_requests', 'salary_slip', 'leave', 'leave_pending',
-  'feedback', 'feedback_history', 'help_support', 'extensions'
+  'feedback', 'feedback_history', 'help_support', 'extensions',
+  // Technicians may raise (and track) only Loan & Advance Salary requisitions.
+  // The category restriction itself is enforced server-side in createRequisition.
+  'requisition_create', 'requisition_history', 'requisition_acknowledgment'
 ]
 
 function isTechnicianDesignation(desgName) {
   if (!desgName || typeof desgName !== 'string') return false
   return desgName.toLowerCase().includes('technician')
+}
+
+/** True if the employee is a Technician (explicit user_type or designation contains "Technician"). */
+export async function isTechnicianEmployee(employeeId) {
+  if (employeeId == null) return false
+  try {
+    const userType = await authRepo.getUserTypeByEmployeeId(employeeId)
+    if (String(userType || '').trim() === 'Technician') return true
+  } catch (_) {}
+  try {
+    const desg = await authRepo.getDesignationNameByEmployeeId(employeeId)
+    return isTechnicianDesignation(desg)
+  } catch (_) { return false }
 }
 
 /** Resolve role used for permission set: explicit Technician user_type or designation contains "Technician". CRM/Non-CRM User use User permissions. */

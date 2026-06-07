@@ -910,6 +910,7 @@ export async function getPendingHodAcknowledgeList(deptId, deptName, hodEmployee
      WHERE COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.is_hidden, FALSE) = FALSE
        AND COALESCE(r.req_purchase_completed, 0) = 1
        AND COALESCE(r.req_hod_acknowledged, 0) = 0
+       AND COALESCE(r.req_creator_acknowledged, 0) = 0
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
        AND r.req_emp_id = $3
      ORDER BY r.req_purchase_completed_date DESC`,
@@ -926,7 +927,7 @@ export async function getRequisitionForHodAcknowledge(reqId) {
      JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-     WHERE r.req_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE AND COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0`,
+     WHERE r.req_id = $1 AND COALESCE(r.is_hidden, FALSE) = FALSE AND COALESCE(r.req_is_rejected, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND COALESCE(r.req_creator_acknowledged, 0) = 0`,
     [reqId]
   )
 }
@@ -1589,7 +1590,7 @@ export async function getPendingHodRequisitions(deptId, deptName, excludeEmploye
           AND COALESCE(r.req_finance_approval, 0)::int = 0)
          OR
          -- From Procurement ? complete, awaiting HOD acknowledgment
-         ( (COALESCE(r.req_purchase_completed, 0) = 1) AND (COALESCE(r.req_hod_acknowledged, 0) = 0) )
+         ( (COALESCE(r.req_purchase_completed, 0) = 1) AND (COALESCE(r.req_hod_acknowledged, 0) = 0) AND (COALESCE(r.req_creator_acknowledged, 0) = 0) )
        )
      ORDER BY r.req_created_at ASC`,
     [deptId, deptName]
@@ -1773,7 +1774,7 @@ export async function getPendingCommitteeRequisitions(excludeEmployeeId) {
      AND (
        ((COALESCE(r.req_hod_approval, 0)::int = 1) AND (COALESCE(r.req_committee_approval, 0)::int = 0) AND r.req_emp_id != $1)
        OR
-       (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'Committee')
+       (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND COALESCE(r.req_creator_acknowledged, 0) = 0 AND r.req_creator_role = 'Committee')
      )`
   const sqlWithStage = `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
       desg.desg_name AS designation_name
@@ -1813,7 +1814,7 @@ export async function getPendingCeoRequisitions() {
         AND COALESCE(r.req_finance_approval, 0) = 0)
        OR
        -- Completed requisitions created by CEO awaiting acknowledgment
-       (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND r.req_creator_role = 'CEO')
+       (COALESCE(r.req_purchase_completed, 0) = 1 AND COALESCE(r.req_hod_acknowledged, 0) = 0 AND COALESCE(r.req_creator_acknowledged, 0) = 0 AND r.req_creator_role = 'CEO')
      )
      ORDER BY r.req_created_at ASC`
   )

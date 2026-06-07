@@ -392,6 +392,80 @@ export async function updateCarriedForwardByEmployeeCode(employeeCode, carriedDa
   )
 }
 
+/** ===== Annual leave: sheet import + yearly allocation ===== */
+
+/**
+ * Set an employee's annual_leave from the import sheet. Also initializes the yearly-allocation
+ * tracking for existing/tenured staff (proration marked granted, last-allocated = current year)
+ * so the import doubles as initialization and never triggers retroactive proration.
+ */
+export async function updateAnnualLeaveByEmployeeCode(employeeCode, annualDays) {
+  const code = String(employeeCode || '').trim()
+  if (!code) throw new Error('Employee code is required')
+  const annual = Math.max(0, Math.floor(Number(annualDays) || 0))
+
+  await executeQuery(
+    `INSERT INTO leave_balance (employee_id, employee_code, annual_leave, casual_leave, sick_leave, personal_leave, carried_forward, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave)
+     SELECT e.employee_id, e.employee_code, $2, $3, $4, 0, 0, $5,
+       CASE WHEN LOWER(TRIM(e.gender)) = 'female' THEN $6 ELSE 0 END,
+       CASE WHEN LOWER(TRIM(e.gender)) = 'male' THEN $7 ELSE 0 END,
+       $8
+     FROM employees e WHERE e.employee_code = $1
+     ON CONFLICT (employee_id) DO NOTHING`,
+    [code, DEFAULT_ANNUAL, DEFAULT_CASUAL, DEFAULT_SICK, DEFAULT_MARRIAGE, DEFAULT_MATERNITY, DEFAULT_PATERNAL, DEFAULT_PILGRIMAGE]
+  )
+
+  return executeQuery(
+    `UPDATE leave_balance lb
+     SET annual_leave = $2,
+         annual_proration_granted_at = COALESCE(lb.annual_proration_granted_at, CURRENT_DATE),
+         annual_last_allocated_year = COALESCE(lb.annual_last_allocated_year, EXTRACT(YEAR FROM CURRENT_DATE)::int),
+         updated_at = CURRENT_TIMESTAMP
+     FROM employees e
+     WHERE lb.employee_id = e.employee_id AND e.employee_code = $1
+     RETURNING lb.employee_id, e.employee_code, lb.annual_leave, lb.carried_forward`,
+    [code, annual]
+  )
+}
+
+/** Active employees with their join date and current annual-allocation state. */
+export async function getActiveEmployeesForAnnualAllocation() {
+  return executeQuery(
+    `SELECT e.employee_id, e.employee_code, e.first_name, e.last_name, e.join_date,
+            COALESCE(lb.annual_leave, 0) AS annual_leave,
+            COALESCE(lb.carried_forward, 0) AS carried_forward,
+            lb.annual_proration_granted_at, lb.annual_last_allocated_year
+     FROM employees e
+     LEFT JOIN leave_balance lb ON lb.employee_id = e.employee_id
+     WHERE e.is_active = true AND e.join_date IS NOT NULL`
+  )
+}
+
+/** Grant the one-time anniversary proration: set annual + stamp tracking. */
+export async function applyAnnualProration(employeeId, proratedDays, todayYmd, year) {
+  return executeQuery(
+    `UPDATE leave_balance
+     SET annual_leave = $2, annual_proration_granted_at = $3, annual_last_allocated_year = $4, updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1
+     RETURNING employee_id, annual_leave, carried_forward`,
+    [employeeId, Math.max(0, Math.round(Number(proratedDays) || 0)), todayYmd, year]
+  )
+}
+
+/** January reset: carry remaining annual into carried_forward, reset annual to 14. */
+export async function applyAnnualJanuaryReset(employeeId, year) {
+  return executeQuery(
+    `UPDATE leave_balance
+     SET carried_forward = COALESCE(carried_forward, 0) + COALESCE(annual_leave, 0),
+         annual_leave = $2,
+         annual_last_allocated_year = $3,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE employee_id = $1
+     RETURNING employee_id, annual_leave, carried_forward`,
+    [employeeId, DEFAULT_ANNUAL, year]
+  )
+}
+
 /** Get employee join date by employee code. */
 export async function getEmployeeJoinDateByCode(employeeCode) {
   const code = String(employeeCode || '').trim()

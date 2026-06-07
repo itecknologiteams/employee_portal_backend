@@ -492,6 +492,13 @@ export async function createRequisition(body) {
   if (!category || typeof category !== 'string' || !category.trim()) {
     return { error: 'Category is required', status: 400 }
   }
+  // Technicians may only raise the Loan & Advance Salary category (enforced server-side).
+  {
+    const { isTechnicianEmployee } = await import('./auth.service.js')
+    if (await isTechnicianEmployee(employeeId) && categoryTrimmed.toLowerCase() !== 'loan & advance salary') {
+      return { error: 'Technicians can only create a Loan & Advance Salary requisition.', status: 403 }
+    }
+  }
   let allowedCategories = REQUISITION_CATEGORIES
   try {
     const { categories } = await getCategories()

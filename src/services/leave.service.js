@@ -5,6 +5,7 @@ import * as notifSvc from './notification.service.js'
 import { getEmployeeIdByCode, findEmployeeByEmployeeId } from '../repositories/auth.repository.js'
 import { EMAIL_FROM, HR_EMAIL, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 import { renderLeaveEmail } from '../utils/leaveEmailTemplate.js'
+import { decideAnnualAllocation } from '../utils/annualLeave.js'
 
 /** External ICS Attendance System API Base URL */
 const ICS_API_BASE_URL = process.env.ICS_API_BASE_URL || 'https://webtrack.itecknologi.com/InternalCommunicationSystem'
@@ -884,6 +885,67 @@ export async function importCarriedForwardOnly(hrEmployeeId, importRows) {
     details: results.slice(0, 50),
     errorDetails: errors.slice(0, 10)
   }
+}
+
+/** HR: import current annual-leave balances from a sheet (rows: { employeeCode, annual }). */
+export async function importAnnualLeavesOnly(hrEmployeeId, importRows) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  if (!(await reqRepo.isHrMember(hid))) return { error: 'Only HR can import annual leaves', status: 403 }
+  if (!Array.isArray(importRows) || importRows.length === 0) return { error: 'No import data provided', status: 400 }
+
+  const results = []; const errors = []; let imported = 0; let failed = 0
+  for (const row of importRows) {
+    const code = String(row?.employeeCode || '').trim()
+    const annual = Math.max(0, Math.floor(Number(row?.annual) || 0))
+    if (!code) { errors.push({ employeeCode: code || 'Unknown', error: 'Employee code is required' }); failed++; continue }
+    try {
+      const rows = await leaveRepo.updateAnnualLeaveByEmployeeCode(code, annual)
+      if (rows.length === 0) { errors.push({ employeeCode: code, error: 'Employee not found' }); failed++ }
+      else { imported++; results.push({ employeeCode: rows[0].employee_code, annualLeave: parseInt(rows[0].annual_leave || 0, 10) }) }
+    } catch (err) { errors.push({ employeeCode: code, error: err?.message || 'Failed to process' }); failed++ }
+  }
+  return { success: true, total: importRows.length, imported, failed, errors: errors.length, details: results.slice(0, 50), errorDetails: errors.slice(0, 10) }
+}
+
+/**
+ * HR: run the yearly annual-leave allocation (idempotent).
+ * Grants the 1-year anniversary proration where due, and the January full-14 reset (with
+ * carry-forward) once per calendar year. `opts.today` ('YYYY-MM-DD') overrides the run date (tests).
+ */
+export async function runAnnualAllocation(hrEmployeeId, opts = {}) {
+  const hid = parseEmployeeId(hrEmployeeId != null ? String(hrEmployeeId) : null)
+  if (hid == null) return { error: 'Valid hrEmployeeId is required', status: 400 }
+  if (!(await reqRepo.isHrMember(hid))) return { error: 'Only HR can run annual allocation', status: 403 }
+
+  const today = opts.today || new Date().toISOString().slice(0, 10)
+  const employees = await leaveRepo.getActiveEmployeesForAnnualAllocation()
+  let prorated = 0; let reset = 0; let skipped = 0; const details = []
+  for (const e of employees) {
+    const decision = decideAnnualAllocation({
+      joinDate: e.join_date,
+      prorationGrantedAt: e.annual_proration_granted_at,
+      lastAllocatedYear: e.annual_last_allocated_year != null ? Number(e.annual_last_allocated_year) : null,
+      today
+    })
+    try {
+      if (decision.action === 'proration') {
+        await leaveRepo.applyAnnualProration(e.employee_id, decision.proratedDays, today, decision.year)
+        prorated++
+        details.push({ employeeCode: e.employee_code, action: 'proration', days: decision.proratedDays })
+      } else if (decision.action === 'january_reset') {
+        await leaveRepo.applyAnnualJanuaryReset(e.employee_id, decision.year)
+        reset++
+        details.push({ employeeCode: e.employee_code, action: 'january_reset', annual: 14 })
+      } else {
+        skipped++
+      }
+    } catch (err) {
+      skipped++
+      details.push({ employeeCode: e.employee_code, action: 'error', error: err?.message })
+    }
+  }
+  return { success: true, total: employees.length, prorated, reset, skipped, details: details.slice(0, 100) }
 }
 
 export async function getLeaveRequests(employeeId) {

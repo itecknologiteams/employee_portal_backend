@@ -262,6 +262,31 @@ export async function importCarriedForward(req, res) {
   }
 }
 
+export async function importAnnualLeaves(req, res) {
+  try {
+    const hrEmployeeId = req.body?.hrEmployeeId || req.body?.hrEmployeeCode
+    const data = req.body?.data || req.body?.rows || []
+    const result = await leaveService.importAnnualLeavesOnly(hrEmployeeId, data)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Import annual leaves error:', error)
+    res.status(500).json({ error: 'Failed to import annual leaves' })
+  }
+}
+
+export async function runAnnualAllocation(req, res) {
+  try {
+    const hrEmployeeId = req.body?.hrEmployeeId || req.body?.hrEmployeeCode
+    const result = await leaveService.runAnnualAllocation(hrEmployeeId, { today: req.body?.today })
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json(result)
+  } catch (error) {
+    console.error('Run annual allocation error:', error)
+    res.status(500).json({ error: 'Failed to run annual allocation' })
+  }
+}
+
 /** GET /calculate-annual-leave/:employeeCode - Calculate prorated annual leave based on join date */
 export async function calculateAnnualLeave(req, res) {
   try {
