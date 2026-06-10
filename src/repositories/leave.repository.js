@@ -602,6 +602,20 @@ export async function deductLeave(employeeId, leaveType, days) {
     throw new Error('Invalid leave type for deduction')
   }
   await ensureLeaveBalanceRow(employeeId)
+  // Annual leave is backed by two columns: annual_leave + carried_forward. Spend the fresh
+  // allotment first, then carried-forward for any remainder. Guard on the combined total so the
+  // deduction only succeeds when the employee truly has enough (returns [] otherwise).
+  if (column === 'annual_leave') {
+    return executeQuery(
+      `UPDATE leave_balance SET
+         annual_leave    = annual_leave - LEAST(annual_leave, $2),
+         carried_forward = COALESCE(carried_forward, 0) - ($2 - LEAST(annual_leave, $2)),
+         updated_at = CURRENT_TIMESTAMP
+       WHERE employee_id = $1 AND (annual_leave + COALESCE(carried_forward, 0)) >= $2
+       RETURNING annual_leave, casual_leave, sick_leave, marriage_leave, maternity_leave, paternal_leave, pilgrimage_leave`,
+      [employeeId, d]
+    )
+  }
   return executeQuery(
     `UPDATE leave_balance SET ${column} = ${column} - $2, updated_at = CURRENT_TIMESTAMP
      WHERE employee_id = $1 AND ${column} >= $2

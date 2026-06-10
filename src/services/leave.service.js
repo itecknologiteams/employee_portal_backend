@@ -1296,9 +1296,12 @@ export async function createLeaveRequest(data) {
       return { error: 'Could not determine leave balance type', status: 400 }
     }
 
-    if (days > bal[balanceKey]) {
+    // Annual leave draws from the fresh allotment PLUS carried-forward days (matches the form,
+    // which shows annual + carried as one pool). Other types use their single balance.
+    const available = balanceKey === 'annual' ? (bal.annual + bal.carried) : bal[balanceKey]
+    if (days > available) {
       return {
-        error: `Insufficient ${normalizedTypeName} balance. You have ${bal[balanceKey]} day(s) available; this request needs ${days} calendar day(s).`,
+        error: `Insufficient ${normalizedTypeName} balance. You have ${available} day(s) available; this request needs ${days} calendar day(s).`,
         status: 400
       }
     }
