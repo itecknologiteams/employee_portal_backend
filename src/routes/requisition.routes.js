@@ -36,6 +36,7 @@ router.post('/approve/hod', requisitionController.approveHod)
 router.post('/approve/it', requisitionController.approveIt)                       // ← added route for approving IT review
 router.get('/pending/hr/:employeeCode', requisitionController.getPendingHR)
 router.post('/approve/hr', requisitionController.approveHR)
+router.post('/hr-section3', requisitionController.saveHrSection3)
 router.get('/pending/hr-check/', requisitionController.getPendingHRCheck)
 router.post('/approve/hr-check', requisitionController.approveHRCheck)
 router.get('/pending/admin/:employeeCode', requisitionController.getPendingAdmin)

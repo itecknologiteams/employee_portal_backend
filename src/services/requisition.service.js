@@ -1339,6 +1339,54 @@ export async function approveHR(body) {
   }
 }
 
+/**
+ * Save HR "Section 3" fields without advancing the approval stage (Loan & Advance Salary).
+ * Lets HR edit + Save Section 3 and have it persist on close/reopen, before approving.
+ */
+export async function saveHrSection3(body) {
+  const { requisitionId } = body
+  const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
+  const eid = await resolveApproverEmployeeId(body)
+  if (reqId == null || Number.isNaN(reqId) || eid == null) {
+    return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
+  }
+  const useFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'hr') : await reqRepo.isHrMember(eid)
+  if (!ok) {
+    return { error: 'Only HR can edit this section. Check your Employee Type or Designation.', status: 403 }
+  }
+
+  const fields = {}
+  // Approved amount + outstanding loan: keep digits only, store as number (null clears).
+  if (body.approvedAmount !== undefined) {
+    const amt = parseFloat(String(body.approvedAmount).replace(/[^0-9.]/g, ''))
+    fields.approvedAmount = Number.isFinite(amt) && amt > 0 ? amt : null
+  }
+  if (body.outstandingLoan !== undefined) {
+    const out = parseFloat(String(body.outstandingLoan).replace(/[^0-9.]/g, ''))
+    fields.outstandingLoan = Number.isFinite(out) && out > 0 ? out : null
+  }
+  if (body.approvedInstallments !== undefined) {
+    const inst = parseInt(String(body.approvedInstallments), 10)
+    fields.approvedInstallments = Number.isFinite(inst) && inst > 0 ? inst : null
+  }
+  if (body.employmentStatus !== undefined) {
+    const s = String(body.employmentStatus).trim()
+    fields.employmentStatus = ['Permanent', 'Not Confirmed'].includes(s) ? s : null
+  }
+  if (body.loanStatus !== undefined) {
+    const s = String(body.loanStatus).trim()
+    fields.loanStatus = ['approved', 'not_approved'].includes(s) ? s : null
+  }
+  if (body.installmentStartDate !== undefined) {
+    const d = String(body.installmentStartDate).trim()
+    fields.installmentStartDate = d || null
+  }
+
+  await reqRepo.saveHrSection3(reqId, fields)
+  return { message: 'HR section saved', status: 200 }
+}
+
 export async function approveHRCheck(body) {
   const { requisitionId, approved } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null

@@ -694,6 +694,43 @@ export async function saveHrApprovedInstallments(reqId, installments) {
   }
 }
 
+/**
+ * Persist all editable HR "Section 3" fields in one UPDATE (Loan & Advance Salary).
+ * `fields` keys are optional; only provided (non-undefined) keys are written so a partial
+ * save never clobbers other columns. Returns silently if the columns aren't migrated yet (42703).
+ */
+export async function saveHrSection3(reqId, fields) {
+  const colByKey = {
+    approvedAmount: 'req_hr_approved_amount',
+    employmentStatus: 'req_employment_status',
+    approvedInstallments: 'req_hr_approved_installments',
+    outstandingLoan: 'req_hr_outstanding_loan',
+    loanStatus: 'req_hr_loan_status',
+    installmentStartDate: 'req_hr_installment_start_date'
+  }
+  const sets = []
+  const values = []
+  let i = 1
+  for (const [key, col] of Object.entries(colByKey)) {
+    if (fields[key] !== undefined) {
+      sets.push(`${col} = $${i}`)
+      values.push(fields[key])
+      i++
+    }
+  }
+  if (sets.length === 0) return
+  values.push(reqId)
+  try {
+    await executeQuery(
+      `UPDATE requisition SET ${sets.join(', ')} WHERE req_id = $${i}`,
+      values
+    )
+  } catch (err) {
+    if (err.code === '42703') return // columns not yet migrated
+    throw err
+  }
+}
+
 export async function approveHrCheck(reqId, eid) {
   await executeQuery(
     `UPDATE requisition

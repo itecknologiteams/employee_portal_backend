@@ -366,6 +366,17 @@ export async function approveHR(req, res) {
   }
 }
 
+export async function saveHrSection3(req, res) {
+  try {
+    const result = await requisitionService.saveHrSection3(req.body)
+    if (result.error) return res.status(result.status).json({ error: result.error })
+    res.json({ message: result.message })
+  } catch (error) {
+    console.error('saveHrSection3 error:', error)
+    res.status(500).json({ error: 'Failed to save HR section' })
+  }
+}
+
 export async function getPendingHRCheck(req, res) {
   try {
     const empCode = req.query.empCode
