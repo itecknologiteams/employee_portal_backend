@@ -152,6 +152,66 @@ export async function insertRequisitionItemsBatch(reqId, items) {
   )
 }
 
+/**
+ * Atomically insert the requisition row AND its items in a single transaction.
+ * If the items insert fails (e.g. a value exceeds a column length), the requisition row is
+ * rolled back too — no orphan row is left behind. Returns { req_id, req_reference_no }.
+ */
+export async function createRequisitionWithItems(args, items = []) {
+  const {
+    employeeId, location, material, requiredByDate, business, creatorRole, category,
+    loanAdvanceType = null, loanAdvanceAmount = null, loanAdvanceReason = null,
+    loanInstallmentMonths = null, isUrgent = false, urgentDate = null
+  } = args
+  const hasLoanFields = loanAdvanceType || loanAdvanceAmount || loanAdvanceReason || loanInstallmentMonths
+
+  return executeTransaction(async (client) => {
+    let created
+    if (hasLoanFields) {
+      const r = await client.query(
+        `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category,
+          loan_advance_type, loan_advance_amount, loan_advance_reason, loan_installment_months, req_is_urgent, req_urgent_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+         RETURNING req_id, req_reference_no`,
+        [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null,
+          loanAdvanceType || null, loanAdvanceAmount || null, loanAdvanceReason || null, loanInstallmentMonths || null,
+          isUrgent ? 1 : 0, isUrgent ? (urgentDate || null) : null]
+      )
+      created = r.rows[0]
+    } else {
+      const r = await client.query(
+        `INSERT INTO requisition (req_emp_id, req_location, req_material, req_required_by_date, req_business, req_creator_role, req_category, req_is_urgent, req_urgent_date)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+         RETURNING req_id, req_reference_no`,
+        [employeeId, location || null, material || null, requiredByDate || null, business || 'iTecknologi Tracking Pvt. Ltd', creatorRole || null, category || null,
+          isUrgent ? 1 : 0, isUrgent ? (urgentDate || null) : null]
+      )
+      created = r.rows[0]
+    }
+
+    if (items && items.length > 0) {
+      const reqId = created.req_id
+      const valueGroups = []
+      const params = []
+      let i = 0
+      for (const item of items) {
+        const rp = rowParamsFromItem(item)
+        const base = i * 7
+        valueGroups.push(`($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7})`)
+        params.push(reqId, rp.desc, rp.size, rp.brand, rp.qty, rp.cost, rp.remarks)
+        i++
+      }
+      await client.query(
+        `INSERT INTO requisition_items (req_id, item_desc, item_size, item_brand, item_qty, item_est_cost, item_remarks)
+         VALUES ${valueGroups.join(', ')}`,
+        params
+      )
+    }
+
+    return created
+  })
+}
+
 export async function getCreatorDepartment(employeeId) {
   const r = await executeQuery(
     'SELECT department_id FROM employees WHERE employee_id = $1',

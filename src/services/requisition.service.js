@@ -349,7 +349,25 @@ export async function getTrackRecordsByEmployee(employeeId, query) {
 }
 
 /** Normalize item cost: digits only (optional decimal) before DB insert. */
+// Column length limits (requisition_items). Validated up front so an over-length value returns
+// a clear 400 instead of a Postgres 22001 error mid-insert (which used to orphan the row).
+const ITEM_FIELD_LIMITS = [
+  { keys: ['itemProductDescription', 'itemDesc', 'item_desc'], max: 255, label: 'product description' },
+  { keys: ['itemSize', 'item_size'], max: 100, label: 'size' },
+  { keys: ['itemBrand', 'item_brand'], max: 100, label: 'brand' },
+  { keys: ['itemRemarks', 'item_remarks'], max: 500, label: 'remarks' }
+]
+
 function normalizeRequisitionItemForCreate(item) {
+  // Length validation first — a value that exceeds its column would otherwise throw mid-insert.
+  for (const { keys, max, label } of ITEM_FIELD_LIMITS) {
+    const val = keys.map((k) => item[k]).find((v) => v != null && v !== '')
+    if (val != null && String(val).trim().length > max) {
+      const e = new Error(`Item ${label} is too long (max ${max} characters). Please shorten it and try again.`)
+      e.status = 400
+      throw e
+    }
+  }
   const raw = String(item.itemEstCost ?? '').trim()
   if (!raw) {
     return { ...item, itemEstCost: null }
@@ -530,21 +548,34 @@ export async function createRequisition(body) {
 
   const urgentDate = urgent ? new Date().toISOString().slice(0, 10) : null
 
-  const created = await reqRepo.createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, categoryTrimmed,
-    loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths, urgent, urgentDate)
-  const reqId = created.req_id
-  const refNo = created.req_reference_no
-
+  // Normalize + validate items BEFORE any insert, so bad item data returns 400 without
+  // creating a requisition row. (Previously the row was inserted first, then item failures
+  // left an orphan row and a misleading "Failed to create" — users retried → duplicates.)
+  let normalizedItems = []
   if (validItems.length > 0) {
-    let normalizedItems
     try {
       normalizedItems = validItems.map((it) => normalizeRequisitionItemForCreate(it))
     } catch (normErr) {
       return { error: normErr.message || 'Invalid item amount', status: normErr.status || 400 }
     }
-    await reqRepo.insertRequisitionItemsBatch(reqId, normalizedItems)
+  }
+
+  // Insert the requisition row and its items atomically: if the item insert fails, the row is
+  // rolled back too — no orphan, and it is safe to retry without creating duplicates.
+  const created = await reqRepo.createRequisitionWithItems({
+    employeeId, location, material, requiredByDate, business, creatorRole, category: categoryTrimmed,
+    loanAdvanceType, loanAdvanceAmount, loanAdvanceReason, loanInstallmentMonths, isUrgent: urgent, urgentDate
+  }, normalizedItems)
+  const reqId = created.req_id
+  const refNo = created.req_reference_no
+
+  if (normalizedItems.length > 0) {
     await refreshRequisitionItemTaxes(reqId)
   }
+
+  // From here the requisition + items are committed. Stage routing and notifications are
+  // best-effort: a failure must NOT report the create as failed (that caused retry duplicates).
+  try {
 
   // Category-based flow: if category has HOD "For Info" only (no approval), auto-advance past HOD to next real stage (1.csv)
   let categoryFlowBucket = null
@@ -638,6 +669,12 @@ export async function createRequisition(body) {
   }
 
   // Email (notifyBucketChanged) + in-app (inAppNotifyRequisitionBucket) for the current bucket.
+
+  } catch (advanceErr) {
+    // Requisition + items are already committed; routing/notification failed. Log loudly but
+    // still report success so the user is not misled into retrying and creating duplicates.
+    console.error(`Requisition ${reqId} created but stage routing/notification failed:`, advanceErr?.message)
+  }
 
   return { message: 'Requisition submitted successfully', requisitionId: reqId, referenceNo: refNo }
 }

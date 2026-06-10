@@ -97,6 +97,25 @@ export const executeQuery = async (query, params = []) => {
 
 export const executeTransaction = async (queries) => {
   const p = await initPool()
+  // Callback form: executeTransaction(async (client) => { ... }) — runs the callback inside a
+  // single BEGIN/COMMIT, with ROLLBACK on any throw. Lets callers thread RETURNING values from
+  // one statement into the next (e.g. insert parent row, then child rows with the new id).
+  if (typeof queries === 'function') {
+    if (useSqlServer) throw new Error('Callback transactions are only supported on PostgreSQL')
+    const client = await p.connect()
+    try {
+      await client.query('BEGIN')
+      const result = await queries(client)
+      await client.query('COMMIT')
+      return result
+    } catch (error) {
+      await client.query('ROLLBACK')
+      console.error('Transaction error:', error.message)
+      throw error
+    } finally {
+      client.release()
+    }
+  }
   if (useSqlServer) {
     const transaction = p.transaction()
     await transaction.begin()
