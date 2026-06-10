@@ -39,6 +39,16 @@
             "date": 1780823530509,
             "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-07.log",
             "hash": "c039cffbefce609aff5b8f8ecec859ab3b7a711ef7e2ab145301f6fc4b788ec1"
+        },
+        {
+            "date": 1780924477178,
+            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-08.log",
+            "hash": "dff627961756eb0fa9bd78af03d3226c0c02da77d8af3654818ab3a091266eb6"
+        },
+        {
+            "date": 1781073331331,
+            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-10.log",
+            "hash": "b6d6f23c78369f7a72d51f44adce02bff9cd13d9d0a8defb52c8e4cd88531d56"
         }
     ],
     "hashType": "sha256"

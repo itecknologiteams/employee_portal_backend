@@ -155,7 +155,9 @@ export async function getSlipById(rawId, employeeId, options = {}) {
     const incentivesVal = structure ? f(structure.incentives) : 0
     const deviceVal = structure ? f(structure.device_reimbursement) : 0
     const communicationVal = structure ? f(structure.communication_allowance) : 0
-    const otherAllVal = structure ? f(structure.other_allowance) : otherAll
+    // other_allowance is stored per-slip on payroll_slip (ad-hoc, varies by month); prefer it over the
+    // structure template, which is often 0 even when the slip has a value. Fall back to structure if slip has none.
+    const otherAllVal = otherAll || (structure ? f(structure.other_allowance) : 0)
     const conveyanceLitersVal = structure ? f(structure.conveyance_liters_allowance) : 0
     const incrementalArrearsVal = structure ? f(structure.incremental_arrears) : 0
     const overtimeVal = structure ? f(structure.overtime_allowance) : 0
