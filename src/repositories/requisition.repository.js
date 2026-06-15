@@ -86,6 +86,68 @@ export async function getItemCountsByReqIds(reqIds) {
   )
 }
 
+/** Employee ids that belong to a department (by employees.department_id) ∪ its HOD(s). */
+export async function getDepartmentMemberIds(departmentId) {
+  if (departmentId == null) return []
+  const rows = await executeQuery(
+    `SELECT employee_id FROM employees WHERE department_id = $1
+     UNION
+     SELECT employee_id FROM employee_hod_departments WHERE department_id = $1`,
+    [departmentId]
+  )
+  return rows.map(r => parseInt(r.employee_id, 10)).filter(n => !Number.isNaN(n))
+}
+
+/** Track records for a set of employee ids (department-wide view). Same row shape as
+ *  getTrackRecordsByEmployee but joins the creator name. Excludes hidden rows. */
+export async function getTrackRecordsByMembers(memberIds, limit, offset, search) {
+  if (!memberIds || memberIds.length === 0) return []
+  const hasSearch = search != null && String(search).trim() !== ''
+  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
+  const nameExpr = `TRIM(CONCAT(COALESCE(e.first_name, ''), ' ', COALESCE(e.last_name, '')))`
+  if (hasSearch) {
+    return executeQuery(
+      `SELECT r.*, ${nameExpr} AS creator_name, e.employee_code AS creator_code
+       FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
+       WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE
+         AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2 OR ${nameExpr} ILIKE $2)
+       ORDER BY r.req_created_at DESC
+       LIMIT $3 OFFSET $4`,
+      [memberIds, pattern, limit, offset]
+    )
+  }
+  return executeQuery(
+    `SELECT r.*, ${nameExpr} AS creator_name, e.employee_code AS creator_code
+     FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
+     WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE
+     ORDER BY r.req_created_at DESC
+     LIMIT $2 OFFSET $3`,
+    [memberIds, limit, offset]
+  )
+}
+
+export async function getTrackRecordsCountByMembers(memberIds, search) {
+  if (!memberIds || memberIds.length === 0) return 0
+  const hasSearch = search != null && String(search).trim() !== ''
+  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
+  const nameExpr = `TRIM(CONCAT(COALESCE(e.first_name, ''), ' ', COALESCE(e.last_name, '')))`
+  if (hasSearch) {
+    const r = await executeQuery(
+      `SELECT COUNT(*) AS total FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
+       WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE
+         AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2 OR ${nameExpr} ILIKE $2)`,
+      [memberIds, pattern]
+    )
+    return parseInt(r[0]?.total ?? 0, 10)
+  }
+  const r = await executeQuery(
+    `SELECT COUNT(*) AS total FROM requisition r
+     WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE`,
+    [memberIds]
+  )
+  return parseInt(r[0]?.total ?? 0, 10)
+}
+
 export async function createRequisition(employeeId, location, material, requiredByDate, business, creatorRole, category, loanAdvanceType = null, loanAdvanceAmount = null, loanAdvanceReason = null, loanInstallmentMonths = null, isUrgent = false, urgentDate = null) {
   // Use RETURNING clause to get the inserted row directly - eliminates race condition
   const hasLoanFields = loanAdvanceType || loanAdvanceAmount || loanAdvanceReason || loanInstallmentMonths

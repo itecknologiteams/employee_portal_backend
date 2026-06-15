@@ -262,6 +262,22 @@ async function notifyRequisitionRejected(requisitionId, rejectedByStage, rejecti
   }
 }
 
+/** IT department id for the department-wide requisition view; null disables the feature. */
+function getItDepartmentId() {
+  const raw = String(process.env.IT_DEPARTMENT_ID ?? '8').trim()
+  const n = parseInt(raw, 10)
+  return Number.isNaN(n) ? null : n
+}
+
+/** True if the employee belongs to the IT department (by dept) or is its HOD. */
+async function isItDepartmentMember(eid) {
+  const itId = getItDepartmentId()
+  if (itId == null) return false
+  const deptId = await reqRepo.getCreatorDepartment(eid)
+  if (deptId != null && parseInt(deptId, 10) === itId) return true
+  return await reqRepo.isHodOfDepartment(eid, itId)
+}
+
 export async function getHistory(employeeId, query = {}) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -269,6 +285,15 @@ export async function getHistory(employeeId, query = {}) {
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
   const offset = (page - 1) * limit
   const search = query.search != null ? String(query.search).trim() : ''
+
+  // Department-wide (IT only) view: list all IT members' requisitions, read-only.
+  const scope = String(query.scope || 'my').trim().toLowerCase()
+  const canViewDepartment = await isItDepartmentMember(eid)
+  if (scope === 'department') {
+    if (!canViewDepartment) return { error: 'Not authorized for department view', status: 403 }
+    return getDepartmentHistory(eid, { page, limit, offset, search })
+  }
+
   const total = await reqRepo.getTrackRecordsCountByEmployee(eid, search || undefined)
   const totalPages = Math.max(1, Math.ceil(total / limit))
   const rows = await reqRepo.getTrackRecordsByEmployee(eid, limit, offset, search || undefined)
@@ -313,7 +338,54 @@ export async function getHistory(employeeId, query = {}) {
       remarks: i.item_remarks
     }))
   }))
-  return { data, pagination: { page, limit, total, totalPages } }
+  return { data, pagination: { page, limit, total, totalPages }, canViewDepartment, scope: 'my' }
+}
+
+/** Department-wide (IT) read-only history: all IT members' requisitions with creator name. */
+async function getDepartmentHistory(eid, { page, limit, offset, search }) {
+  const itId = getItDepartmentId()
+  const memberIds = await reqRepo.getDepartmentMemberIds(itId)
+  const total = await reqRepo.getTrackRecordsCountByMembers(memberIds, search || undefined)
+  const totalPages = Math.max(1, Math.ceil(total / limit))
+  const rows = await reqRepo.getTrackRecordsByMembers(memberIds, limit, offset, search || undefined)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getRequisitionItemsByReqIds(reqIds) : []
+  const data = rows.map(req => ({
+    id: req.req_id,
+    referenceNo: req.req_reference_no,
+    employeeId: req.req_emp_id,
+    employeeName: req.creator_name || null,
+    employeeCode: req.creator_code || null,
+    isOwn: parseInt(req.req_emp_id, 10) === eid,
+    location: req.req_location,
+    material: req.req_material,
+    requiredByDate: req.req_required_by_date || null,
+    isUrgent: req.req_is_urgent === 1,
+    urgentDate: req.req_urgent_date || null,
+    business: req.req_business,
+    category: req.req_category || null,
+    status: getRequisitionStatus(req),
+    // Department view is strictly read-only — never expose revise/acknowledge affordances.
+    canRevise: false,
+    hodApproval: req.req_hod_approval === 1,
+    hodApprovalDate: req.req_hod_approval_date,
+    committeeApproval: req.req_committee_approval === 1,
+    committeeApprovalDate: req.req_committee_approval_date,
+    ceoApproval: req.req_ceo_approval === 1,
+    ceoApprovalDate: req.req_ceo_approval_date,
+    createdAt: req.req_created_at,
+    isRejected: req.req_is_rejected === 1,
+    items: items.filter(i => i.req_id === req.req_id).map(i => ({
+      id: i.item_id,
+      desc: i.item_desc,
+      size: i.item_size,
+      brand: i.item_brand,
+      qty: i.item_qty,
+      estCost: i.item_est_cost,
+      remarks: i.item_remarks
+    }))
+  }))
+  return { data, pagination: { page, limit, total, totalPages }, canViewDepartment: true, scope: 'department' }
 }
 
 export async function getTrackRecordsByEmployee(employeeId, query) {
