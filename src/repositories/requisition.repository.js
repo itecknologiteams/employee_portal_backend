@@ -656,11 +656,20 @@ export async function isHrMember(employeeId) {
 /** True if employee is Admin (employee_type or designation). For execution_admin categories. */
 export async function isAdminMember(employeeId) {
   try {
+    // "Admin" here means the Administration department's approver — NOT anyone whose job title
+    // contains "admin". A loose desg_name ILIKE '%Admin%' wrongly matched IT staff such as
+    // "IT Administrator" / "Senior System Network Administrator". So: match the 'Admin' employee
+    // type, OR an admin-titled person who is actually in the Administration department.
     const rows = await executeQuery(
       `SELECT 1 FROM employees e
-       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id AND (et.emp_type_name ILIKE '%Admin%')
-       LEFT JOIN designation desg ON e.designation_id = desg.desg_id AND (desg.desg_name ILIKE '%Admin%')
-       WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
+       LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
+       LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+       LEFT JOIN departments d ON e.department_id = d.department_id
+       WHERE e.employee_id = $1
+         AND (
+           et.emp_type_name ILIKE 'Admin'
+           OR (desg.desg_name ILIKE '%Admin%' AND d.department_name ILIKE 'Administration')
+         )`,
       [employeeId]
     )
     return rows.length > 0
