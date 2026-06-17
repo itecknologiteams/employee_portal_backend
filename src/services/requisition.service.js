@@ -554,7 +554,7 @@ export async function createRequisition(body) {
     return { error: 'Required by date is required', status: 400 }
   }
   const itemsList = Array.isArray(items) ? items : []
-  const validItems = itemsList.filter(it => {
+  let validItems = itemsList.filter(it => {
     const qty = it.itemQty ?? it.item_qty ?? 0
     const hasData = (it.itemDesc && it.itemDesc.trim()) || (it.item_desc && String(it.item_desc).trim()) ||
       (it.itemSize && it.itemSize.trim()) || (it.item_size && String(it.item_size).trim()) ||
@@ -572,9 +572,18 @@ export async function createRequisition(body) {
   const creatorIsCommittee = await reqRepo.isCommitteeMember(employeeId)
   const creatorIsCeo = await reqRepo.isCeoMember(employeeId)
 
+  // IT Equipments: items are filled by the IT stage (after HOD). A non-IT creator only gives
+  // date + description, so ignore any items they submit. IT-department creators may add items.
+  const isItEquip = isItEquipmentCategory(categoryTrimmed)
+  const creatorIsItMember = isItEquip ? await isItDepartmentMember(parseInt(employeeId, 10)) : false
+  if (isItEquip && !creatorIsItMember) {
+    validItems = []
+  }
+
   if (validItems.length > 0) {
     const { employeeHasPermission } = await import('./auth.service.js')
-    const canAddItems = creatorIsHod || await employeeHasPermission(employeeId, 'requisition_can_add_items')
+    // IT members are allowed to add items for IT Equipments even without the generic permission.
+    const canAddItems = creatorIsHod || (isItEquip && creatorIsItMember) || await employeeHasPermission(employeeId, 'requisition_can_add_items')
     if (!canAddItems) {
       return { error: 'You do not have permission to add items to requisitions. Contact Administration for "Can add items" access.', status: 403 }
     }
@@ -1132,7 +1141,9 @@ export async function approveHod(body) {
 
   // Category from DB or from request body (fallback for old reqs or when column missing)
   const categoryName = reqRow[0]?.req_category ?? body.req_category ?? null
-  const noBoqCategory = isCategoryNoBoq(categoryName)
+  // IT Equipments: HOD only approves; items + BOQ are filled later by the IT stage. So HOD
+  // approves without items/BOQ and the requisition advances by flow (HOD → IT).
+  const noBoqCategory = isCategoryNoBoq(categoryName) || isItEquipmentCategory(categoryName)
 
   // For no-BOQ categories (Loan, Event, Vehicle Maintenance, etc.): approve without BOQ, advance by flow only
   if (noBoqCategory) {

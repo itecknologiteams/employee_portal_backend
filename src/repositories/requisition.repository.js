@@ -679,6 +679,32 @@ export async function isAdminMember(employeeId) {
   }
 }
 
+/** True if this employee is the HOD of any department (explicit employee_hod_departments). */
+export async function isHodEmployee(employeeId) {
+  if (employeeId == null) return false
+  try {
+    const rows = await executeQuery(
+      'SELECT 1 FROM employee_hod_departments WHERE employee_id = $1 LIMIT 1',
+      [employeeId]
+    )
+    return rows.length > 0
+  } catch (err) {
+    if (err.code === '42P01') return false
+    throw err
+  }
+}
+
+/** All distinct employee ids that are an HOD of some department. */
+export async function getAllHodEmployeeIds() {
+  try {
+    const rows = await executeQuery('SELECT DISTINCT employee_id FROM employee_hod_departments')
+    return rows.map(r => parseInt(r.employee_id, 10)).filter(n => !Number.isNaN(n))
+  } catch (err) {
+    if (err.code === '42P01') return []
+    throw err
+  }
+}
+
 export async function getRequisitionAndDepartment(requisitionId) {
   return executeQuery(
     'SELECT r.req_id, r.req_category, r.req_current_stage_key, r.loan_advance_amount, r.req_hr_approved_amount, e.department_id FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id WHERE r.req_id = $1',

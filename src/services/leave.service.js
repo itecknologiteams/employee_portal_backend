@@ -950,6 +950,9 @@ export async function runAnnualAllocation(hrEmployeeId, opts = {}) {
 
 export async function getLeaveRequests(employeeId) {
   const result = await leaveRepo.getLeaveRequests(employeeId)
+  // An HOD's non-casual/sick leave routes to the CEO (not HR), so its approval status should be
+  // shown as "CEO Status". Flag those rows so the UI can relabel.
+  const isHod = await reqRepo.isHodEmployee(parseEmployeeId(employeeId))
   return result.map(r => ({
     id: r.leave_request_id,
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
@@ -962,7 +965,8 @@ export async function getLeaveRequests(employeeId) {
     reason: r.reason || '',
     date: r.created_at,
     source: r.source || 'portal',
-    icsLeaveId: r.ics_leave_id ?? null
+    icsLeaveId: r.ics_leave_id ?? null,
+    isHodRequest: isHod && !CASUAL_SICK_TYPE_IDS.has(Number(r.leave_type_id))
   }))
 }
 
@@ -1643,10 +1647,13 @@ export async function getHrList(employeeId, query = {}) {
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
   const offset = (page - 1) * limit
 
-  const [total, rows] = await Promise.all([
+  const [total, rows, hodIdList] = await Promise.all([
     leaveRepo.countAllLeavesForHr(),
-    leaveRepo.getAllLeavesForHr(limit, offset)
+    leaveRepo.getAllLeavesForHr(limit, offset),
+    reqRepo.getAllHodEmployeeIds()
   ])
+  // HOD non-casual/sick leaves are approved by the CEO, so mark them so the UI shows "CEO Status".
+  const hodIds = new Set(hodIdList)
 
   const data = rows.map(r => ({
     id: r.leave_request_id,
@@ -1666,7 +1673,8 @@ export async function getHrList(employeeId, query = {}) {
     firstName: r.first_name,
     lastName: r.last_name,
     email: r.email,
-    departmentName: r.department_name
+    departmentName: r.department_name,
+    isHodRequest: hodIds.has(parseInt(r.employee_id, 10)) && !CASUAL_SICK_TYPE_IDS.has(Number(r.leave_type_id))
   }))
 
   return {
