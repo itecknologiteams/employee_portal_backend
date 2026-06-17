@@ -1,5 +1,7 @@
 import * as profileRepo from '../repositories/profile.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
+import * as adminRepo from '../repositories/administration.repository.js'
+import * as adminService from './administration.service.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
@@ -157,6 +159,34 @@ export async function getHrPendingProfileRequests(hrEmployeeId) {
     }
   })
   return { list }
+}
+
+/** HR only: fetch an employee's full record (for the HR edit form). */
+export async function hrGetEmployeeForEdit(hrEmployeeId, employeeId) {
+  const isHr = await reqRepo.isHrMember(hrEmployeeId)
+  if (!isHr) return { error: 'Only HR can edit employee details', status: 403 }
+  const eid = parseInt(employeeId, 10)
+  if (Number.isNaN(eid)) return { error: 'Valid employeeId is required', status: 400 }
+  const rows = await adminRepo.getEmployeeById(eid)
+  const employee = Array.isArray(rows) ? rows[0] : rows
+  if (!employee) return { error: 'Employee not found', status: 404 }
+  return { employee }
+}
+
+/** HR only: update an employee's details (HR-side correction). Reuses adminService.updateEmployee
+ *  which validates, updates all fields, and auto-logs the before→after diff to employee history. */
+export async function hrUpdateEmployee(hrEmployeeId, employeeId, fields) {
+  const isHr = await reqRepo.isHrMember(hrEmployeeId)
+  if (!isHr) return { error: 'Only HR can edit employee details', status: 403 }
+  const eid = parseInt(employeeId, 10)
+  if (Number.isNaN(eid)) return { error: 'Valid employeeId is required', status: 400 }
+  try {
+    const result = await adminService.updateEmployee(eid, fields || {})
+    if (result?.notFound) return { error: 'Employee not found', status: 404 }
+    return { message: 'Employee details updated', employee: result }
+  } catch (err) {
+    return { error: err.message || 'Failed to update employee', status: err.status || 400 }
+  }
 }
 
 /** HR only: approve request and apply to employees. */

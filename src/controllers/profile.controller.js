@@ -64,6 +64,37 @@ export async function getChangeRequests(req, res) {
   }
 }
 
+/** GET /profile/hr-employee/:employeeId?hrEmployeeId= – HR: full employee record for editing */
+export async function hrGetEmployee(req, res) {
+  try {
+    const hrEmployeeId = req.query.hrEmployeeId || req.body?.hrEmployeeId
+    const { employeeId } = req.params
+    if (!hrEmployeeId) return res.status(400).json({ error: 'hrEmployeeId is required' })
+    const result = await profileService.hrGetEmployeeForEdit(hrEmployeeId, employeeId)
+    if (result.error) return res.status(result.status || 403).json({ error: result.error })
+    res.json(result.employee)
+  } catch (error) {
+    console.error('HR get employee error:', error)
+    res.status(500).json({ error: 'Failed to fetch employee' })
+  }
+}
+
+/** POST /profile/hr-update-employee – HR: correct an employee's details */
+export async function hrUpdateEmployee(req, res) {
+  try {
+    const { hrEmployeeId, employeeId, ...fields } = req.body || {}
+    if (!hrEmployeeId || !employeeId) {
+      return res.status(400).json({ error: 'hrEmployeeId and employeeId are required' })
+    }
+    const result = await profileService.hrUpdateEmployee(hrEmployeeId, employeeId, fields)
+    if (result.error) return res.status(result.status || 400).json({ error: result.error })
+    res.json({ message: result.message })
+  } catch (error) {
+    console.error('HR update employee error:', error)
+    res.status(500).json({ error: 'Failed to update employee' })
+  }
+}
+
 /** POST /profile/change-requests/approve – HR: approve and apply */
 export async function approveChangeRequest(req, res) {
   try {
