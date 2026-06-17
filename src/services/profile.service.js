@@ -3,7 +3,7 @@ import * as reqRepo from '../repositories/requisition.repository.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
-import { getOfficialEmailFromCrm } from '../../config/crmDatabase.js'
+import { getOfficialEmailFromCrm, getCrmEmailMapByEmployeeCodes } from '../../config/crmDatabase.js'
 
 export async function getProfile(employeeId) {
   const result = await profileRepo.getProfile(employeeId)
@@ -98,11 +98,64 @@ export async function getMyPendingRequest(employeeId) {
   return profileRepo.getPendingProfileChangeRequest(employeeId)
 }
 
-/** HR only: list all pending profile change requests. */
+/** Build a `current_data` object keyed exactly like `requested_data`, from an employee row.
+ *  Lets the UI diff requested-vs-current and show what the employee actually changed. */
+function buildCurrentProfileData(row) {
+  const fullName = [row.first_name, row.last_name].filter(Boolean).join(' ').trim()
+  const ymd = (d) => (d ? String(new Date(d).toISOString()).slice(0, 10) : null)
+  return {
+    name: fullName || null,
+    email: row.email ?? null,
+    phone: row.phone ?? null,
+    personalCellNumber: row.personal_cell_number ?? null,
+    emergencyContactNumber: row.emergency_contact_number ?? null,
+    department: row.department_name ?? null,
+    position: row.position ?? null,
+    employeeCode: row.employee_code ?? null,
+    grade: row.grade ?? null,
+    joinDate: ymd(row.join_date),
+    fatherName: row.father_name ?? null,
+    dateOfBirth: ymd(row.date_of_birth),
+    gender: row.gender ?? null,
+    maritalStatus: row.marital_status ?? null,
+    religion: row.religion ?? null,
+    cnicNumber: row.cnic_number ?? null,
+    cnicIssueDate: ymd(row.cnic_issue_date),
+    cnicExpiryDate: ymd(row.cnic_expiry_date),
+    homeAddress: row.address ?? null,
+    employeeExtension: row.employee_extension ?? null,
+    profileImage: row.profile_picture ?? null
+  }
+}
+
+/** HR only: list all pending profile change requests, with each requester's current values
+ *  (for diffing) and official CRM email. */
 export async function getHrPendingProfileRequests(hrEmployeeId) {
   const isHr = await reqRepo.isHrMember(hrEmployeeId)
   if (!isHr) return { error: 'Only HR can view pending profile change requests', status: 403 }
-  const list = await profileRepo.getAllPendingProfileChangeRequests()
+  const rows = await profileRepo.getAllPendingProfileChangeRequests()
+
+  // Official email comes from CRM (ERP_Tracking.dbo.USERS), keyed by employee_code. Best-effort:
+  // an empty map (CRM unreachable / no record) falls back to the stored email in the UI.
+  const codes = [...new Set(rows.map(r => r.employee_code).filter(Boolean))]
+  const crmEmailMap = codes.length ? await getCrmEmailMapByEmployeeCodes(codes).catch(() => new Map()) : new Map()
+
+  const list = rows.map(r => {
+    const officialEmail = (r.employee_code && crmEmailMap.get(String(r.employee_code).trim())) || null
+    return {
+      id: r.id,
+      employee_id: r.employee_id,
+      first_name: r.first_name,
+      last_name: r.last_name,
+      employee_code: r.employee_code,
+      email: r.email,
+      officialEmail,
+      status: r.status,
+      requested_at: r.requested_at,
+      requested_data: r.requested_data,
+      current_data: buildCurrentProfileData(r)
+    }
+  })
   return { list }
 }
 

@@ -157,9 +157,15 @@ export async function getPendingProfileChangeRequest(employeeId) {
 export async function getAllPendingProfileChangeRequests() {
   return executeQuery(
     `SELECT pcr.id, pcr.employee_id, pcr.requested_data, pcr.status, pcr.requested_at,
-        e.first_name, e.last_name, e.employee_code, e.email
+        e.first_name, e.last_name, e.employee_code, e.email,
+        e.phone, e.address, e.bio, e.position, e.join_date, e.profile_picture,
+        e.date_of_birth, e.father_name, e.gender, e.marital_status, e.religion, e.grade,
+        e.cnic_number, e.cnic_issue_date, e.cnic_expiry_date,
+        e.emergency_contact_number, e.employee_extension, e.personal_cell_number,
+        d.department_name
      FROM profile_change_requests pcr
      JOIN employees e ON e.employee_id = pcr.employee_id
+     LEFT JOIN departments d ON d.department_id = e.department_id
      WHERE pcr.status = 'Pending'
      ORDER BY pcr.requested_at ASC`
   )
