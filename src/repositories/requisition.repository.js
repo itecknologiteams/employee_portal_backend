@@ -1106,7 +1106,7 @@ export async function getPendingHodAcknowledgeList(deptId, deptName, hodEmployee
        AND COALESCE(r.req_hod_acknowledged, 0) = 0
        AND COALESCE(r.req_creator_acknowledged, 0) = 0
        AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
-       AND r.req_emp_id = $3
+       AND r.req_emp_id != $3
      ORDER BY r.req_purchase_completed_date DESC`,
     [deptId, deptName, hodEmployeeId]
   )

@@ -278,6 +278,20 @@ async function isItDepartmentMember(eid) {
   return await reqRepo.isHodOfDepartment(eid, itId)
 }
 
+/**
+ * Stage a requisition moves to after HOD approval, honoring the IT Equipments rule:
+ * if the CREATOR is an IT-department member they add the items themselves, so the IT review
+ * stage is skipped (go to the stage after IT — i.e. committee). A non-IT creator goes to IT.
+ * All other categories just use the DB-defined next stage after HOD.
+ */
+async function nextStageAfterHod(categoryName, creatorEmployeeId) {
+  const fromHod = (await reqRepo.getNextStageKey(categoryName, 'hod').catch(() => null)) || 'committee'
+  if (!isItEquipmentCategory(categoryName)) return fromHod
+  const creatorIsIt = await isItDepartmentMember(parseInt(creatorEmployeeId, 10)).catch(() => false)
+  if (!creatorIsIt) return fromHod // non-IT creator → IT stage fills the items
+  return (await reqRepo.getNextStageKey(categoryName, 'it').catch(() => null)) || 'committee' // IT creator → skip IT
+}
+
 export async function getHistory(employeeId, query = {}) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -733,9 +747,11 @@ export async function createRequisition(body) {
     notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'ceo', deptId))
   } else if (creatorIsHod) {
     await reqRepo.autoAdvanceHodRequisition(reqId, parseInt(employeeId, 10))
-    await setCurrentStage(reqId, 'committee')
-    await notifyBucketChanged(reqId, 'committee')
-    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'committee', deptId))
+    // Next stage after HOD per category; IT Equipments skips IT only when the creator is IT.
+    const nextAfterHod = await nextStageAfterHod(categoryTrimmed, employeeId)
+    await setCurrentStage(reqId, nextAfterHod)
+    await notifyBucketChanged(reqId, nextAfterHod)
+    notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, nextAfterHod, deptId))
   } else if (categoryFlowBucket) {
     await setCurrentStage(reqId, categoryFlowBucket)
     await notifyBucketChanged(reqId, categoryFlowBucket)
@@ -1151,6 +1167,12 @@ export async function approveHod(body) {
     const stages = await reqRepo.getFlowStages()
     const hasHrStage = stages.some((s) => (s.stage_key || '').toLowerCase() === 'hr')
     let nextKey = categoryName ? await reqRepo.getNextStageKey(categoryName, 'hod') : null
+    // IT Equipments: skip the IT stage when the requisition's CREATOR is from IT (they added the
+    // items themselves); a non-IT creator's req goes to IT so IT can fill items + pricing.
+    if (isItEquipmentCategory(categoryName)) {
+      const creatorId = await notifRepo.getRequisitionCreatorId(requisitionId).catch(() => null)
+      nextKey = await nextStageAfterHod(categoryName, creatorId)
+    }
     // Loan & Advance Salary (and any category with HR after HOD): must go to HR first if HR stage exists
     if (isCategoryHrAfterHod(categoryName) && hasHrStage) {
       nextKey = 'hr'
