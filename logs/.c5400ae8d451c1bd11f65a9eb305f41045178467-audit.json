@@ -6,36 +6,6 @@
     "auditLog": "D:\\Github\\Emp_Portal_BackEnd\\logs\\.c5400ae8d451c1bd11f65a9eb305f41045178467-audit.json",
     "files": [
         {
-            "date": 1779997173754,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-29.log",
-            "hash": "e2b16c8fe3bc16791f59d028706fc7680fd81339374878815a4abcefad05f3a0"
-        },
-        {
-            "date": 1780127442992,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-05-30.log",
-            "hash": "19a5988a05f038e54f0ba5e7f58af381852cf74d155fe95c29a145cd37dd9684"
-        },
-        {
-            "date": 1780292018124,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-01.log",
-            "hash": "ac715f671a842d688fe22fee16a0be751189a73aab7523db1ea728ec4001b4dc"
-        },
-        {
-            "date": 1780478975503,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-03.log",
-            "hash": "03fabcb7c3f5518b4fc831cbcae96d034caefcb8c5b87d4c8be3a421bbcf9282"
-        },
-        {
-            "date": 1780562502338,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-04.log",
-            "hash": "aa1b347d6ba9d759efa5399c3912953fc67dd2e1114dafeaa85ff928a1c5df46"
-        },
-        {
-            "date": 1780642455464,
-            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-05.log",
-            "hash": "780e1bf371ca659bb5d4e024b11ab76207fb9c0ea24dc3c444ab343c735724a3"
-        },
-        {
             "date": 1780823530509,
             "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-07.log",
             "hash": "c039cffbefce609aff5b8f8ecec859ab3b7a711ef7e2ab145301f6fc4b788ec1"
@@ -49,6 +19,11 @@
             "date": 1781073331331,
             "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-10.log",
             "hash": "b6d6f23c78369f7a72d51f44adce02bff9cd13d9d0a8defb52c8e4cd88531d56"
+        },
+        {
+            "date": 1781864077673,
+            "name": "D:\\Github\\Emp_Portal_BackEnd\\logs\\error-2026-06-19.log",
+            "hash": "20ebde7364f7a7b889e0aeae363b5a84f8fe8919b95458ba96c85179a3a5f8c8"
         }
     ],
     "hashType": "sha256"

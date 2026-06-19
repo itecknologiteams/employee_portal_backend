@@ -1787,23 +1787,14 @@ async function fetchIcsDeptPendingLeaves(deptId, excludeEmployeeId) {
 export async function getPendingHod(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
-  const emp = await reqRepo.getEmployeeDept(employeeId)
-  if (!emp) return { error: 'Employee not found', status: 404 }
-  const deptId = emp.department_id
-  const deptName = (emp.department_name || '').trim().toLowerCase()
-  console.log(`[getPendingHod] eid=${eid} deptId=${deptId} deptName="${deptName}"`)
-  if (deptId == null && !deptName) { console.log('[getPendingHod] no dept → []'); return [] }
-  const hodId = await reqRepo.getHodByDepartment(deptId)
-  console.log(`[getPendingHod] hodId=${hodId} eid=${eid} match=${hodId === eid}`)
-  if (hodId == null || hodId !== eid) return []
+  // ALL departments this employee is HOD of (employee_hod_departments — multi-dept aware).
+  // Previously this used the single getHodByDepartment(own dept) and returned [] unless that one
+  // matched, so in a department with more than one HOD only the "first" HOD saw the team's leave
+  // requests; the other HODs got an empty list.
+  const hodDepartments = await reqRepo.getHodDepartmentsForEmployee(eid)
+  if (!hodDepartments.length) return []
 
-  const [rows, icsLeaves] = await Promise.all([
-    leaveRepo.getPendingHodLeaves(deptId, deptName, eid),
-    fetchIcsDeptPendingLeaves(deptId, eid)
-  ])
-  console.log(`[getPendingHod] portalRows=${rows.length} icsLeaves=${icsLeaves.length}`)
-
-  const portalLeaves = rows.map(r => ({
+  const mapPortal = (r) => ({
     id: r.leave_request_id,
     reference: formatLeaveReference(r.leave_request_id, r.created_at),
     employeeId: r.employee_id,
@@ -1821,9 +1812,32 @@ export async function getPendingHod(employeeId) {
     email: r.email,
     departmentName: r.department_name,
     source: 'portal'
-  }))
+  })
 
-  return [...portalLeaves, ...icsLeaves]
+  const seenPortal = new Set()
+  const seenIcs = new Set()
+  const portalLeaves = []
+  const icsAll = []
+  for (const dept of hodDepartments) {
+    const deptId = dept.department_id
+    const deptName = (dept.department_name || '').trim().toLowerCase()
+    const [rows, icsLeaves] = await Promise.all([
+      leaveRepo.getPendingHodLeaves(deptId, deptName, eid),
+      fetchIcsDeptPendingLeaves(deptId, eid)
+    ])
+    for (const r of rows || []) {
+      if (r.leave_request_id != null && seenPortal.has(r.leave_request_id)) continue
+      if (r.leave_request_id != null) seenPortal.add(r.leave_request_id)
+      portalLeaves.push(mapPortal(r))
+    }
+    for (const l of icsLeaves || []) {
+      const key = l.id ?? l.icsLeaveId ?? `${l.employeeCode}-${l.startDate}-${l.type}`
+      if (seenIcs.has(key)) continue
+      seenIcs.add(key)
+      icsAll.push(l)
+    }
+  }
+  return [...portalLeaves, ...icsAll]
 }
 
 /**

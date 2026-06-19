@@ -1,0 +1,191 @@
+Code,Name,Department,Feb_Gross,Apr_Gross,Increment,Percent
+10028,"Tariq Shahzad",Sales & Marketing,442651,526755,84104,19.0
+10101,"Islam Javed",Sales & Marketing,320793,397783,76990,24.0
+10008,"Muhammad Fahad",Accounts & Finance,300276,375345,75069,25.0
+10131,"Fahad Ali Khan",Sales & Marketing,224266,291546,67280,30.0
+10015,"Syed Zia Abid Naqvi",Control Room,242087,302609,60522,25.0
+20001,"Ahmed Farid Bokhari",Management,408946,458946,50000,12.2
+10010,"Vivian Charles Paul",Corporate Services,249654,297088,47434,19.0
+10030,"Muhammad Umer Azeem",Sales & Marketing,123614,160698,37084,30.0
+10016,"Sobia Ali",Diagnostics & Harness,175425,207002,31577,18.0
+10520,"Nadeem Qasim",Management,85000,115600,30600,36.0
+20007,"Owais Akhlaq",Technology Development,166426,193054,26628,16.0
+10032,"Farjad Latif",Sales & Marketing,75843,102388,26545,35.0
+10288,"Muhammad Zakir",Information Technology,170000,195500,25500,15.0
+10391,"Hannan Ali",Sales & Marketing,84000,109200,25200,30.0
+10006,"Humna Altamash Yousuf",Human Resource,142552,165360,22808,16.0
+10482,"Syed Shabbir Hussain Naqvi",Security Department,111550,133860,22310,20.0
+10140,"Naveed Shahzad",Accounts & Finance,125013,145015,20002,16.0
+10038,"Muhammad Riasat",Administration,69871,89509,19638,28.1
+10063,"Muhammad Shahzad Aziz Bhatti",Sales & Marketing,88848,108395,19547,22.0
+10031,"Hassan Mustafa",Sales & Marketing,95640,114768,19128,20.0
+10147,"Muhammad Asif",Inventory & Procurement,127483,146605,19122,15.0
+10034,"Farhana Faisal",Sales & Marketing,72589,90736,18147,25.0
+10558,"Jehanzeb Khan",Coporate & Direct Sales,191000,208800,17800,9.3
+10002,"Ubaid Ullah",Administration,144364,161688,17324,12.0
+10568,"Syed Muhammad Rahat Ali",Sales & Marketing,45000,60750,15750,35.0
+10527,"Hassan Faroze Arfan",Sales & Marketing,45000,60750,15750,35.0
+10608,"Sheikh Ali Asif",Technology Development,40000,55000,15000,37.5
+10651,"Muhammad Sami",Technology Development,35000,50000,15000,42.9
+10054,"Mairaj-ul-Haq",Sales & Marketing,48801,63441,14640,30.0
+10003,"Furqan",Administration,80177,94609,14432,18.0
+10290,"Syed Sajid Hussain shah",Sales & Marketing,62500,76425,13925,22.3
+10435,"Daiya Sagar",Human Resource,60000,73200,13200,22.0
+10419,"Syed Saboor Ali",Marketing,65000,78000,13000,20.0
+10011,"Sidra Tiwana",Corporate Services,98221,110990,12769,13.0
+10323,"Zohra Abbasi",Accounts & Finance,57115,69680,12565,22.0
+10205,"Syed Adnan Mansoor",Marketing,121000,133100,12100,10.0
+10432,"Tanvir Ahmad",Sales & Marketing,70468,81038,10570,15.0
+10418,"Syed Omer Farooq Naqvi",Administration,45000,55350,10350,23.0
+20011,"Arshan",Technology Development,60766,70768,10002,16.5
+10603,"Hashaam Haroon",Technology Development,55000,65000,10000,18.2
+20015,"Mashooque Ali",Administration,49544,59212,9668,19.5
+10037,"Ali Mohammad",Administration,66897,76482,9585,14.3
+20026,"Ayaz-ul-Islam",Accounts & Finance,66824,76179,9355,14.0
+10592,"Faisal Ali",Sales & Marketing,77000,86240,9240,12.0
+10300,"Vishal Fazal",Administration,38076,47308,9232,24.2
+10021,"Rahat Gul",Removal Department,46016,55219,9203,20.0
+10009,"Muhammad Shaukat",Accounts & Finance,62166,70816,8650,13.9
+10142,"Mirza Taimoor Baig",Corporate Services,42500,51000,8500,20.0
+10019,"Anil",Control Room,52758,61199,8441,16.0
+10018,"Joseph Henry",Control Room,52655,61080,8425,16.0
+10434,"Lawrence",Technical,35468,43728,8260,23.3
+10035,"Riyasat Ali",Administration,57805,66026,8221,14.2
+10039,"Farmanullah Khan",Administration,57023,65126,8103,14.2
+10494,"Dawood Ahmed",Corporate Services,53650,61698,8048,15.0
+10049,"Afser Ali Khan",Inventory & Procurement,52957,60901,7944,15.0
+10308,"Sunil",Administration,41143,48867,7724,18.8
+10537,"Zobia",Accounts & Finance,55000,62700,7700,14.0
+10291,"Abdul Karim Khan",Security Department,75440,82984,7544,10.0
+10056,"Muhammad Jawad Ali Khan",Diagnostics & Harness,53403,60879,7476,14.0
+10216,"Syed Muhammad Asad",Technical,49451,56869,7418,15.0
+10229,"Ali Hassan",Technical,49093,56457,7364,15.0
+10701,"Hamza Ali Kazmi",Technical,37000,44000,7000,18.9
+40017,"Muhammad Mujahid",Administration,49550,56533,6983,14.1
+10160,"Nasir",Accounts & Finance,45359,52305,6946,15.3
+10386,"Muhammad Zubair",Technical,34999,41884,6885,19.7
+10299,"Karan Kumar",Administration,41667,48419,6752,16.2
+10413,"Owais Raza",Technical,37226,43931,6705,18.0
+10576,"Faris Ahmed",Technical,37000,43660,6660,18.0
+10532,"Sajid Mehmood",Technical,35048,41692,6644,19.0
+50004,"Sohail Ahmed",Administration,46961,53555,6594,14.0
+10366,"Muhammad Arbaz Khan",Technical,35267,41736,6469,18.3
+10189,"Anas Kamil",Corporate Services,41750,48013,6263,15.0
+10256,"Adnan",Accounts & Finance,41143,47372,6229,15.1
+10045,"Ghazi Naveed Hussain",Technical,45141,51261,6120,13.6
+10058,"Zeeshan Noor",Diagnostics & Harness,42341,48331,5990,14.1
+10114,"Ayaz ahmed",Technical,32445,38425,5980,18.4
+10577,"Tayyab Bashir",Technical,38758,44737,5979,15.4
+10126,"Mola Bux",Technical,31997,37934,5937,18.6
+10199,"Muhammad Mustafa",Renewal Department,42104,47999,5895,14.0
+10192,"Muhammad Usman",Technical,32014,37773,5759,18.0
+10346,"Jamila Kosar",Technical,41035,46780,5745,14.0
+10526,"Bilal Yab Ali",Corporate Services,38000,43700,5700,15.0
+10163,"Syed Muhammad Hasnain",Removal Department,37603,43243,5640,15.0
+10328,"Samuel Nawab",Control Room,37355,42958,5603,15.0
+10124,"Mehran",Technical,33260,38850,5590,16.8
+10454,"Muhammad Ishtiaq",Technical,34815,40358,5543,15.9
+20010,"Zubair Shahzad (Patel)",Technical,53601,59123,5522,10.3
+10102,"Chand Ali Ansari",Administration,36601,42091,5490,15.0
+10567,"Muhammad Khalid",Removal Department,45000,50400,5400,12.0
+10551,"Alisa Shah",Software Development,45000,50400,5400,12.0
+10042,"Wasif",Administration,38689,44042,5353,13.8
+10169,"Akhtar Ali",Technical,33500,38833,5333,15.9
+10561,"Syed Shahzaib Hussain",Corporate Services,38000,43320,5320,14.0
+10539,"Muhammad Owais",Corporate Services,38000,43320,5320,14.0
+10326,"Shahzor Domnic",Removal Department,35340,40641,5301,15.0
+10365,"Muhammad Umer (Ilyas)",Removal Department,35340,40641,5301,15.0
+10239,"Syed Ayyan Ali",Control Room,35065,40325,5260,15.0
+10135,"Alister Goden Gilbert",Control Room,35030,40285,5255,15.0
+10587,"Muhammad Faizan Siddiqui",Marketing,35000,40250,5250,15.0
+10505,"Syed Muneeb Hussain",Marketing,35000,40250,5250,15.0
+20033,"Fahim Ali",Administration,37671,42872,5201,13.8
+10067,"Muhammad Luqman Farooq",Technical,41266,46453,5187,12.6
+10059,"Muhammad Mansoor",Diagnostics & Harness,49764,54940,5176,10.4
+10431,"Muhammad Saif Malik",Removal Department,34500,39675,5175,15.0
+10082,"Sakhawat Ali",Technical,34978,40094,5116,14.6
+10465,"Saba Aurangzaib",Control Room,42375,47460,5085,12.0
+10489,"Muhammad Ayan Ateeb",Control Room,33900,38985,5085,15.0
+10430,"Awaiz Javed",Control Room,33900,38985,5085,15.0
+10103,"Zahid Iqbal",Technical,50487,55536,5049,10.0
+10387,"Muhammad Asif Khan",Technical,38700,43731,5031,13.0
+10088,"Muhammad Imran Tahir",Administration,36035,40990,4955,13.8
+20055,"Shaool Arnold",Control Room,32925,37864,4939,15.0
+10351,"Waqar-Ul-Nabi",Technical,49355,54291,4936,10.0
+10278,"Sikandar Malik",Administration,32786,37704,4918,15.0
+10460,"Muhammad Nafay",Control Room,32770,37686,4916,15.0
+10400,"Rimarrio Shahzad",Control Room,32340,37191,4851,15.0
+10571,"Muhammad Owais",Removal Department,40000,44800,4800,12.0
+10301,"Shabbir Ahmad",Administration,36643,41353,4710,12.9
+10404,"Asad Shabbir",Technical,32261,36962,4701,14.6
+10523,"Taha Mehmood",Diagnostics & Harness,34180,38870,4690,13.7
+10511,"Harkas Busharat",Control Room,31000,35650,4650,15.0
+10107,"Muhammad Ajmal Khan",Technical,40121,44756,4635,11.6
+10200,"Rocks mubarik",Administration,34438,39049,4611,13.4
+10047,"Mohsin Raza",Technical,50341,54930,4589,9.1
+10403,"Waseem gill",Technical,34429,39014,4585,13.3
+10406,"Abu Huraira",Technical,32261,36823,4562,14.1
+10562,"Muhammad Huzaifa Khan",Renewal Department,38000,42560,4560,12.0
+10407,"Mohammad Yousuf",Removal Department,37950,42504,4554,12.0
+10104,"Muhammad Mughera Ismail",Technical,33937,38478,4541,13.4
+20014,"Muhammad Adnan",Inventory & Procurement,45356,49892,4536,10.0
+10396,"Muhammad Ali Javed",Technical,31177,35713,4536,14.5
+10347,"Bilal Mughal",Technical,32744,37239,4495,13.7
+10364,"Khizar Awan",Control Room,37355,41838,4483,12.0
+10554,"Uzair Ahmed Ansari",Control Room,34000,38420,4420,13.0
+10533,"Dawood Bose",Control Room,34000,38420,4420,13.0
+10496,"Adnan Ali",Technical,35043,39426,4383,12.5
+10322,"Nadeem Ahmed",Technical,30261,34575,4314,14.3
+10500,"Silvester",Administration,38063,42373,4310,11.3
+10557,"Zeeshan Akram",Technical,34532,38833,4301,12.5
+10113,"Abdul Noman Rasheed",Technical,33405,37695,4290,12.8
+10075,"Surat Khan",Administration,44136,48414,4278,9.7
+10344,"Muhammad Asad",Technical,33154,37415,4261,12.9
+10573,"Wasiq Ullah Khan",Marketing,35000,39200,4200,12.0
+10572,"Muhammad Obaid Raza",Control Room,35000,39200,4200,12.0
+10193,"Nadeem Amir",Technical,31261,35406,4145,13.3
+10519,"Muhammad Uzaif",Control Room,34000,38080,4080,12.0
+10536,"Mirza Asad Ali",Technical,30403,34428,4025,13.2
+10574,"Nickson",Control Room,33000,36960,3960,12.0
+10583,"Muhammad Azeen",Control Room,33000,36960,3960,12.0
+10394,"Syed Hussain Raza Rizvi",Technical,36299,40213,3914,10.8
+10274,"Muhammad Farhan",Technical,31395,35288,3893,12.4
+10556,"Muhammad Rauf Akhtar",Technical,33500,37340,3840,11.5
+10286,"Ghulam Fareed",Technical,32416,36162,3746,11.6
+10426,"Ishfaq Ahmed",Technical,32650,36388,3738,11.4
+10452,"Usman Ali",Technical,32650,36388,3738,11.4
+10128,"Zuaib Hassan",Technical,31927,35578,3651,11.4
+10156,"Muhammad Imran (Mughal)",Technical,33912,37558,3646,10.8
+10456,"Daud",Technical,30065,33700,3635,12.1
+10427,"Zahid Akhtar Qureshi",Technical,31600,35212,3612,11.4
+10352,"Muhammad Arbaz Sohail",Diagnostics & Harness,30000,33600,3600,12.0
+10118,"Muhammad Arslan",Technical,33569,37134,3565,10.6
+10120,"Sajid Rafique",Technical,30906,34435,3529,11.4
+10285,"Noman Ullah",Technical,30700,34204,3504,11.4
+10345,"Muhammad Arif",Technical,30646,34144,3498,11.4
+10119,"Muhammad Shafiq",Technical,30547,34033,3486,11.4
+10183,"Amjad Shoukat",Administration,13913,17391,3478,25.0
+10292,"Umer Rasheed",Technical,30331,33791,3460,11.4
+10117,"Muhammad Waqas",Technical,29607,32980,3373,11.4
+10155,"Muhammad Ejaz",Technical,29596,32968,3372,11.4
+10402,"Irshad Ahmad",Technical,29500,32860,3360,11.4
+10181,"Adnan Ali",Technical,32251,35434,3183,9.9
+10153,"Raja Muhammad Bilal Azeem",Administration,38044,41045,3001,7.9
+10591,"Faizan",Technical,39495,42486,2991,7.6
+20013,"Kamran Afzal",Technical,34693,37682,2989,8.6
+10510,"Muzammil Hussain",Technical,29624,32550,2926,9.9
+10295,"Zafar Ali",Technical,31877,34788,2911,9.1
+10226,"Faizan",Technical,35289,38161,2872,8.1
+10547,"Muhammad Asif",Technical,37882,40642,2760,7.3
+10340,"Muhammad Misum Temar",Technical,35561,38170,2609,7.3
+10470,"Ibrar Ahmed",Technical,31694,34260,2566,8.1
+10493,"Atiq ur Rehman",Technical,30403,32860,2457,8.1
+10681,"Muhammad Ramzan",Technical,36500,38396,1896,5.2
+10289,"Hasnain",Diagnostics & Harness,44608,46243,1635,3.7
+10733,"Muhammad Zain",Diagnostics & Harness,35000,36021,1021,2.9
+10675,"Iftikhar Haider",Technical,34532,35233,701,2.0
+10588,"Muhammad Hassan Aslam",Technical,31379,31900,521,1.7
+10698,"Fahim Ayoob",Technical,50129,50625,496,1.0
+10593,"Salman Ali",Technical,31379,31663,284,0.9
+10673,"Daniyal Anwar",Technical,39694,39733,39,0.1
+10676,"Muhammad Arbab",Technical,37629,37667,38,0.1
