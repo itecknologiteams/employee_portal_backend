@@ -551,7 +551,7 @@ export async function isSeniorExecutiveForLeave(employeeId) {
        LEFT JOIN employee_type et ON e.employee_type_id = et.emp_type_id
          AND (et.emp_type_name IN ('CEO', 'COO', 'Director'))
        LEFT JOIN designation desg ON e.designation_id = desg.desg_id
-         AND (desg.desg_name ILIKE '%CEO%' OR desg.desg_name ILIKE '%COO%' OR desg.desg_name ILIKE '%Director%')
+         AND (desg.desg_name ~* '\yCEO\y' OR desg.desg_name ~* '\yCOO\y' OR desg.desg_name ~* '\yDirector\y')
        WHERE e.employee_id = $1 AND (et.emp_type_id IS NOT NULL OR desg.desg_id IS NOT NULL)`,
       [employeeId]
     )
