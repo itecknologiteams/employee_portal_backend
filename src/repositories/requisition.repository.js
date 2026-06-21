@@ -1642,7 +1642,12 @@ export async function getPendingRequisitionsByCurrentStage(stageKey, opts = {}) 
     if (stageKey === 'hod' && (departmentId != null || (departmentName != null && String(departmentName).trim() !== ''))) {
       q += ` AND (e.department_id = $2 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $3 AND $3 != ''))`
       params.push(departmentId ?? null, (departmentName || '').trim().toLowerCase())
-      // Do not exclude creator for hod stage so HOD's own requisitions appear in Pending HOD
+    }
+    // Separation of duties: an HOD must not see/approve their OWN requisition in the HOD bucket.
+    // Only the viewing HOD is excluded — other HODs of the same department still see it.
+    if (stageKey === 'hod' && excludeEmployeeId != null) {
+      params.push(parseInt(excludeEmployeeId, 10))
+      q += ` AND r.req_emp_id != $${params.length}`
     }
     q += ` ORDER BY r.req_created_at ASC`
     return executeQuery(q, params)
@@ -1911,8 +1916,15 @@ export async function getAllHodApprovedRequisitions(deptId, deptName, excludeEmp
 /** Creator-dept requisitions whose required-by date is today or past, not completed ? HOD may extend deadline.
  *  Only includes requisitions still in HOD bucket (not yet forwarded) OR completed pending HOD acknowledgment.
  */
-export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName) {
+export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName, excludeEmployeeId = null) {
   try {
+    const params = [deptId, deptName]
+    let excludeClause = ''
+    // Separation of duties: don't surface the viewing HOD's own overdue requisition to them.
+    if (excludeEmployeeId != null) {
+      params.push(parseInt(excludeEmployeeId, 10))
+      excludeClause = ` AND r.req_emp_id != $${params.length}`
+    }
     return await executeQuery(
       `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
         desg.desg_name AS designation_name
@@ -1924,14 +1936,14 @@ export async function getRequisitionsNeedingDeadlineExtensionByDept(deptId, dept
          AND COALESCE(r.req_purchase_completed, 0) = 0
          AND r.req_required_by_date IS NOT NULL
          AND (r.req_required_by_date::date <= CURRENT_DATE)
-         AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))
+         AND (e.department_id = $1 OR (LOWER(TRIM(COALESCE(d.department_name, ''))) = $2 AND $2 != ''))${excludeClause}
          AND (
            (r.req_current_stage_key = 'hod' AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_purchase_completed, 0) = 0)
            OR
            (r.req_current_stage_key IS NULL AND COALESCE(r.req_hod_approval, 0) = 0 AND COALESCE(r.req_committee_approval, 0) = 0 AND COALESCE(r.req_ceo_approval, 0) = 0 AND COALESCE(r.req_finance_approval, 0) = 0)
          )
        ORDER BY r.req_required_by_date ASC NULLS LAST, r.req_created_at ASC`,
-      [deptId, deptName]
+      params
     )
   } catch (err) {
     if (err.code === '42703' || err.code === '42P01') return []
@@ -2667,8 +2679,15 @@ export async function getMyRevertedRequisitionsList(employeeId) {
  * @param {string} departmentName - Department name (for display)
  * @returns {Promise<Array>}
  */
-export async function getPendingHodRevertedRequisitions(departmentId, departmentName) {
+export async function getPendingHodRevertedRequisitions(departmentId, departmentName, excludeEmployeeId = null) {
   try {
+    const params = [departmentId]
+    let excludeClause = ''
+    // Separation of duties: don't surface the viewing HOD's own reverted requisition to them.
+    if (excludeEmployeeId != null) {
+      params.push(parseInt(excludeEmployeeId, 10))
+      excludeClause = ` AND r.req_emp_id != $${params.length}`
+    }
     const result = await executeQuery(
       `SELECT
         r.*,
@@ -2684,9 +2703,9 @@ export async function getPendingHodRevertedRequisitions(departmentId, department
          AND r.revert_resolved_at IS NULL
          AND e.department_id = $1
          AND r.req_is_rejected = 0
-         AND r.req_purchase_completed = 0
+         AND r.req_purchase_completed = 0${excludeClause}
        ORDER BY r.reverted_at DESC`,
-      [departmentId]
+      params
     )
     return result || []
   } catch (err) {

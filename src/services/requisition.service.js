@@ -22,6 +22,7 @@ import {
   canReviseRequisition
 } from '../utils/requisition.utils.js'
 import { parseNumericCostPkr, getEffectiveUnitPricePkrFromItem } from '../utils/requisitionAmountParse.js'
+import { isCategoryNoBoq, isCategoryHrAfterHod, isCategoryNoDate } from '../config/requisitionCategoryPolicy.js'
 import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 
@@ -126,33 +127,6 @@ export async function getCategories() {
 }
 
 const VALID_BUCKETS = ['hod', 'it', 'hr', 'committee', 'ceo', 'procurement', 'finance', 'admin', 'admin_acknowledge', 'admin_handover', 'hr_check']
-
-/** Categories where HOD can approve without BOQ (no size/brand/price per piece required). */
-const REQUISITION_CATEGORIES_NO_BOQ = [
-  'Vehicle Maintenance',
-  'Vehicle Repair',
-  'Other Repair & Maintenance',
-  'Loan & Advance Salary',
-  'Event',
-  'Specialized Projects'
-]
-
-function isCategoryNoBoq(category) {
-  if (category == null || category === '') return false
-  const c = String(category).trim().toLowerCase()
-  if (!c) return false
-  return REQUISITION_CATEGORIES_NO_BOQ.some((cat) => cat.trim().toLowerCase() === c)
-}
-
-/** Categories that require HR approval after HOD (hr_finance=1). Must go to HR bucket before Committee. */
-const REQUISITION_CATEGORIES_HR_AFTER_HOD = ['Loan & Advance Salary']
-
-function isCategoryHrAfterHod(category) {
-  if (category == null || category === '') return false
-  const c = String(category).trim().toLowerCase()
-  if (!c) return false
-  return REQUISITION_CATEGORIES_HR_AFTER_HOD.some((cat) => cat.trim().toLowerCase() === c)
-}
 
 /** Set req_current_stage_key to track current bucket. Always updates the stage key. */
 async function setCurrentStage(reqId, stageKey, categoryNameForFirst) {
@@ -467,16 +441,6 @@ function normalizeRequisitionItemForCreate(item) {
   return { ...item, itemEstCost: String(n) }
 }
 
-/** Categories that don't require a required by date */
-const REQUISITION_CATEGORIES_NO_DATE = ['Loan & Advance Salary', 'Stationary']
-
-function isCategoryNoDate(category) {
-  if (category == null || category === '') return false
-  const c = String(category).trim().toLowerCase()
-  if (!c) return false
-  return REQUISITION_CATEGORIES_NO_DATE.some((cat) => cat.trim().toLowerCase() === c)
-}
-
 /**
  * Recompute and persist item_tax_amount for every item of a requisition.
  * IT Equipments category: tax = computeItemTaxAmountPkr(item) per item.
@@ -700,10 +664,15 @@ export async function createRequisition(body) {
     if (hasHrStage) {
       // For HOD/Committee/CEO/Finance/Procurement creators: skip their normal auto-advance and go to HR
       if (creatorIsCeo || creatorIsCommittee || creatorIsHod) {
-        // Mark as approved by their role but route to HR
+        // Mark as approved by their role, then route to the HR bucket. The stage key MUST be set
+        // to 'hr' and HR notified — otherwise the requisition only shows in HR via the NULL-stage
+        // fallback and HR gets no email/in-app alert.
         if (creatorIsCeo) await reqRepo.autoAdvanceCeoRequisition(reqId)
         else if (creatorIsCommittee) await reqRepo.autoAdvanceCommitteeRequisition(reqId)
         else if (creatorIsHod) await reqRepo.autoAdvanceHodRequisition(reqId, parseInt(employeeId, 10))
+        await setCurrentStage(reqId, 'hr')
+        await notifyBucketChanged(reqId, 'hr')
+        notifSvc.notifySafe(inAppNotifyRequisitionBucket(reqId, 'hr', deptId))
       } else {
         // Normal employee: HOD pe jaao pehle
         await setCurrentStage(reqId, 'hod')
@@ -951,15 +920,16 @@ export async function getPendingHod(employeeId) {
 
     let rows = []
     try {
-      // Only show requisitions actually in the HOD bucket — ack list is served separately by getPendingHodAcknowledge
-      rows = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName }) || []
+      // Only show requisitions actually in the HOD bucket — ack list is served separately by getPendingHodAcknowledge.
+      // Exclude the viewing HOD's own requisitions (separation of duties); other HODs still see them.
+      rows = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName, excludeEmployeeId: eid }) || []
     } catch (err) {
       if (err.code === '42703') rows = []
       else throw err
     }
 
     try {
-      const extRows = await reqRepo.getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName)
+      const extRows = await reqRepo.getRequisitionsNeedingDeadlineExtensionByDept(deptId, deptName, eid)
       for (const r of extRows || []) {
         if (r.req_id != null && !rows.some(x => x.req_id === r.req_id)) rows.push(r)
       }
@@ -998,7 +968,7 @@ export async function getPendingHodReverted(employeeId) {
 
     let rows = []
     try {
-      rows = await reqRepo.getPendingHodRevertedRequisitions(deptId, deptName)
+      rows = await reqRepo.getPendingHodRevertedRequisitions(deptId, deptName, eid)
     } catch (err) {
       if (err.code !== '42703') throw err
     }
@@ -1428,6 +1398,13 @@ export async function approveHR(body) {
   if (!ok) {
     return { error: 'Only HR can approve this stage. Check your Employee Type or Designation.', status: 403 }
   }
+  // Stage guard: don't act on a requisition parked at another stage. NULL is allowed — legacy
+  // Loan & Advance rows sit in the HR bucket via the approval-flag fallback (getPendingHR).
+  const hrStageRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!hrStageRow.length) return { error: 'Requisition not found', status: 404 }
+  if (hrStageRow[0].req_current_stage_key != null && hrStageRow[0].req_current_stage_key !== 'hr') {
+    return { error: `Requisition is not at the HR stage (current: ${hrStageRow[0].req_current_stage_key})`, status: 400 }
+  }
   if (approved === false) {
     const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
     if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being rejected.', status: 400 }
@@ -1672,6 +1649,13 @@ export async function approveCommittee(body) {
   if (!ok) {
     return { error: 'Only Committee members can approve. Check your Employee Type or Designation in Administration.', status: 403 }
   }
+  // Stage guard: don't act on a requisition parked at another stage. NULL is allowed — legacy
+  // rows sit in the Committee bucket via the approval-flag fallback (getPendingCommittee).
+  const commStageRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!commStageRow.length) return { error: 'Requisition not found', status: 404 }
+  if (commStageRow[0].req_current_stage_key != null && commStageRow[0].req_current_stage_key !== 'committee') {
+    return { error: `Requisition is not at the Committee stage (current: ${commStageRow[0].req_current_stage_key})`, status: 400 }
+  }
   if (approved === false) {
     const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
     if (!reason) return { error: 'Rejection reason is required. Please state why this requisition is being cancelled.', status: 400 }
@@ -1862,9 +1846,20 @@ export async function approveCeo(body) {
   if (reqId == null || Number.isNaN(reqId) || eid == null) {
     return { error: 'Valid requisitionId and approvedByEmployeeId or approvedByEmployeeCode are required', status: 400 }
   }
-  const ok = await reqRepo.isCeoMember(eid)
+  // Match the role gate used by getPendingCeo: prefer the flow-stage employee type, fall back to
+  // the legacy CEO-member check. (Local name avoids colliding with the `useFlow` declared below.)
+  const ceoUseFlow = (await reqRepo.getFlowStages()).length > 0
+  const ok = ceoUseFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'ceo') : await reqRepo.isCeoMember(eid)
   if (!ok) {
     return { error: 'Only CEO can approve. Check your Employee Type or Designation in Administration.', status: 403 }
+  }
+  // Stage guard: don't act on a requisition explicitly parked at another stage (prevents
+  // stage-skipping). NULL stage is allowed — legacy rows sit in the CEO bucket via the
+  // approval-flag fallback that getPendingCeo also honors.
+  const ceoStageRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!ceoStageRow.length) return { error: 'Requisition not found', status: 404 }
+  if (ceoStageRow[0].req_current_stage_key != null && ceoStageRow[0].req_current_stage_key !== 'ceo') {
+    return { error: `Requisition is not at the CEO stage (current: ${ceoStageRow[0].req_current_stage_key})`, status: 400 }
   }
   if (approved === false) {
     const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
@@ -1909,6 +1904,13 @@ export async function approveAdmin(body) {
   const ok = useFlow ? await reqRepo.isEmployeeTypeForStage(eid, 'admin') : await reqRepo.isAdminMember(eid)
   if (!ok) {
     return { error: 'Only Admin can approve this stage.', status: 403 }
+  }
+  // Stage guard (strict): the Admin bucket has no NULL fallback — getPendingAdmin only returns
+  // rows whose stage is exactly 'admin', so anything else (incl. NULL) must not be acted on here.
+  const admStageRow = await reqRepo.getRequisitionAndDepartment(reqId)
+  if (!admStageRow.length) return { error: 'Requisition not found', status: 404 }
+  if (admStageRow[0].req_current_stage_key !== 'admin') {
+    return { error: `Requisition is not at the Admin stage (current: ${admStageRow[0].req_current_stage_key || 'none'})`, status: 400 }
   }
   if (approved === false) {
     const reason = body.rejectionReason != null ? String(body.rejectionReason).trim() : ''
@@ -2616,7 +2618,8 @@ export async function getPendingFinance(employeeId) {
     const deptId = dept.department_id
     const deptName = (dept.department_name || '').trim().toLowerCase()
     try {
-      const rows = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName }) || []
+      // Exclude the viewing HOD's own requisitions (separation of duties); other HODs still see them.
+      const rows = await reqRepo.getPendingRequisitionsByCurrentStage('hod', { departmentId: deptId, departmentName: deptName, excludeEmployeeId: eid }) || []
       hodRows = hodRows.concat(rows)
     } catch (_) {}
   }
@@ -3369,6 +3372,23 @@ export async function revertForReview(body) {
     return { error: `You do not have permission to revert from ${fromStage} stage`, status: 403 }
   }
 
+  // Stage + state guard: only revert a requisition that is actually AT fromStage and still in
+  // flight. Otherwise clear_approvals_after_stage could clear more than intended and resubmit
+  // would return it to the wrong stage. NULL stage is allowed — legacy rows sit in a bucket via
+  // the approval-flag fallback used by the pending lists.
+  const requisition = await reqRepo.getRequisitionById(reqId)
+  if (!requisition.length) return { error: 'Requisition not found', status: 404 }
+  const curReq = requisition[0]
+  if (Number(curReq.req_is_rejected) === 1) {
+    return { error: 'Cannot revert a rejected requisition', status: 400 }
+  }
+  if (Number(curReq.req_purchase_completed) === 1) {
+    return { error: 'Cannot revert a requisition whose purchase is already completed', status: 400 }
+  }
+  if (curReq.req_current_stage_key != null && curReq.req_current_stage_key !== fromStage) {
+    return { error: `Requisition is not at the ${fromStage} stage (current: ${curReq.req_current_stage_key})`, status: 400 }
+  }
+
   // Check if THIS STAGE has already reverted (one revert per stage allowed)
   const stageAlreadyReverted = await reqRepo.hasStageReverted(reqId, fromStage)
   if (stageAlreadyReverted) {
@@ -3377,8 +3397,7 @@ export async function revertForReview(body) {
 
   // Get creator info for notification
   const creatorId = await notifRepo.getRequisitionCreatorId(reqId)
-  const requisition = await reqRepo.getRequisitionById(reqId)
-  const refNo = requisition?.[0]?.req_reference_no || `#${reqId}`
+  const refNo = curReq.req_reference_no || `#${reqId}`
 
   // Perform the revert
   const result = await reqRepo.revertRequisitionToHod(reqId, fromStage, eid, comment)
@@ -3514,8 +3533,9 @@ function toYmd(value) {
 /**
  * Revise a requisition: create a fresh copy (creator-edited items) with a revised reference,
  * routed through the full normal flow from HOD. The original is left unchanged.
- * Allowed only for the creator, on a procurement-involved requisition whose required-by date
- * has passed and which is neither closed nor rejected.
+ * Allowed for the creator on ANY requisition they own (no stage/date/status restriction is
+ * enforced here). The History page's revise button uses canReviseRequisition() to decide when
+ * to OFFER a revise, but that is a UI affordance only — it is not a server-side precondition.
  */
 export async function reviseRequisition(body) {
   const reqId = parseInt(body?.reqId, 10)
@@ -3662,6 +3682,8 @@ export async function reviewFlaggedItem(body) {
     ceoRequired = true
     await reqRepo.setRequisitionCurrentStage(item.req_id, 'ceo')
     await executeQuery('UPDATE requisition SET req_ceo_approval = 0 WHERE req_id = $1', [item.req_id]).catch(() => {})
+    // Bucket change → notify CEO by email + in-app (consistent with every other stage transition).
+    await notifyBucketChanged(item.req_id, 'ceo')
     try { notifSvc.notifySafe(inAppNotifyRequisitionBucket(item.req_id, 'ceo', null)) } catch (_) {}
   }
 

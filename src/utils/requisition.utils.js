@@ -9,11 +9,9 @@ export const REQUISITION_CEO_MIN_AMOUNT_PKR = parseInt(process.env.REQUISITION_C
 /** Sales tax rate applied to IT Equipment requisition items (Pakistan GST on goods). */
 export const REQUISITION_SALES_TAX_RATE = 0.18
 
-/** True when the category is the IT Equipments category (case/space-insensitive). */
-export function isItEquipmentCategory(category) {
-  if (category == null || category === '') return false
-  return String(category).trim().toLowerCase() === 'it equipments'
-}
+// Category exception predicates live in the single category-policy module; re-exported here so
+// existing importers keep working unchanged.
+export { isItEquipmentCategory } from '../config/requisitionCategoryPolicy.js'
 
 /**
  * True if an item has been set aside (flagged unavailable by Procurement and awaiting
