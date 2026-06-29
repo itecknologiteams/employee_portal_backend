@@ -100,52 +100,47 @@ export async function getDepartmentMemberIds(departmentId) {
   return rows.map(r => parseInt(r.employee_id, 10)).filter(n => !Number.isNaN(n))
 }
 
-/** Track records for a set of employee ids (department-wide view). Same row shape as
- *  getTrackRecordsByEmployee but joins the creator name. Excludes hidden rows. */
-export async function getTrackRecordsByMembers(memberIds, limit, offset, search) {
-  if (!memberIds || memberIds.length === 0) return []
-  const hasSearch = search != null && String(search).trim() !== ''
-  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
-  const nameExpr = `TRIM(CONCAT(COALESCE(e.first_name, ''), ' ', COALESCE(e.last_name, '')))`
-  if (hasSearch) {
-    return executeQuery(
-      `SELECT r.*, ${nameExpr} AS creator_name, e.employee_code AS creator_code
-       FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
-       WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE
-         AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2 OR ${nameExpr} ILIKE $2)
-       ORDER BY r.req_created_at DESC
-       LIMIT $3 OFFSET $4`,
-      [memberIds, pattern, limit, offset]
-    )
+const MEMBERS_NAME_EXPR = `TRIM(CONCAT(COALESCE(e.first_name, ''), ' ', COALESCE(e.last_name, '')))`
+
+/** Shared WHERE for the department-wide view: members, hidden, search (ref/material/name), date range. */
+function buildMembersWhere(memberIds, { search, from = null, to = null } = {}) {
+  const conds = ['r.req_emp_id = ANY($1)', 'COALESCE(r.is_hidden, FALSE) = FALSE']
+  const params = [memberIds]
+  let i = 2
+  if (search != null && String(search).trim() !== '') {
+    params.push('%' + String(search).trim() + '%')
+    conds.push(`(r.req_reference_no ILIKE $${i} OR COALESCE(r.req_material, '') ILIKE $${i} OR ${MEMBERS_NAME_EXPR} ILIKE $${i})`)
+    i++
   }
-  return executeQuery(
-    `SELECT r.*, ${nameExpr} AS creator_name, e.employee_code AS creator_code
-     FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
-     WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE
-     ORDER BY r.req_created_at DESC
-     LIMIT $2 OFFSET $3`,
-    [memberIds, limit, offset]
-  )
+  if (from != null && String(from).trim() !== '') { params.push(String(from).trim()); conds.push(`r.req_created_at::date >= $${i}::date`); i++ }
+  if (to != null && String(to).trim() !== '') { params.push(String(to).trim()); conds.push(`r.req_created_at::date <= $${i}::date`); i++ }
+  return { clause: conds.join(' AND '), params, nextIndex: i }
 }
 
-export async function getTrackRecordsCountByMembers(memberIds, search) {
-  if (!memberIds || memberIds.length === 0) return 0
-  const hasSearch = search != null && String(search).trim() !== ''
-  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
-  const nameExpr = `TRIM(CONCAT(COALESCE(e.first_name, ''), ' ', COALESCE(e.last_name, '')))`
-  if (hasSearch) {
-    const r = await executeQuery(
-      `SELECT COUNT(*) AS total FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
-       WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE
-         AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2 OR ${nameExpr} ILIKE $2)`,
-      [memberIds, pattern]
-    )
-    return parseInt(r[0]?.total ?? 0, 10)
+/** Track records for a set of employee ids (department-wide view). Same row shape as
+ *  getTrackRecordsByEmployee but joins the creator name. Excludes hidden rows.
+ *  `limit` null = no pagination (used when filtering computed status in the service). */
+export async function getTrackRecordsByMembers(memberIds, limit, offset, search, from = null, to = null) {
+  if (!memberIds || memberIds.length === 0) return []
+  const { clause, params, nextIndex } = buildMembersWhere(memberIds, { search, from, to })
+  let sql = `SELECT r.*, ${MEMBERS_NAME_EXPR} AS creator_name, e.employee_code AS creator_code
+     FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id
+     WHERE ${clause}
+     ORDER BY r.req_created_at DESC`
+  let i = nextIndex
+  if (limit != null) {
+    params.push(limit); sql += ` LIMIT $${i}`; i++
+    params.push(offset || 0); sql += ` OFFSET $${i}`; i++
   }
+  return executeQuery(sql, params)
+}
+
+export async function getTrackRecordsCountByMembers(memberIds, search, from = null, to = null) {
+  if (!memberIds || memberIds.length === 0) return 0
+  const { clause, params } = buildMembersWhere(memberIds, { search, from, to })
   const r = await executeQuery(
-    `SELECT COUNT(*) AS total FROM requisition r
-     WHERE r.req_emp_id = ANY($1) AND COALESCE(r.is_hidden, FALSE) = FALSE`,
-    [memberIds]
+    `SELECT COUNT(*) AS total FROM requisition r JOIN employees e ON e.employee_id = r.req_emp_id WHERE ${clause}`,
+    params
   )
   return parseInt(r[0]?.total ?? 0, 10)
 }

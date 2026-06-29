@@ -282,7 +282,7 @@ export async function getHistory(employeeId, query = {}) {
   const canViewDepartment = await isItDepartmentMember(eid)
   if (scope === 'department') {
     if (!canViewDepartment) return { error: 'Not authorized for department view', status: 403 }
-    return getDepartmentHistory(eid, { page, limit, offset, search })
+    return getDepartmentHistory(eid, { page, limit, offset, search, from, to, statusFilter })
   }
 
   // Search + date range are filtered in SQL. Status is a COMPUTED value (getRequisitionStatus),
@@ -344,12 +344,21 @@ export async function getHistory(employeeId, query = {}) {
 }
 
 /** Department-wide (IT) read-only history: all IT members' requisitions with creator name. */
-async function getDepartmentHistory(eid, { page, limit, offset, search }) {
+async function getDepartmentHistory(eid, { page, limit, offset, search, from, to, statusFilter }) {
   const itId = getItDepartmentId()
   const memberIds = await reqRepo.getDepartmentMemberIds(itId)
-  const total = await reqRepo.getTrackRecordsCountByMembers(memberIds, search || undefined)
+  // Search + date range in SQL; computed status filtered in JS over all matching rows (then paginate).
+  let rows, total
+  if (statusFilter) {
+    const allRows = await reqRepo.getTrackRecordsByMembers(memberIds, null, 0, search || undefined, from || undefined, to || undefined)
+    const matched = allRows.filter((r) => getRequisitionStatus(r) === statusFilter)
+    total = matched.length
+    rows = matched.slice(offset, offset + limit)
+  } else {
+    total = await reqRepo.getTrackRecordsCountByMembers(memberIds, search || undefined, from || undefined, to || undefined)
+    rows = await reqRepo.getTrackRecordsByMembers(memberIds, limit, offset, search || undefined, from || undefined, to || undefined)
+  }
   const totalPages = Math.max(1, Math.ceil(total / limit))
-  const rows = await reqRepo.getTrackRecordsByMembers(memberIds, limit, offset, search || undefined)
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getRequisitionItemsByReqIds(reqIds) : []
   const data = rows.map(req => ({
