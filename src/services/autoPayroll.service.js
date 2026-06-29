@@ -12,11 +12,87 @@
  */
 
 import * as repo from '../repositories/autoPayroll.repository.js'
+import { getActiveTaxSlabs } from '../repositories/payroll.repository.js'
 import * as XLSX from 'xlsx'
 import { executeQuery } from '../../config/database.js'
 
 const EOBI_FIXED = 130
 const LATE_TO_ABSENT_DIVISOR = 3
+
+// ---------- Income tax (annualised, Pakistan FY July–June) ----------
+
+/** Tax-year bounds [1 Jul, 30 Jun] containing the given date. New FY restarts the projection. */
+function getTaxYearBounds(dateLike) {
+  const d = new Date(dateLike)
+  const y = d.getUTCFullYear()
+  const startYear = d.getUTCMonth() >= 6 ? y : y - 1 // month index 6 = July
+  return { start: new Date(Date.UTC(startYear, 6, 1)), end: new Date(Date.UTC(startYear + 1, 5, 30)) }
+}
+
+/** Annual tax from active slab rows: base tax of the bracket + percent over the bracket's lower bound. */
+function computeAnnualTax(annualIncome, slabs) {
+  if (!Array.isArray(slabs) || slabs.length === 0 || !(annualIncome > 0)) return 0
+  const pick = slabs.find((s) => annualIncome >= parseFloat(s.min_amt) && annualIncome <= parseFloat(s.max_amt))
+    || slabs[slabs.length - 1]
+  const base = parseFloat(pick.taxable_amt) || 0
+  const pct = parseFloat(pick.tax_percent) || 0
+  const lower = parseFloat(pick.min_amt) - 1 // min_amt is "threshold + 1" (e.g. 600001 → lower 600000)
+  return Math.round((base + (pct / 100) * (annualIncome - lower)) * 100) / 100
+}
+
+const monthStartUTC = (d) => { const x = new Date(d); return new Date(Date.UTC(x.getUTCFullYear(), x.getUTCMonth(), 1)) }
+const monthsInclusive = (a, b) => (b.getUTCFullYear() - a.getUTCFullYear()) * 12 + (b.getUTCMonth() - a.getUTCMonth()) + 1
+
+/** Gross in effect for a given FY month: current gross for the payroll month and later, else the
+ *  historic gross from salary_change events (newGross of the latest change effective by month-end;
+ *  oldGross of the first change for months before any change; current gross if no history). */
+function grossInEffectForMonth(monthStart, pm, currentGross, changesAsc) {
+  if (monthStart >= pm) return currentGross
+  const monthEnd = new Date(Date.UTC(monthStart.getUTCFullYear(), monthStart.getUTCMonth() + 1, 0))
+  let applicable = null
+  for (const c of changesAsc) {
+    if (c.effectiveDate && new Date(c.effectiveDate) <= monthEnd) applicable = c
+  }
+  if (applicable && applicable.newGross != null) return applicable.newGross
+  const first = changesAsc.find((c) => c.oldGross != null)
+  return first ? first.oldGross : currentGross
+}
+
+/**
+ * Monthly income-tax (FBR mid-year-revision / "catch-up" method, progressive slab).
+ * For each month of the employee's FY span we annualise the gross in effect that month
+ * (gross × months-in-FY), take the progressive annual tax, subtract the tax already collected in
+ * earlier months, and spread the remainder over the months left in the FY. When salary rises
+ * mid-year the annual liability jumps and the shortfall from the lower-paid months is recovered
+ * across the remaining months — so post-increment months are higher than a flat annual÷12.
+ * Self-contained: prior-month deductions are simulated by formula (no dependency on past slips).
+ */
+function computeMonthlyIncomeTax({ payrollMonthDate, joinDate, currentGross, salaryChanges, slabs }) {
+  if (!(currentGross > 0) || !Array.isArray(slabs) || slabs.length === 0) return 0
+  const { start: fyStart, end: fyEnd } = getTaxYearBounds(payrollMonthDate)
+  const pm = monthStartUTC(payrollMonthDate)
+  const join = joinDate ? monthStartUTC(joinDate) : null
+  const effStart = (join && join > fyStart) ? join : fyStart
+  if (pm < effStart || pm > fyEnd) return 0
+  const monthsInFY = Math.max(1, monthsInclusive(effStart, fyEnd))
+  const changesAsc = (salaryChanges || []).filter((c) => c.effectiveDate)
+    .slice().sort((a, b) => (a.effectiveDate < b.effectiveDate ? -1 : 1))
+
+  let deductedSoFar = 0
+  const cursor = new Date(effStart)
+  while (cursor <= fyEnd) {
+    const grossK = Number(grossInEffectForMonth(new Date(cursor), pm, currentGross, changesAsc)) || 0
+    const annualTaxK = computeAnnualTax(grossK * monthsInFY, slabs)
+    const remainingFromK = Math.max(1, monthsInclusive(new Date(cursor), fyEnd))
+    const taxK = Math.max(0, Math.round(((annualTaxK - deductedSoFar) / remainingFromK) * 100) / 100)
+    if (cursor.getUTCFullYear() === pm.getUTCFullYear() && cursor.getUTCMonth() === pm.getUTCMonth()) {
+      return taxK // reached the payroll month
+    }
+    deductedSoFar += taxK
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+  }
+  return 0
+}
 
 // ---------- Period CRUD ----------
 
@@ -296,8 +372,12 @@ export async function runPayroll(periodId, runBy = null) {
   await regenerateLoanInstallmentEntries(periodId, period)
 
   const employees = await repo.getActiveEmployeesForPeriod(period.start_date, period.end_date)
-  const structureMap = await repo.getSalaryStructureMap(employees.map((e) => e.employee_id))
+  const empIds = employees.map((e) => e.employee_id)
+  const structureMap = await repo.getSalaryStructureMap(empIds)
   const leaves = await repo.getApprovedLeavesInRange(period.start_date, period.end_date)
+  // Income-tax inputs (fetched once per run): active slab + each employee's salary-change timeline.
+  const taxSlabs = await getActiveTaxSlabs().catch(() => [])
+  const salaryChangeMap = await repo.getSalaryChangeHistoryMap(empIds)
 
   const slipsCreated = []
   const errors = []
@@ -308,7 +388,9 @@ export async function runPayroll(periodId, runBy = null) {
         period,
         emp,
         structure: structureMap.get(emp.employee_id) || {},
-        leaves: leaves.filter((l) => l.employee_id === emp.employee_id)
+        leaves: leaves.filter((l) => l.employee_id === emp.employee_id),
+        taxSlabs,
+        salaryChanges: salaryChangeMap.get(emp.employee_id) || []
       })
       await repo.upsertSlip(slip)
       slipsCreated.push(emp.employee_id)
@@ -327,7 +409,7 @@ export async function runPayroll(periodId, runBy = null) {
 }
 
 /** Build the slip row for one employee. Pure calculation — no DB writes here. */
-async function computeSlipForEmployee({ period, emp, structure, leaves }) {
+async function computeSlipForEmployee({ period, emp, structure, leaves, taxSlabs = [], salaryChanges = [] }) {
   const periodStart = new Date(period.start_date)
   const periodEnd = new Date(period.end_date)
   const totalWd = period.working_days
@@ -397,7 +479,17 @@ async function computeSlipForEmployee({ period, emp, structure, leaves }) {
   const lateDeduction = Math.round(dayRate * lateAbsent * 100) / 100 // informational only — already in absentDeduction
 
   // Deductions
-  const incomeTax = entryMap.deduction.income_tax || 0
+  // Income tax: auto-calculated from the annualised projection (FY July–June). A manual income_tax
+  // entry, if present, overrides the auto value (HR adjustment).
+  const autoIncomeTax = computeMonthlyIncomeTax({
+    payrollMonthDate: new Date(period.end_date), // payroll month = the period's end month
+    joinDate: emp.effective_join_date || emp.join_date || null,
+    currentGross: fullGross, // contractual monthly gross (pre-proration)
+    salaryChanges,
+    slabs: taxSlabs
+  })
+  const manualIncomeTax = entryMap.deduction.income_tax || 0
+  const incomeTax = manualIncomeTax > 0 ? manualIncomeTax : autoIncomeTax
   const loanDed = entryMap.deduction.loan || 0
   const salaryAdvanceDed = entryMap.deduction.salary_advance || 0
   const otherDed = entryMap.deduction.other_deduction || 0

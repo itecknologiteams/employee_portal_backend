@@ -55,6 +55,122 @@ export async function createEvent(employeeId, body, createdBy) {
   return { recordId, message: 'History event created' }
 }
 
+/** Parse a gross value that may arrive as a number or a "1,234.50" string. Null if empty/invalid. */
+function parseGross(v) {
+  if (v == null || v === '') return null
+  const n = Number(String(v).replace(/,/g, '').trim())
+  return Number.isFinite(n) ? n : NaN // NaN signals an invalid (non-numeric) value
+}
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Bulk import appraisal / confirmation events from an uploaded sheet.
+ * Each row → 1–2 history events:
+ *   - Appraisal           → one salary_change (needs Old + New gross)
+ *   - Confirmation        → one confirmation; if Old+New gross given and differ, also a salary_change
+ *
+ * @param {Array} rows  Normalized rows: { employeeCode, type, effectiveDate, oldGross, newGross, notes }
+ * @param {Object} opts { mode: 'validate'|'commit', createdBy }
+ * Returns { mode, summary, results } — never throws on per-row issues (they are reported).
+ */
+export async function bulkImportHistory(rows, { mode = 'validate', createdBy = null } = {}) {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    return { error: 'No rows to import. Upload a sheet with at least one row.', status: 400 }
+  }
+  if (rows.length > 1000) {
+    return { error: 'Too many rows (max 1000 per upload). Split the sheet.', status: 400 }
+  }
+  const commit = mode === 'commit'
+
+  const codeMap = await historyRepo.resolveEmployeesByCodes(rows.map((r) => r?.employeeCode))
+
+  const results = []
+  let toCreate = 0, duplicates = 0, errors = 0, eventsCreated = 0
+
+  for (let idx = 0; idx < rows.length; idx++) {
+    const raw = rows[idx] || {}
+    const rowNumber = idx + 1
+    const code = String(raw.employeeCode ?? '').trim()
+    const typeNorm = String(raw.type ?? '').trim().toLowerCase()
+    const effectiveDate = String(raw.effectiveDate ?? '').trim()
+    const notes = raw.notes != null && String(raw.notes).trim() !== '' ? String(raw.notes).trim() : null
+    const oldGross = parseGross(raw.oldGross)
+    const newGross = parseGross(raw.newGross)
+
+    const fail = (message) => {
+      errors++
+      results.push({ rowNumber, employeeCode: code, name: null, type: raw.type ?? '', status: 'error', message, events: [] })
+    }
+
+    if (!code) { fail('Employee_Code is required'); continue }
+    const emp = codeMap.get(code)
+    if (!emp) { fail(`Unknown employee code: ${code}`); continue }
+    if (!['appraisal', 'confirmation'].includes(typeNorm)) { fail(`Type must be "Appraisal" or "Confirmation" (got "${raw.type ?? ''}")`); continue }
+    if (!ISO_DATE.test(effectiveDate) || Number.isNaN(new Date(effectiveDate).getTime())) {
+      fail('Effective_Date must be a valid date (YYYY-MM-DD)'); continue
+    }
+    if (Number.isNaN(oldGross) || Number.isNaN(newGross)) { fail('Old_Gross / New_Gross must be numbers'); continue }
+
+    // Build the planned event list for this row.
+    const planned = []
+    if (typeNorm === 'appraisal') {
+      if (oldGross == null || newGross == null) { fail('Appraisal needs both Old_Gross and New_Gross'); continue }
+      if (oldGross === newGross) { fail('Appraisal Old_Gross and New_Gross are equal — no change'); continue }
+      planned.push({ recordType: 'salary_change', oldGrossSalary: oldGross, newGrossSalary: newGross })
+    } else {
+      planned.push({ recordType: 'confirmation' })
+      if (oldGross != null && newGross != null && oldGross !== newGross) {
+        planned.push({ recordType: 'salary_change', oldGrossSalary: oldGross, newGrossSalary: newGross })
+      }
+    }
+
+    // Resolve each planned event to create/skip(duplicate), and insert on commit.
+    const eventsOut = []
+    let rowHasCreate = false
+    for (const ev of planned) {
+      const dup = await historyRepo.findSameDayDuplicate(emp.employeeId, ev.recordType, effectiveDate)
+      if (dup) {
+        duplicates++
+        eventsOut.push({ recordType: ev.recordType, status: 'skip', reason: 'duplicate (same type + date exists)' })
+        continue
+      }
+      rowHasCreate = true
+      if (commit) {
+        const payload = { employeeId: emp.employeeId, recordType: ev.recordType, effectiveDate, notes, createdBy }
+        if (ev.recordType === 'salary_change') {
+          payload.oldGrossSalary = ev.oldGrossSalary
+          payload.newGrossSalary = ev.newGrossSalary
+          payload.changeAmount = ev.newGrossSalary - ev.oldGrossSalary
+          payload.changePercentage = pctChange(ev.oldGrossSalary, ev.newGrossSalary)
+        }
+        try {
+          const recordId = await historyRepo.insert(payload)
+          eventsCreated++
+          eventsOut.push({ recordType: ev.recordType, status: 'created', recordId })
+        } catch (e) {
+          eventsOut.push({ recordType: ev.recordType, status: 'error', reason: e.message })
+        }
+      } else {
+        eventsOut.push({ recordType: ev.recordType, status: 'create' })
+      }
+    }
+
+    const status = rowHasCreate ? 'create' : 'skip'
+    if (rowHasCreate) toCreate++
+    results.push({
+      rowNumber, employeeCode: code, name: emp.name, type: raw.type ?? '',
+      status, message: rowHasCreate ? '' : 'All events already exist (duplicate)', events: eventsOut
+    })
+  }
+
+  return {
+    mode,
+    summary: { rows: rows.length, toCreate, duplicates, errors, eventsCreated },
+    results
+  }
+}
+
 export async function updateEvent(recordId, body, editedBy) {
   const id = parseInt(recordId, 10)
   if (!Number.isInteger(id)) return { error: 'Invalid record id', status: 400 }

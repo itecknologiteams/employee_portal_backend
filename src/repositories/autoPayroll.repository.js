@@ -229,24 +229,65 @@ export async function getActiveEmployeesForPeriod(startDate, endDate) {
   }
 }
 
-/** Loan/Advance requisitions whose deduction should be active for this period.
- *  Trigger condition: HR Check approved AND creator NOT yet acknowledged AND finance approved
- *  (i.e. requisition is in "Pending Creator Acknowledgment" stage). */
+/** Loan/Advance requisitions whose installment deduction should be active for this period.
+ *  Trigger: loan is disbursed (HR Cheque Receiving done + Finance approved) and the cheque-receiving
+ *  date is on/before this period's end. Deduction then recurs every period until all installments
+ *  are paid — the per-loan "fully paid" cutoff is enforced by countLoanInstallmentsPaid() in the
+ *  service. We intentionally do NOT gate on req_creator_acknowledged: the employee acknowledging
+ *  cheque receipt happens right after disbursement, so gating on it dropped the loan out of the
+ *  deduction list after the first acknowledgment (only one loan was showing). */
 export async function getActiveLoanDeductionsForPeriod(periodEndDate) {
   return executeQuery(
     `SELECT r.req_id, r.req_emp_id AS employee_id, r.req_category,
             COALESCE(r.req_hr_approved_amount, 0) AS approved_amount,
-            COALESCE(r.req_hr_approved_installments, 1) AS approved_installments,
+            -- Installments: HR-approved value, else the creator's requested months, else 1.
+            -- (Matches loanFormPdf/requisition.service; the old query defaulted straight to 1, so a
+            -- loan with no HR-approved installments deducted the whole amount in one period.)
+            COALESCE(NULLIF(r.req_hr_approved_installments, 0), NULLIF(r.loan_installment_months, 0), 1) AS approved_installments,
             r.req_hr_check_approved_at, r.loan_advance_type
        FROM requisition r
       WHERE COALESCE(r.req_is_rejected, 0) = 0
-        AND COALESCE(r.req_creator_acknowledged, 0) = 0
         AND r.req_hr_check_approved_by IS NOT NULL
         AND COALESCE(r.req_finance_approval, 0) = 1
         AND r.req_hr_check_approved_at::date <= $1
         AND LOWER(COALESCE(r.req_category, '')) LIKE '%loan%advance%salary%'`,
     [periodEndDate]
   )
+}
+
+/**
+ * Salary-change history per employee (for income-tax projection): the recorded gross changes from
+ * employee_record_history. Returns Map<employee_id, [{ effectiveDate, oldGross, newGross }]> asc.
+ */
+export async function getSalaryChangeHistoryMap(employeeIds) {
+  const ids = [...new Set((employeeIds || []).map((n) => parseInt(n, 10)).filter(Number.isFinite))]
+  const map = new Map()
+  if (ids.length === 0) return map
+  let rows = []
+  try {
+    rows = await executeQuery(
+      `SELECT employee_id,
+              TO_CHAR(effective_date, 'YYYY-MM-DD') AS effective_date,
+              old_gross_salary, new_gross_salary
+         FROM employee_record_history
+        WHERE record_type = 'salary_change' AND COALESCE(is_deleted, FALSE) = FALSE
+          AND employee_id = ANY($1)
+        ORDER BY employee_id, effective_date ASC`,
+      [ids]
+    )
+  } catch (err) {
+    if (err.code === '42P01') return map // history table not present yet
+    throw err
+  }
+  for (const r of rows) {
+    if (!map.has(r.employee_id)) map.set(r.employee_id, [])
+    map.get(r.employee_id).push({
+      effectiveDate: r.effective_date,
+      oldGross: r.old_gross_salary != null ? parseFloat(r.old_gross_salary) : null,
+      newGross: r.new_gross_salary != null ? parseFloat(r.new_gross_salary) : null
+    })
+  }
+  return map
 }
 
 /** Count how many monthly installments of this loan have already been deducted in prior published periods. */

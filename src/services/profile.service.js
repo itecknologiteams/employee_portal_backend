@@ -6,6 +6,7 @@ import * as notifRepo from '../repositories/notification.repository.js'
 import * as notifSvc from './notification.service.js'
 import { EMAIL_FROM, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 import { getOfficialEmailFromCrm, getCrmEmailMapByEmployeeCodes } from '../../config/crmDatabase.js'
+import { renderPortalEmail } from '../utils/leaveEmailTemplate.js'
 
 export async function getProfile(employeeId) {
   const result = await profileRepo.getProfile(employeeId)
@@ -76,16 +77,20 @@ export async function updateProfile(employeeId, data) {
         const to = PROFILE_HR_EMAIL
         const subject = `New profile change request – pending HR approval (Employee ID: ${employeeId})`
         const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
-        const body = [
-          'A profile update request has been submitted and is in your HR bucket.',
-          '',
-          `Employee ID: ${employeeId}`,
-          requestId != null ? `Request ID: ${requestId}` : '',
-          '',
-          `View pending requests: ${baseUrl}`
-        ].filter(Boolean).join('\n')
+        const { html, text } = renderPortalEmail({
+          title: 'New Profile Change Request',
+          accent: 'amber', // pending HR action
+          greeting: 'Dear HR,',
+          introLines: ['A profile update request has been submitted and is now in your HR bucket for review.'],
+          details: [
+            { label: 'Employee ID', value: employeeId },
+            ...(requestId != null ? [{ label: 'Request ID', value: requestId }] : []),
+            { label: 'View pending requests', value: baseUrl }
+          ],
+          footerNote: 'This is an automated message from the Employee Portal. Please do not reply.'
+        })
         console.log('📧 [Profile] HR notify: Sending to:', to, '| Subject:', subject)
-        await transport.sendMail({ from: EMAIL_FROM, to, subject, text: body })
+        await transport.sendMail({ from: EMAIL_FROM, to, subject, html, text })
         console.log('📧 [Profile] HR notify SENT OK →', to)
       } catch (err) {
         console.error('📧 [Profile] HR notify FAILED:', err.message)

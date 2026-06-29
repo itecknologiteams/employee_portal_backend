@@ -273,6 +273,9 @@ export async function getHistory(employeeId, query = {}) {
   const limit = Math.min(100, Math.max(1, parseInt(query.limit, 10) || 20))
   const offset = (page - 1) * limit
   const search = query.search != null ? String(query.search).trim() : ''
+  const from = query.from != null ? String(query.from).trim() : ''
+  const to = query.to != null ? String(query.to).trim() : ''
+  const statusFilter = query.status != null ? String(query.status).trim() : ''
 
   // Department-wide (IT only) view: list all IT members' requisitions, read-only.
   const scope = String(query.scope || 'my').trim().toLowerCase()
@@ -282,9 +285,20 @@ export async function getHistory(employeeId, query = {}) {
     return getDepartmentHistory(eid, { page, limit, offset, search })
   }
 
-  const total = await reqRepo.getTrackRecordsCountByEmployee(eid, search || undefined)
+  // Search + date range are filtered in SQL. Status is a COMPUTED value (getRequisitionStatus),
+  // so when it's filtered we fetch all SQL-matching rows, compute status, filter, then paginate
+  // in JS (per-employee history is small, so this is safe and keeps the count accurate).
+  let rows, total
+  if (statusFilter) {
+    const allRows = await reqRepo.getTrackRecordsByEmployee(eid, null, 0, search || undefined, false, from || undefined, to || undefined)
+    const matched = allRows.filter((r) => getRequisitionStatus(r) === statusFilter)
+    total = matched.length
+    rows = matched.slice(offset, offset + limit)
+  } else {
+    total = await reqRepo.getTrackRecordsCountByEmployee(eid, search || undefined, false, from || undefined, to || undefined)
+    rows = await reqRepo.getTrackRecordsByEmployee(eid, limit, offset, search || undefined, false, from || undefined, to || undefined)
+  }
   const totalPages = Math.max(1, Math.ceil(total / limit))
-  const rows = await reqRepo.getTrackRecordsByEmployee(eid, limit, offset, search || undefined)
   const reqIds = rows.map(r => r.req_id)
   const items = reqIds.length ? await reqRepo.getRequisitionItemsByReqIds(reqIds) : []
   const procSet = await reqRepo.getProcurementInvolvedCategoryNames().catch(() => new Set())

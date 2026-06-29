@@ -131,6 +131,29 @@ export async function softDelete(recordId, deletedBy) {
   return result?.rowCount ?? 0
 }
 
+/**
+ * Resolve a list of employee codes to { employee_id, name, is_active }.
+ * Returns a Map keyed by the TRIMMED code string (as given), for bulk import lookups.
+ */
+export async function resolveEmployeesByCodes(codes) {
+  const clean = [...new Set((codes || []).map((c) => String(c ?? '').trim()).filter(Boolean))]
+  const map = new Map()
+  if (clean.length === 0) return map
+  const rows = await executeQuery(
+    `SELECT employee_code, employee_id, first_name, last_name, is_active
+     FROM employees WHERE employee_code = ANY($1)`,
+    [clean]
+  )
+  for (const r of rows) {
+    map.set(String(r.employee_code).trim(), {
+      employeeId: r.employee_id,
+      name: `${r.first_name || ''} ${r.last_name || ''}`.trim(),
+      isActive: r.is_active
+    })
+  }
+  return map
+}
+
 export async function findSameDayDuplicate(employeeId, recordType, effectiveDate) {
   const rows = await executeQuery(
     `SELECT record_id FROM employee_record_history

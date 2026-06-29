@@ -40,41 +40,43 @@ export async function getTrackRecordsAll(limit, offset, includeHidden = false) {
   `, [limit, offset])
 }
 
-export async function getTrackRecordsByEmployee(employeeId, limit, offset, search, includeHidden = false) {
-  const hasSearch = search != null && String(search).trim() !== ''
-  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
-  const hiddenClause = includeHidden ? '' : 'AND COALESCE(r.is_hidden, FALSE) = FALSE'
-  if (hasSearch) {
-    return executeQuery(
-      `SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
-       AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, '') ILIKE $2)
-       ${hiddenClause}
-       ORDER BY r.req_created_at DESC
-       LIMIT $3 OFFSET $4`,
-      [employeeId, pattern, limit, offset]
-    )
+/** Build the shared WHERE for an employee's track records: search (ref/material), hidden, date range.
+ *  Returns { clause, params, nextIndex } so callers can append LIMIT/OFFSET. */
+function buildTrackRecordsWhere(employeeId, { search, includeHidden = false, from = null, to = null } = {}) {
+  const conds = ['r.req_emp_id = $1']
+  const params = [employeeId]
+  let i = 2
+  if (search != null && String(search).trim() !== '') {
+    params.push('%' + String(search).trim() + '%')
+    conds.push(`(r.req_reference_no ILIKE $${i} OR COALESCE(r.req_material, '') ILIKE $${i})`)
+    i++
   }
-  return executeQuery(
-    `SELECT r.* FROM requisition r WHERE r.req_emp_id = $1
-     ${hiddenClause}
-     ORDER BY r.req_created_at DESC
-     LIMIT $2 OFFSET $3`,
-    [employeeId, limit, offset]
-  )
+  if (!includeHidden) conds.push('COALESCE(r.is_hidden, FALSE) = FALSE')
+  if (from != null && String(from).trim() !== '') {
+    params.push(String(from).trim()); conds.push(`r.req_created_at::date >= $${i}::date`); i++
+  }
+  if (to != null && String(to).trim() !== '') {
+    params.push(String(to).trim()); conds.push(`r.req_created_at::date <= $${i}::date`); i++
+  }
+  return { clause: conds.join(' AND '), params, nextIndex: i }
 }
 
-export async function getTrackRecordsCountByEmployee(employeeId, search, includeHidden = false) {
-  const hasSearch = search != null && String(search).trim() !== ''
-  const pattern = hasSearch ? '%' + String(search).trim() + '%' : null
-  const hiddenClause = includeHidden ? '' : 'AND COALESCE(r.is_hidden, FALSE) = FALSE'
-  if (hasSearch) {
-    const r = await executeQuery(
-      `SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1 AND (r.req_reference_no ILIKE $2 OR COALESCE(r.req_material, \'\') ILIKE $2) ${hiddenClause}`,
-      [employeeId, pattern]
-    )
-    return parseInt(r[0]?.total ?? 0, 10)
+/** Employee's requisitions. `limit` null = no pagination (used when status — a computed value — is
+ *  filtered in the service after fetching). Optional `from`/`to` filter by creation date. */
+export async function getTrackRecordsByEmployee(employeeId, limit, offset, search, includeHidden = false, from = null, to = null) {
+  const { clause, params, nextIndex } = buildTrackRecordsWhere(employeeId, { search, includeHidden, from, to })
+  let sql = `SELECT r.* FROM requisition r WHERE ${clause} ORDER BY r.req_created_at DESC`
+  let i = nextIndex
+  if (limit != null) {
+    params.push(limit); sql += ` LIMIT $${i}`; i++
+    params.push(offset || 0); sql += ` OFFSET $${i}`; i++
   }
-  const r = await executeQuery(`SELECT COUNT(*) AS total FROM requisition r WHERE r.req_emp_id = $1 ${hiddenClause}`, [employeeId])
+  return executeQuery(sql, params)
+}
+
+export async function getTrackRecordsCountByEmployee(employeeId, search, includeHidden = false, from = null, to = null) {
+  const { clause, params } = buildTrackRecordsWhere(employeeId, { search, includeHidden, from, to })
+  const r = await executeQuery(`SELECT COUNT(*) AS total FROM requisition r WHERE ${clause}`, params)
   return parseInt(r[0]?.total ?? 0, 10)
 }
 

@@ -112,3 +112,10 @@ export function renderLeaveEmail({
 
   return { html, text }
 }
+
+/**
+ * Generic alias: this template is not leave-specific — its sections (title, accent, greeting,
+ * intro, key/value details, reason, footer) suit any portal notification. Non-leave callers
+ * (e.g. profile change requests) should import this name.
+ */
+export const renderPortalEmail = renderLeaveEmail
