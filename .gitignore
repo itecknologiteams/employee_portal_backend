@@ -1,7 +1,7 @@
 .claude/worktrees/
-.env
 node_modules/
 *.log
 .DS_Store
 uploads/
 logs/
+.env
