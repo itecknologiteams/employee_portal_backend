@@ -738,6 +738,30 @@ export async function handleRequisitionRejected(data) {
 }
 
 /**
+ * TED: notify employees assigned for the given cycle that their training quiz is now open.
+ */
+export async function handleTedQuizUnlock(data) {
+  const { sessionId, cycleNo } = data || {}
+  if (!sessionId) return
+  try {
+    const notifSvc = await import('../src/services/notification.service.js')
+    const { executeQuery } = await import('../config/database.js')
+    const rows = await executeQuery(
+      `SELECT a.employee_id, s.title FROM ted_assignment a JOIN ted_session s ON s.id = a.session_id
+       WHERE a.session_id = $1 AND a.current_cycle = $2 AND a.status = 'assigned'`,
+      [sessionId, cycleNo]
+    )
+    for (const r of rows) {
+      await notifSvc.notify({
+        recipientEmployeeId: r.employee_id, type: 'ted_quiz_unlocked',
+        title: 'Quiz unlocked', body: `Your training quiz for "${r.title}" is now open.`,
+        url: '/my-trainings', relatedEntityType: 'ted_session', relatedEntityId: sessionId
+      }).catch(() => {})
+    }
+  } catch (e) { console.error('[BullMQ] ted-quiz-unlock failed:', e?.message) }
+}
+
+/**
  * Single processor for the queue: routes by job name.
  */
 export async function processJob(job) {
@@ -753,6 +777,8 @@ export async function processJob(job) {
     await handleRequisitionResubmitted(job.data)
   } else if (job.name === 'requisition-rejected') {
     await handleRequisitionRejected(job.data)
+  } else if (job.name === 'ted-quiz-unlock') {
+    await handleTedQuizUnlock(job.data)
   } else {
     await processRequisitionReminders()
   }

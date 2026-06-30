@@ -21,7 +21,8 @@ import {
   rolePermissionsRoutes,
   cardsRoutes,
   notificationRoutes,
-  employeeHistoryRoutes
+  employeeHistoryRoutes,
+  tedRoutes
 } from './src/routes/index.js'
 import { requestLogger } from './src/middleware/requestLogger.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
@@ -151,6 +152,7 @@ app.use('/api/role-permissions', rolePermissionsRoutes)
 app.use('/api/cards', cardsRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api', employeeHistoryRoutes)
+app.use('/api/ted', tedRoutes)
 
 app.get('/api/health', (req, res) => {
   res.json({

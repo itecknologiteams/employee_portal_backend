@@ -86,7 +86,7 @@ export function getRequisitionStatus(row, itemsLineTotalPkrOptional = null) {
   if (row.req_is_rejected === 1) return 'Rejected'
   if (row.req_creator_acknowledged === 1) return 'Closed'
   if (row.req_current_stage_key === 'hr_check') return 'Pending HR Cheque Receiving'
-  if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Pending your acknowledgment'
+  if (isExecutionDone(row) && row.req_creator_acknowledged !== 1) return 'Awaiting Acceptance'
   if (row.req_admin_approval === 1) return 'Completed'
   if (row.req_hod_acknowledged === 1) return 'Completed'
   if (row.req_purchase_completed === 1) {
@@ -144,7 +144,7 @@ export function getPendingAt(status) {
   if (status === 'Pending Admin') return 'Admin'
   if (status === 'Pending HOD') return 'HOD'
   if (status === 'Pending IT') return 'IT'
-  if (status === 'Pending your acknowledgment') return 'Creator'
+  if (status === 'Awaiting Acceptance') return 'Creator'
   if (status === 'Closed') return 'Closed'
   return null
 }

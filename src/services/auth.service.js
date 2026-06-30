@@ -9,7 +9,8 @@ const ALL_PERMISSION_KEYS = [
   'requisition_create', 'requisition_can_add_items', 'requisition_history', 'requisition_acknowledgment',
   'requisition_pending', 'requisition_approved', 'requisition_reports', 'requisition_email_diagnostics',
   'tat_report', 'help_support', 'extensions', 'administration',
-  'payroll', 'payroll_gross_salaries', 'payroll_other_allowances', 'payroll_deductions', 'payroll_incentives'
+  'payroll', 'payroll_gross_salaries', 'payroll_other_allowances', 'payroll_deductions', 'payroll_incentives',
+  'my_trainings', 'manage_trainings'
 ]
 
 const DEFAULT_USER_PERMISSIONS = [

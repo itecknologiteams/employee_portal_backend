@@ -1033,6 +1033,18 @@ export async function getApprovedByHod(employeeId) {
   }))
 }
 
+export async function getApprovedByIt(employeeId) {
+  const eid = parseEmployeeId(employeeId)
+  if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
+  // Only IT-stage members see the "As IT" list (same role gate as the IT pending/approve flow).
+  const isIt = await reqRepo.isEmployeeTypeForStage(eid, 'it')
+  if (!isIt) return []
+  const rows = await reqRepo.getApprovedByItRequisitions(eid)
+  const reqIds = rows.map(r => r.req_id)
+  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
+  return rows.map(req => ({ ...req, status: getRequisitionStatus(req), items: items.filter(i => i.req_id === req.req_id) }))
+}
+
 export async function getApprovedByCommittee(employeeId) {
   const eid = parseEmployeeId(employeeId)
   if (eid == null) return { error: 'Valid employee ID is required', status: 400 }
@@ -2574,7 +2586,7 @@ export async function getPendingCreatorAcknowledge(employeeId) {
   const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
   const list = rows.map(req => ({
     ...req,
-    status: 'Pending your acknowledgment',
+    status: 'Awaiting Acceptance',
     items: items.filter(i => i.req_id === req.req_id)
   }))
   return list

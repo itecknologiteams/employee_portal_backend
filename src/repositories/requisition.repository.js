@@ -2091,6 +2091,25 @@ export async function getApprovedByCommitteeRequisitions(excludeEmployeeId) {
   )
 }
 
+/** Get all IT-stage-approved requisitions (for the "As IT" view). IT is a single team (not
+ *  department-scoped), so this returns every requisition the IT stage has approved, excluding
+ *  ones the viewer created. */
+export async function getApprovedByItRequisitions(excludeEmployeeId) {
+  return executeQuery(
+    `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
+      desg.desg_name AS designation_name
+     FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
+     LEFT JOIN departments d ON e.department_id = d.department_id
+     LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     WHERE (COALESCE(r.req_it_approval, 0)::int = 1)
+       AND COALESCE(r.req_is_rejected, 0) = 0
+       AND COALESCE(r.is_hidden, FALSE) = FALSE
+       AND r.req_emp_id != $1
+     ORDER BY r.req_it_approval_date DESC NULLS LAST, r.req_created_at DESC`,
+    [excludeEmployeeId]
+  )
+}
+
 /** Get all CEO-approved requisitions (for CEO "My Approved" view).
  *  Excludes requisitions created by the current user (excludeEmployeeId).
  */

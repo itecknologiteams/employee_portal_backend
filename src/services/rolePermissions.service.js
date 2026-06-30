@@ -27,7 +27,9 @@ const PERMISSION_KEYS = [
   'payroll_gross_salaries',
   'payroll_other_allowances',
   'payroll_deductions',
-  'payroll_incentives'
+  'payroll_incentives',
+  'my_trainings',
+  'manage_trainings'
 ]
 
 /** Permission key in camelCase (e.g. salary_slip -> salarySlip) for frontend compatibility. */
