@@ -31,7 +31,8 @@ export function requestLogger(req, res, next) {
   res.on('finish', () => {
     if (skipPath) return
     const duration = Date.now() - start
-    const success = res.statusCode >= 200 && res.statusCode < 300
+    // 2xx and 3xx (incl. 304 Not Modified, redirects) are NOT failures — only 4xx/5xx are.
+    const success = res.statusCode < 400
     logRequest({
       method: req.method,
       path: req.originalUrl,

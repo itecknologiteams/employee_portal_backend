@@ -1,11 +1,11 @@
 import { executeQuery } from '../../config/database.js'
 
 // ---------- sessions ----------
-export async function createSession({ title, presentationFile, presentationText, startAt, endAt, passThreshold, maxAttempts, createdBy }) {
+export async function createSession({ title, presentationFile, presentationEnc, startAt, endAt, audience, passThreshold, maxAttempts, createdBy }) {
   const rows = await executeQuery(
-    `INSERT INTO ted_session (title, presentation_file, presentation_text, start_at, end_at, pass_threshold, max_attempts, created_by)
-     VALUES ($1,$2,$3,$4,$5,COALESCE($6,60),$7,$8) RETURNING *`,
-    [title, presentationFile || null, presentationText || null, startAt || null, endAt, passThreshold ?? null, maxAttempts ?? null, createdBy ?? null]
+    `INSERT INTO ted_session (title, presentation_file, presentation_enc, start_at, end_at, audience, pass_threshold, max_attempts, created_by)
+     VALUES ($1,$2,$3,$4,$5,COALESCE($6,'dept_random'),COALESCE($7,60),$8,$9) RETURNING *`,
+    [title, presentationFile || null, presentationEnc || null, startAt || null, endAt, audience || null, passThreshold ?? null, maxAttempts ?? null, createdBy ?? null]
   )
   return rows[0]
 }
@@ -107,6 +107,15 @@ export async function upsertAssignment(sessionId, employeeId, cycleNo) {
   )
 }
 
+/** Mark the given employees as live-session attendees for this session (others stay false). */
+export async function markLiveAttendees(sessionId, employeeIds) {
+  if (!employeeIds || employeeIds.length === 0) return
+  await executeQuery(
+    `UPDATE ted_assignment SET live_attendee = TRUE WHERE session_id = $1 AND employee_id = ANY($2)`,
+    [sessionId, employeeIds]
+  )
+}
+
 export async function reactivateFailedAssignments(sessionId, cycleNo) {
   await executeQuery(
     `UPDATE ted_assignment SET status='assigned', current_cycle=$2, updated_at=CURRENT_TIMESTAMP
@@ -163,4 +172,50 @@ export async function insertAttempt({ assignmentId, cycleNo, questionIds, answer
 export async function getQuestionsByIds(ids) {
   if (!ids || !ids.length) return []
   return executeQuery(`SELECT * FROM ted_question_pool WHERE id = ANY($1)`, [ids])
+}
+
+// ---------- stats / history / leaderboards ----------
+
+/** All attempts by one employee (newest first), with the session title — for history + scores. */
+export async function listAttemptsForEmployee(employeeId) {
+  return executeQuery(
+    `SELECT t.id, t.score, t.passed, t.cycle_no, t.attempted_at, s.id AS session_id, s.title
+       FROM ted_attempt t
+       JOIN ted_assignment a ON a.id = t.assignment_id
+       JOIN ted_session s ON s.id = a.session_id
+      WHERE a.employee_id = $1
+      ORDER BY t.attempted_at DESC`,
+    [employeeId]
+  )
+}
+
+/** All attempts for a session (with employee name) — for the per-training stats view. */
+export async function listAttemptsForSession(sessionId) {
+  return executeQuery(
+    `SELECT t.id, t.score, t.passed, t.cycle_no, t.attempted_at, a.employee_id,
+            e.first_name, e.last_name, e.employee_code
+       FROM ted_attempt t
+       JOIN ted_assignment a ON a.id = t.assignment_id
+       JOIN employees e ON e.employee_id = a.employee_id
+      WHERE a.session_id = $1
+      ORDER BY t.attempted_at DESC`,
+    [sessionId]
+  )
+}
+
+/** Global leaderboard: per employee, average best score + passed/assigned counts, ranked. */
+export async function getGlobalLeaderboard(limit = 100) {
+  return executeQuery(
+    `SELECT a.employee_id, e.first_name, e.last_name, e.employee_code, dep.department_name,
+            ROUND(AVG(a.best_score)::numeric, 2) AS avg_score,
+            COUNT(*) FILTER (WHERE a.status = 'passed') AS passed,
+            COUNT(*) AS assigned
+       FROM ted_assignment a
+       JOIN employees e ON e.employee_id = a.employee_id
+       LEFT JOIN departments dep ON dep.department_id = e.department_id
+      GROUP BY a.employee_id, e.first_name, e.last_name, e.employee_code, dep.department_name
+      ORDER BY passed DESC, avg_score DESC NULLS LAST
+      LIMIT $1`,
+    [limit]
+  )
 }

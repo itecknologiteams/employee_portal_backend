@@ -17,11 +17,12 @@ const send = (res, result) => result?.error ? res.status(result.status || 400).j
 export async function createSession(req, res) {
   try {
     if (!(await canManageTed(req))) return res.status(403).json({ error: 'Only HR can create training sessions' })
-    const pptxBuffer = req.file?.buffer || null
-    const pptxFileRef = req.file ? req.file.originalname : null
+    const pdfBuffer = req.file?.buffer || null
+    const pdfFileRef = req.file ? req.file.originalname : null
     const result = await tedService.createSession({
-      title: req.body.title, startAt: req.body.startAt, endAt: req.body.endAt, passThreshold: req.body.passThreshold,
-      pptxBuffer, pptxFileRef, createdBy: actorId(req)
+      title: req.body.title, startAt: req.body.startAt, endAt: req.body.endAt,
+      audience: req.body.audience, passThreshold: req.body.passThreshold,
+      pdfBuffer, pdfFileRef, createdBy: actorId(req)
     })
     send(res, result)
   } catch (e) { console.error('ted.createSession', e); res.status(500).json({ error: 'Failed to create session' }) }
@@ -39,6 +40,17 @@ export async function getSession(req, res) {
     if (!(await canManageTed(req))) return res.status(403).json({ error: 'Forbidden' })
     send(res, await tedService.getSession(parseInt(req.params.id, 10)))
   } catch (e) { console.error('ted.getSession', e); res.status(500).json({ error: 'Failed' }) }
+}
+
+export async function downloadPresentation(req, res) {
+  try {
+    if (!(await canManageTed(req))) return res.status(403).json({ error: 'Forbidden' })
+    const result = await tedService.getPresentationPdf(parseInt(req.params.id, 10))
+    if (result?.error) return res.status(result.status || 400).json({ error: result.error })
+    res.setHeader('Content-Type', 'application/pdf')
+    res.setHeader('Content-Disposition', `inline; filename="${result.filename}"`)
+    res.send(result.buffer)
+  } catch (e) { console.error('ted.downloadPresentation', e); res.status(500).json({ error: 'Failed' }) }
 }
 
 export async function generateQuiz(req, res) {
@@ -72,8 +84,15 @@ export async function reopenSession(req, res) {
 export async function assignmentsDashboard(req, res) {
   try {
     if (!(await canManageTed(req))) return res.status(403).json({ error: 'Forbidden' })
-    send(res, await tedService.getAssignmentsDashboard(parseInt(req.params.id, 10)))
+    send(res, await tedService.getSessionStats(parseInt(req.params.id, 10)))
   } catch (e) { console.error('ted.assignments', e); res.status(500).json({ error: 'Failed' }) }
+}
+
+export async function globalLeaderboard(req, res) {
+  try {
+    if (!(await canManageTed(req))) return res.status(403).json({ error: 'Forbidden' })
+    send(res, await tedService.getGlobalLeaderboard())
+  } catch (e) { console.error('ted.globalLeaderboard', e); res.status(500).json({ error: 'Failed' }) }
 }
 
 // ---- Employee (own data) ----

@@ -1210,10 +1210,12 @@ export async function approveFinance(requisitionId, employeeId, quotationIndex) 
 export async function getRequisitionById(reqId) {
   return executeQuery(
     `SELECT r.*, e.first_name, e.last_name, e.email, e.employee_code, d.department_name,
-      desg.desg_name AS designation_name
+      desg.desg_name AS designation_name,
+      com_emp.first_name AS com_first_name, com_emp.last_name AS com_last_name, com_emp.employee_code AS com_employee_code
      FROM requisition r JOIN employees e ON r.req_emp_id = e.employee_id
      LEFT JOIN departments d ON e.department_id = d.department_id
      LEFT JOIN designation desg ON e.designation_id = desg.desg_id
+     LEFT JOIN employees com_emp ON r.req_committee_approved_by = com_emp.employee_id
      WHERE r.req_id = $1`,
     [reqId]
   )

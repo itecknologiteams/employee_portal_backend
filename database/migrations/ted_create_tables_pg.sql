@@ -6,6 +6,8 @@ CREATE TABLE IF NOT EXISTS ted_session (
   presentation_text TEXT,            -- extracted slide text (for (re)generation + audit)
   start_at TIMESTAMP,                -- training start time
   end_at TIMESTAMP NOT NULL,         -- training end time; quiz unlocks at/after this
+  audience VARCHAR(20) NOT NULL DEFAULT 'dept_random',  -- dept_random | all_active
+  presentation_enc TEXT,             -- uploaded PDF, AES-256-GCM encrypted: base64(iv | tag | ciphertext)
   pass_threshold INT NOT NULL DEFAULT 60,
   max_attempts INT,                  -- NULL = unlimited (deferred)
   cycle_no INT NOT NULL DEFAULT 1,
@@ -37,6 +39,7 @@ CREATE TABLE IF NOT EXISTS ted_assignment (
   status VARCHAR(10) NOT NULL DEFAULT 'assigned',  -- assigned | passed | failed
   best_score NUMERIC(5,2),
   current_cycle INT NOT NULL DEFAULT 1,
+  live_attendee BOOLEAN NOT NULL DEFAULT FALSE,    -- attends the live training (2 random per dept); quiz itself is for everyone
   assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   UNIQUE (session_id, employee_id)

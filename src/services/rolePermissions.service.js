@@ -1,36 +1,7 @@
 import * as rolePermissionsRepo from '../repositories/rolePermissions.repository.js'
+import { PERMISSION_KEYS } from '../../config/permissions.js'
 
 const ROLES = ['Admin', 'Staff', 'User', 'Technician']
-const PERMISSION_KEYS = [
-  'dashboard',
-  'profile',
-  'profile_update_requests',
-  'salary_slip',
-  'view_salary_slips',
-  'leave',
-  'leave_pending',
-  'feedback',
-  'feedback_history',
-  'feedback_records_hr',
-  'requisition_create',
-  'requisition_history',
-  'requisition_acknowledgment',
-  'requisition_pending',
-  'requisition_approved',
-  'requisition_reports',
-  'requisition_email_diagnostics',
-  'tat_report',
-  'help_support',
-  'extensions',
-  'administration',
-  'payroll',
-  'payroll_gross_salaries',
-  'payroll_other_allowances',
-  'payroll_deductions',
-  'payroll_incentives',
-  'my_trainings',
-  'manage_trainings'
-]
 
 /** Permission key in camelCase (e.g. salary_slip -> salarySlip) for frontend compatibility. */
 function toCamelCase(key) {
