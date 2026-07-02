@@ -894,6 +894,10 @@ export async function getReportAll(employeeId) {
   const deptId = emp?.department_id ?? null
   const deptNameLower = emp?.department_name_lower ?? ''
   const youAreHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
+  // Use the auth-service permission resolver (role + per-employee overrides in `user_permissions`,
+  // the table the Administration "Access Permissions" page writes to). NOTE: reqRepo.employeeHasPermission
+  // reads a different/legacy table (`employee_permissions`) and must NOT be used for this check.
+  const { employeeHasPermission } = await import('./auth.service.js')
   const [isCommittee, isCeo, isSuperAdmin, isFinance, hasReportPerm] = await Promise.all([
     reqRepo.isCommitteeMember(eid),
     reqRepo.isCeoMember(eid),
@@ -901,7 +905,7 @@ export async function getReportAll(employeeId) {
     reqRepo.isFinanceHod(eid),
     // Explicit "requisition_reports" permission (e.g. CEO's Personal Assistant) → full report access,
     // same as CEO/Committee. Granted via per-employee override on the Administration page.
-    reqRepo.employeeHasPermission(eid, 'requisition_reports')
+    employeeHasPermission(eid, 'requisition_reports')
   ])
   const canView = youAreHod || isCommittee || isCeo || isSuperAdmin || isFinance || hasReportPerm
   if (!canView) return []
