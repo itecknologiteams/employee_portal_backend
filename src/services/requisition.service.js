@@ -894,16 +894,19 @@ export async function getReportAll(employeeId) {
   const deptId = emp?.department_id ?? null
   const deptNameLower = emp?.department_name_lower ?? ''
   const youAreHod = deptId != null && (await reqRepo.isHodOfDepartment(eid, deptId))
-  const [isCommittee, isCeo, isSuperAdmin, isFinance] = await Promise.all([
+  const [isCommittee, isCeo, isSuperAdmin, isFinance, hasReportPerm] = await Promise.all([
     reqRepo.isCommitteeMember(eid),
     reqRepo.isCeoMember(eid),
     reqRepo.isSuperAdmin(eid),
-    reqRepo.isFinanceHod(eid)
+    reqRepo.isFinanceHod(eid),
+    // Explicit "requisition_reports" permission (e.g. CEO's Personal Assistant) → full report access,
+    // same as CEO/Committee. Granted via per-employee override on the Administration page.
+    reqRepo.employeeHasPermission(eid, 'requisition_reports')
   ])
-  const canView = youAreHod || isCommittee || isCeo || isSuperAdmin || isFinance
+  const canView = youAreHod || isCommittee || isCeo || isSuperAdmin || isFinance || hasReportPerm
   if (!canView) return []
 
-  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo && !isSuperAdmin && !isFinance
+  const hodOnlyFilter = youAreHod && !isCommittee && !isCeo && !isSuperAdmin && !isFinance && !hasReportPerm
   const rows = hodOnlyFilter
     ? await reqRepo.getReportAllRequisitionsHod(deptId, deptNameLower)
     : await reqRepo.getReportAllRequisitions()

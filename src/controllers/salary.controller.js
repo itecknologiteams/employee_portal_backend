@@ -3,9 +3,17 @@ import { employeeHasPermission } from '../services/auth.service.js'
 import { getEmployeeIdByCode } from '../repositories/auth.repository.js'
 import * as salaryRepo from '../repositories/salary.repository.js'
 
-/** True when viewer may see slips even if employee has salary_slip_on_hold (e.g. HR). */
-async function bypassSalarySlipHold(req) {
+/**
+ * True when viewer may see slips that are on hold (per-slip hold) or belong to an employee whose
+ * salary access is on hold. Only HR-style viewers looking at SOMEONE ELSE's slips bypass holds.
+ * A viewer looking at their OWN slips (self-service Salary Slip page) never bypasses — a held slip
+ * must stay hidden from the employee even if that employee happens to hold the view permission.
+ */
+async function bypassSalarySlipHold(req, targetEmployeeId) {
   const viewerId = req.session?.user?.employeeId
+  if (viewerId != null && targetEmployeeId != null && String(viewerId) === String(targetEmployeeId)) {
+    return false
+  }
   return employeeHasPermission(viewerId, 'view_salary_slips')
 }
 
@@ -15,7 +23,7 @@ export async function listSlips(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req)
+    const bypass = await bypassSalarySlipHold(req, employeeId)
     const result = await salaryService.listSlips(employeeId, { bypassHold: bypass })
     res.json(result)
   } catch (error) {
@@ -30,7 +38,7 @@ export async function listOldSlips(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req)
+    const bypass = await bypassSalarySlipHold(req, employeeId)
     const result = await salaryService.listOldSlipsOnly(employeeId, { bypassHold: bypass })
     res.json(result)
   } catch (error) {
@@ -49,7 +57,7 @@ export async function getOldSlip(req, res) {
     }
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req)
+    const bypass = await bypassSalarySlipHold(req, employeeId)
     const result = await salaryService.getOldSlipById(id, employeeId, { bypassHold: bypass })
     if (!result) {
       if (!bypass && (await salaryRepo.isSalarySlipOnHold(employeeId))) {
@@ -74,7 +82,7 @@ export async function getSlip(req, res) {
     }
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req)
+    const bypass = await bypassSalarySlipHold(req, employeeId)
     const result = await salaryService.getSlipById(rawId, employeeId, { bypassHold: bypass })
     if (!result) {
       if (!bypass && (await salaryRepo.isSalarySlipOnHold(employeeId))) {
@@ -95,7 +103,7 @@ export async function getCurrentSalary(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req)
+    const bypass = await bypassSalarySlipHold(req, employeeId)
     const salary = await salaryService.getCurrentSalary(employeeId, { bypassHold: bypass })
     res.json(salary)
   } catch (error) {
@@ -127,7 +135,7 @@ export async function downloadSalarySlip(req, res) {
     if (!employeeCode) return res.status(400).json({ error: 'employeeCode required' })
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req)
+    const bypass = await bypassSalarySlipHold(req, employeeId)
     const result = await salaryService.getSalarySlipForDownload(rawId, employeeId, { bypassHold: bypass })
     if (!result) {
       if (!bypass && (await salaryRepo.isSalarySlipOnHold(employeeId))) {

@@ -104,6 +104,7 @@ export async function listPayrollSlipsForEmployee(employeeId, options = {}) {
   try {
     return await executeQuery(
       `SELECT s.id, s.payroll_period_id, s.gross_salary, s.total_allowances, s.total_deductions, s.net_salary, s.status, s.remarks,
+              COALESCE(s.slip_on_hold, false) AS slip_on_hold,
               p.name AS period_name, p.start_date, p.end_date
        FROM payroll_slip s
        JOIN payroll_period p ON p.id = s.payroll_period_id

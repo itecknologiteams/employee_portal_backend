@@ -834,6 +834,7 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     incentives: getCol('incentives'),
     deviceReimbursement: getCol('device reimbursement'),
     otherAllowance: getCol('other allowance'),
+    otArrears: getCol('ot arrears', 'overtime arrears', 'o.t. arrears'),
     overTime: getCol('overtime', 'over time', /over\s*time/),
     totalEarnings: colIndexTotalEarnings(headerRow),
     grossSalaryPayable: colIndexGrossSalaryPayable(headerRow),
@@ -887,6 +888,26 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     const totalEarnings = idx.totalEarnings >= 0 ? parseNum(row[idx.totalEarnings]) : NaN
     const baseGrossStandalone = idx.grossSalaryStandalone >= 0 ? parseNum(row[idx.grossSalaryStandalone]) : NaN
     const baseGross = idx.baseGross >= 0 ? parseNum(row[idx.baseGross]) : NaN
+
+    // Total Allowances from the sheet's individual allowance columns (incl. Basic). Our payroll sheet
+    // has NO Gross/Net/Total column, so gross = Σ allowance columns. Dedupe by column index so an
+    // element matched by two patterns (e.g. plain "Arrears" vs "OT Arrears") is never counted twice.
+    const allowanceColIdx = [idx.basic, idx.medical, idx.conveyance, idx.conveyanceLiters, idx.communication,
+      idx.houseRent, idx.utilities, idx.overTime, idx.meal, idx.arrears, idx.incrementalArrears,
+      idx.otArrears, idx.bikeMaintenance, idx.incentives, idx.deviceReimbursement, idx.otherAllowance]
+    const seenAllowanceCols = new Set()
+    let allowanceSum = 0
+    let hasAllowanceCol = false
+    for (const ci of allowanceColIdx) {
+      if (ci >= 0 && !seenAllowanceCols.has(ci)) {
+        seenAllowanceCols.add(ci)
+        const v = parseNum(row[ci])
+        if (Number.isFinite(v)) { allowanceSum += v; hasAllowanceCol = true }
+      }
+    }
+    allowanceSum = Math.round(allowanceSum * 100) / 100
+    const basicFromSheet = idx.basic >= 0 ? (parseNum(row[idx.basic]) || 0) : 0
+
     let gross
     if (Number.isFinite(grossPayable) && grossPayable > 0) {
       gross = grossPayable
@@ -896,6 +917,8 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
       gross = baseGrossStandalone
     } else if (Number.isFinite(baseGross)) {
       gross = baseGross
+    } else if (hasAllowanceCol) {
+      gross = allowanceSum
     } else if (slip) {
       gross = parseFloat(slip.gross_salary) || 0
     } else {
@@ -920,6 +943,10 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
       totalAllowancesFromSheet = totalEarnings
     } else if (Number.isFinite(baseGross)) {
       totalAllowancesFromSheet = baseGross
+    }
+    // No explicit gross column but individual allowance columns exist: allowances (excl. Basic).
+    if (totalAllowancesFromSheet == null && hasAllowanceCol) {
+      totalAllowancesFromSheet = Math.max(0, Math.round((allowanceSum - basicFromSheet) * 100) / 100)
     }
 
     const eobiDeduction = idx.eobi >= 0 ? Math.abs(parseNum(row[idx.eobi]) || 0) : (slip?.eobi_deduction ?? 0)
@@ -948,7 +975,10 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
     const absentDays = Number.isFinite(absentDaysComputed) ? Math.round(absentDaysComputed) : 0
     const paidDays = Math.max(0, (workingDays ?? 0) - absentDays)
 
-    // Gross from payroll is already paid-days based; do not subtract absent again for net
+    // When the sheet supplies allowance columns, gross = full Σ allowances (NOT prorated), so an
+    // explicit "Absent Days/Late Joining" amount is a real deduction and must be subtracted. When we
+    // fell back to the run's already paid-days-based slip gross, absence is baked in — don't subtract twice.
+    const absentInCash = hasAllowanceCol ? absentDeduction : 0
     const cashDeductions =
       (eobiDeduction || 0) +
       (otherDeduction || 0) +
@@ -963,23 +993,25 @@ export async function applyPayrollSheetDeductionsToPeriod(periodId, buffer, file
       (overUtilMobile || 0) +
       (pfDed || 0) +
       (esicDed || 0) +
-      (ptDed || 0)
+      (ptDed || 0) +
+      (absentInCash || 0)
     const totalGrossDedFromSheet = idx.totalGrossDeduction >= 0 ? parseNum(row[idx.totalGrossDeduction]) : NaN
-    const totalDeductions =
-      Number.isFinite(totalGrossDedFromSheet) && totalGrossDedFromSheet >= 0
-        ? Math.round(Math.abs(totalGrossDedFromSheet) * 100) / 100
-        : cashDeductions
     const netFromSheet = idx.netSalaryPayable >= 0 ? parseNum(row[idx.netSalaryPayable]) : NaN
-    const computedNetFromParts = Math.round((gross - cashDeductions) * 100) / 100
-    const computedNetFromTotalDedCol =
-      Number.isFinite(totalGrossDedFromSheet) && totalGrossDedFromSheet >= 0
-        ? Math.round((gross - Math.abs(totalGrossDedFromSheet)) * 100) / 100
-        : NaN
-    const netSalary = Number.isFinite(netFromSheet)
-      ? Math.round(netFromSheet * 100) / 100
-      : Number.isFinite(computedNetFromTotalDedCol)
-        ? computedNetFromTotalDedCol
-        : computedNetFromParts
+    // Rule (per HR): Net = Total Earnings (gross) − Total Deductions, and Total Deductions must
+    // reflect the ACTUAL deduction line items. So prefer the sum of the individual deduction columns
+    // (EOBI + income tax + loan + advance + …) — these parse reliably. Only fall back to the sheet's
+    // "Total Gross Deduction" column, or (gross − net), when the sheet carries no line items at all.
+    // We never trust a raw "Net" column for the stored net: a mis-detected column (e.g. one holding
+    // −130 or a salary figure) would otherwise corrupt both net and the deductions total.
+    let totalDeductions = cashDeductions
+    if (totalDeductions === 0) {
+      if (Number.isFinite(totalGrossDedFromSheet) && totalGrossDedFromSheet >= 0) {
+        totalDeductions = Math.round(Math.abs(totalGrossDedFromSheet) * 100) / 100
+      } else if (Number.isFinite(netFromSheet) && netFromSheet > 0 && netFromSheet < gross) {
+        totalDeductions = Math.round((gross - netFromSheet) * 100) / 100
+      }
+    }
+    const netSalary = Math.round((gross - totalDeductions) * 100) / 100
 
     // If no slip exists for this period+employee, create one from sheet (sheet-only payroll flow)
     if (!slip) {
@@ -1124,6 +1156,7 @@ export async function runPayroll(periodId) {
     const utilities = parseFloat(struct.utilities_allowance) || 0
     const meal = parseFloat(struct.meal_allowance) || 0
     const otherAll = parseFloat(struct.other_allowance) || 0
+    const overtime = parseFloat(struct.overtime_allowance) || 0
     const arrears = parseFloat(struct.arrears) || 0
     const incrementalArrears = parseFloat(struct.incremental_arrears) || 0
     const bikeMaintenance = parseFloat(struct.bike_maintenance_allowance) || 0
@@ -1139,10 +1172,13 @@ export async function runPayroll(periodId) {
     absentDays = Math.min(absentDays, empWorkingDaysClamped)
     const paidDays = Math.max(0, empWorkingDaysClamped - absentDays)
 
-    const totalAllowances = medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance
-    const grossSalary = (basic + totalAllowances) * (paidDays / empWorkingDaysClamped)
+    // Total Allowances = every allowance line item on the salary structure (see payroll-salary-model).
+    // Basic + Total Allowances = full monthly earnings ("gross"); Net = earnings − deductions.
+    const totalAllowances = medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + overtime + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance
+    const grossFull = basic + totalAllowances
+    const grossSalary = grossFull * (paidDays / empWorkingDaysClamped)
     const eobiDeduction = eobiFixed
-    const absentDeduction = (basic + (medical + conveyance + conveyanceLiters + communication + hra + utilities + meal + otherAll + arrears + incrementalArrears + bikeMaintenance + incentives + deviceReimb + desgFixed + periodOtherAllowance)) * (absentDays / empWorkingDaysClamped)
+    const absentDeduction = grossFull * (absentDays / empWorkingDaysClamped)
     // Income tax is not auto-calculated from tax slabs. Slips show 0 until you apply deductions from
     // the payroll sheet (Income Tax column) or set amounts manually on slips.
     const incomeTaxMonthly = 0

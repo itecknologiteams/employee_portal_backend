@@ -34,7 +34,8 @@ export async function listSlips(employeeId, options = {}) {
       deductions: parseFloat(row.total_deductions ?? 0),
       netSalary: parseFloat(row.net_salary ?? 0),
       status: row.status || 'Generated',
-      remarks: row.remarks || ''
+      remarks: row.remarks || '',
+      onHold: row.slip_on_hold === true || row.slip_on_hold === 't'
     })
   })
 
@@ -52,7 +53,8 @@ export async function listSlips(employeeId, options = {}) {
       deductions: parseFloat(row.total_deductions ?? 0),
       netSalary: parseFloat(row.net_salary ?? 0),
       status: row.status || 'Paid',
-      remarks: row.remarks || ''
+      remarks: row.remarks || '',
+      onHold: false
     })
   })
 
@@ -71,7 +73,8 @@ export async function listSlips(employeeId, options = {}) {
       deductions: parseFloat(row.tot_deductions ?? 0),
       netSalary: parseFloat(row.tot_net_salary ?? 0),
       status: row.salary_status || '—',
-      remarks: row.remarks || ''
+      remarks: row.remarks || '',
+      onHold: false
     })
   })
 
