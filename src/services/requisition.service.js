@@ -2,6 +2,7 @@ import { executeQuery } from '../../config/database.js'
 import { getQueue, isBullMQEnabled } from '../../config/bullmq.js'
 import { sendRequisitionReminder, isEmailConfigured, EMAIL_FROM } from '../../config/email.js'
 import { getEmailsForBucket } from '../utils/requisitionEmailRouting.js'
+import { renderPortalEmail } from '../utils/leaveEmailTemplate.js'
 import { notifyCreatorAckRequired } from '../../jobs/requisition-emailer.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import { getEmployeeIdByCode, getUserTypeByEmployeeId } from '../repositories/auth.repository.js'
@@ -1626,15 +1627,22 @@ function notifyCeoCommitteeApproved(reqId, forwardedTo) {
       const material = (r.req_material || '').trim() || '—'
       const nextLabel = forwardedTo === 'procurement' ? 'Procurement' : forwardedTo === 'finance' ? 'Finance' : forwardedTo
       const subject = `Requisition ${refNo} — Approved by Committee`
-      const body = [
-        `This is an informational notification.`,
-        ``,
-        `Requisition ${refNo} (${material}) submitted by ${creatorName} has been approved by the Committee.`,
-        `It has been forwarded to ${nextLabel}.`,
-        ``,
-        `No action is required from you.`
-      ].join('\n')
-      await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'committee_approved_ceo_notify', ref: refNo } })
+      const { html, text } = renderPortalEmail({
+        title: 'Requisition Approved by Committee',
+        accent: 'green',
+        greeting: 'Dear CEO,',
+        introLines: [
+          'This is an informational notification — no action is required from you.',
+          `Requisition ${refNo} submitted by ${creatorName} has been approved by the Committee and forwarded to ${nextLabel}.`
+        ],
+        details: [
+          { label: 'Reference', value: refNo },
+          { label: 'Description', value: material },
+          { label: 'Submitted By', value: creatorName },
+          { label: 'Forwarded To', value: nextLabel }
+        ]
+      })
+      await sendRequisitionReminder({ to: toEmails.join(','), subject, body: text, html, meta: { event: 'committee_approved_ceo_notify', ref: refNo } })
     } catch (err) {
       console.error('[CEO notify] committee approved email failed:', err.message)
     }
@@ -1660,19 +1668,23 @@ function notifyCeoApprovalRequired(reqId, totalPkr) {
       const material = (r.req_material || '').trim() || '—'
       const amountStr = totalPkr != null ? `PKR ${Number(totalPkr).toLocaleString()}` : 'above threshold'
       const subject = `Action Required: Requisition ${refNo} Pending CEO Approval`
-      const body = [
-        `A requisition requiring your approval has been approved by the Committee.`,
-        ``,
-        `Reference : ${refNo}`,
-        `Description: ${material}`,
-        `Submitted By: ${creatorName}`,
-        `Total Amount: ${amountStr}`,
-        ``,
-        `This requisition exceeds PKR ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} and requires CEO approval before it can proceed to Procurement.`,
-        ``,
-        `Please log in to the Employee Portal to approve or reject this requisition.`
-      ].join('\n')
-      await sendRequisitionReminder({ to: toEmails.join(','), subject, body, meta: { event: 'committee_approved_ceo_action_required', ref: refNo } })
+      const { html, text } = renderPortalEmail({
+        title: 'Action Required — Pending CEO Approval',
+        accent: 'amber',
+        greeting: 'Dear CEO,',
+        introLines: [
+          'A requisition approved by the Committee requires your approval before it can proceed to Procurement.',
+          `It totals ${amountStr}, which exceeds the PKR ${REQUISITION_CEO_MIN_AMOUNT_PKR.toLocaleString()} threshold and therefore needs CEO approval.`,
+          'Please log in to the Employee Portal to approve or reject this requisition.'
+        ],
+        details: [
+          { label: 'Reference', value: refNo },
+          { label: 'Description', value: material },
+          { label: 'Submitted By', value: creatorName },
+          { label: 'Total Amount', value: amountStr }
+        ]
+      })
+      await sendRequisitionReminder({ to: toEmails.join(','), subject, body: text, html, meta: { event: 'committee_approved_ceo_action_required', ref: refNo } })
     } catch (err) {
       console.error('[CEO notify] action required email failed:', err.message)
     }
@@ -1716,30 +1728,36 @@ export async function approveCommittee(body) {
     }
     return { message: 'Requisition cancelled', status: 'Rejected' }
   }
-  // On approve: approved quantity per item is mandatory
+  // On approve: when the requisition has line items, an approved quantity per item is mandatory.
+  // Material-only requisitions (no line items — e.g. some General Procurement categories described
+  // only by the "Material" text) carry no quantities to set: the committee simply records approval
+  // and it routes onward (line total is 0, so CEO is skipped as with any sub-100k requisition).
   const items = await reqRepo.getRequisitionItems(reqId)
-  if (items.length === 0) {
+  if (items.length > 0) {
+    const byItemId = Array.isArray(approvedQuantities)
+      ? approvedQuantities.reduce((acc, x) => {
+          const id = x.itemId != null ? parseInt(x.itemId, 10) : null
+          const qty = x.approvedQty != null ? parseInt(x.approvedQty, 10) : null
+          if (id != null && !Number.isNaN(id) && qty != null && !Number.isNaN(qty) && qty >= 0) acc[id] = qty
+          return acc
+        }, {})
+      : {}
+    for (const it of items) {
+      const itemId = it.item_id ?? it.itemId
+      if (itemId == null || byItemId[itemId] === undefined) {
+        return { error: 'Approved quantity is required for every item. Please enter quantity for each line item.', status: 400 }
+      }
+    }
+    for (const it of items) {
+      const itemId = it.item_id ?? it.itemId
+      await reqRepo.updateItemCommitteeApprovedQty(itemId, byItemId[itemId])
+    }
+    await refreshRequisitionItemTaxes(reqId)
+  } else if (!isCategoryNoBoq(commStageRow[0]?.req_category)) {
+    // No line items is only valid for no-BOQ categories (material-only). For BOQ categories an
+    // empty item list is an error state, so committee approval must not proceed.
     return { error: 'Requisition has no items', status: 400 }
   }
-  const byItemId = Array.isArray(approvedQuantities)
-    ? approvedQuantities.reduce((acc, x) => {
-        const id = x.itemId != null ? parseInt(x.itemId, 10) : null
-        const qty = x.approvedQty != null ? parseInt(x.approvedQty, 10) : null
-        if (id != null && !Number.isNaN(id) && qty != null && !Number.isNaN(qty) && qty >= 0) acc[id] = qty
-        return acc
-      }, {})
-    : {}
-  for (const it of items) {
-    const itemId = it.item_id ?? it.itemId
-    if (itemId == null || byItemId[itemId] === undefined) {
-      return { error: 'Approved quantity is required for every item. Please enter quantity for each line item.', status: 400 }
-    }
-  }
-  for (const it of items) {
-    const itemId = it.item_id ?? it.itemId
-    await reqRepo.updateItemCommitteeApprovedQty(itemId, byItemId[itemId])
-  }
-  await refreshRequisitionItemTaxes(reqId)
   await reqRepo.approveCommittee(reqId, eid)
 
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)

@@ -24,7 +24,8 @@ const NO_BOQ = [
   'Other Repair & Maintenance',
   'Loan & Advance Salary',
   'Event',
-  'Specialized Projects'
+  'Specialized Projects',
+  'General Procurements Electric Appliances'
 ]
 const HR_AFTER_HOD = ['Loan & Advance Salary']
 const NO_DATE = ['Loan & Advance Salary', 'Stationary']
