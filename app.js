@@ -22,7 +22,8 @@ import {
   cardsRoutes,
   notificationRoutes,
   employeeHistoryRoutes,
-  tedRoutes
+  tedRoutes,
+  delegateAccessRoutes
 } from './src/routes/index.js'
 import { requestLogger } from './src/middleware/requestLogger.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
@@ -153,6 +154,7 @@ app.use('/api/cards', cardsRoutes)
 app.use('/api/notifications', notificationRoutes)
 app.use('/api', employeeHistoryRoutes)
 app.use('/api/ted', tedRoutes)
+app.use('/api/delegate-access', delegateAccessRoutes)
 
 app.get('/api/health', (req, res) => {
   res.json({

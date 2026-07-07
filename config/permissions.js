@@ -13,5 +13,5 @@ export const PERMISSION_KEYS = [
   'requisition_pending', 'requisition_approved', 'requisition_reports', 'requisition_email_diagnostics',
   'tat_report', 'help_support', 'extensions', 'administration',
   'payroll', 'payroll_gross_salaries', 'payroll_other_allowances', 'payroll_deductions', 'payroll_incentives',
-  'my_trainings', 'manage_trainings'
+  'my_trainings', 'manage_trainings', 'manage_delegate_access'
 ]
