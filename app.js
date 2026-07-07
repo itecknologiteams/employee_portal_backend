@@ -28,6 +28,7 @@ import {
 import { requestLogger } from './src/middleware/requestLogger.js'
 import { errorHandler } from './src/middleware/errorHandler.js'
 import { ssoRevocationMiddleware } from './src/middleware/ssoRevocation.js'
+import delegateSessionMiddleware from './src/middleware/delegateSession.js'
 import { createSessionStore } from './config/sessionStore.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -134,6 +135,7 @@ if (process.env.NODE_ENV !== 'test') {
   console.log(`[session] emp.portal.sid secure=${SESSION_COOKIE_SECURE} IS_HTTPS=${IS_HTTPS} (override: SESSION_COOKIE_SECURE=0 for HTTP-only deployments)`)
 }
 app.use(ssoRevocationMiddleware)
+app.use(delegateSessionMiddleware)
 app.use(requestLogger)
 
 app.use('/api/uploads', express.static(path.join(__dirname, 'uploads')))
