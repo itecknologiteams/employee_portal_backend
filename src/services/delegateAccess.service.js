@@ -4,7 +4,7 @@ import { readFileSync, existsSync } from 'fs'
 import { resolve } from 'path'
 import * as repo from '../repositories/delegateAccess.repository.js'
 import {
-  hashToken, computeStatus, maskEmail, pageToPath, validateCreateInput, buildSessionUser
+  hashToken, computeStatus, maskEmail, validateCreateInput, buildSessionUser
 } from '../utils/delegateAccess.js'
 import { APP_NAME, EMAIL_FROM, EMAIL_LOGO_PATH, getEmailTransport, isEmailConfigured } from '../../config/email.js'
 import { getOfficialEmailFromCrm } from '../../config/crmDatabase.js'
@@ -98,13 +98,18 @@ export async function openLink({ rawToken, ip, userAgent }) {
   await repo.logEvent({ linkId: link.id, eventType: 'opened', ip, userAgent })
   const code = String(Math.floor(100000 + Math.random() * 900000))
   otpStore.set(link.token_hash, { codeHash: await bcrypt.hash(code, OTP_SALT_ROUNDS), expiresAt: Date.now() + OTP_EXPIRY_MS, attempts: 0 })
+  let sent = false
   const to = await targetEmailFor(link)
   if (isEmailConfigured() && to) {
     const transport = getEmailTransport()
-    if (transport) await transport.sendMail({ from: EMAIL_FROM, to, subject: `${code} is your access code — ${APP_NAME || 'Employee Portal'}`, text: `Your one-time access code is ${code}. It expires in 10 minutes.` })
-      .catch((e) => console.error('[DelegateAccess] OTP email failed:', e.message))
+    if (transport) {
+      try {
+        await transport.sendMail({ from: EMAIL_FROM, to, subject: `${code} is your access code — ${APP_NAME || 'Employee Portal'}`, text: `Your one-time access code is ${code}. It expires in 10 minutes.` })
+        sent = true
+      } catch (e) { console.error('[DelegateAccess] OTP email failed:', e.message) }
+    }
   }
-  await repo.logEvent({ linkId: link.id, eventType: 'otp_sent', detail: maskEmail(to) })
+  if (sent) await repo.logEvent({ linkId: link.id, eventType: 'otp_sent', detail: maskEmail(to) })
   return { maskedEmail: maskEmail(to) }
 }
 
@@ -117,9 +122,9 @@ export async function verifyOtp({ rawToken, otp, ip, userAgent }) {
   if (!entry) return { error: 'No code requested or it expired. Reopen the link.', status: 400 }
   if (Date.now() > entry.expiresAt) { otpStore.delete(tokenHash); return { error: 'Code expired. Reopen the link.', status: 400 } }
   if (entry.attempts >= OTP_MAX_ATTEMPTS) return { error: 'Too many attempts. Reopen the link later.', status: 429 }
+  entry.attempts += 1
   const ok = await bcrypt.compare(String(otp).trim(), entry.codeHash)
   if (!ok) {
-    entry.attempts += 1
     await repo.logEvent({ linkId: link.id, eventType: 'otp_failed', ip, userAgent })
     return { error: `Invalid code. ${Math.max(0, OTP_MAX_ATTEMPTS - entry.attempts)} attempt(s) left.`, status: 401 }
   }
