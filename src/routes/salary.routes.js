@@ -24,6 +24,11 @@ router.get('/history/:employeeCode', salaryController.getSalaryHistory)
 // Download: slip data. Query: ?employeeCode= required
 router.get('/download/:salarySlipId', salaryController.downloadSalarySlip)
 
+// Income tax certificate (FBR rule 42): totals for the latest fiscal year (Jul 1 – Jun 30)
+router.get('/tax-certificate/:employeeCode', salaryController.getTaxCertificate)
+// Eligibility: whether the employee has an NTN (gates the download button on the Salary Slip page)
+router.get('/tax-certificate/:employeeCode/status', salaryController.getTaxCertificateStatus)
+
 // FPIN: status (has set?), set, verify – for salary slip view protection
 router.get('/fpin/status/:employeeCode', salaryController.getFpinStatus)
 router.post('/fpin/set', salaryController.setFpin)

@@ -908,6 +908,19 @@ export async function saveLoanFormPdf(reqId, dataUrl) {
   }
 }
 
+/** Loan/Advance fields needed to sync an approved requisition into the payroll DB. */
+export async function getRequisitionLoanData(reqId) {
+  const rows = await executeQuery(
+    `SELECT req_id, req_emp_id, req_category, loan_advance_type,
+            loan_advance_amount, loan_installment_months,
+            req_hr_approved_amount, req_hr_approved_installments, req_hr_installment_start_date,
+            req_finance_approval
+     FROM requisition WHERE req_id = $1`,
+    [reqId]
+  )
+  return rows[0] || null
+}
+
 /** Admin approves (e.g. Stationary/Vehicle Maintenance after HOD For Info). Sets stage to null (done). */
 export async function approveAdmin(requisitionId) {
   try {

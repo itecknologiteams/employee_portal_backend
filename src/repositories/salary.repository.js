@@ -566,3 +566,150 @@ export async function createOldSalarySlips(slips) {
   }
   return created
 }
+
+// ---------- Income tax certificate (FBR rule 42) ----------
+
+/** Employee identity fields for the income tax certificate. Falls back when employees.ntn is not yet migrated. */
+export async function getEmployeeTaxCertInfo(employeeId) {
+  const sql = (withNtn) => `
+    SELECT e.first_name, e.last_name, e.employee_code, e.cnic_number, e.address${withNtn ? ', e.ntn' : ''},
+           c.city_name
+    FROM employees e
+    LEFT JOIN city c ON e.city_id = c.city_id
+    WHERE e.employee_id = $1`
+  try {
+    const rows = await executeQuery(sql(true), [employeeId])
+    return rows[0] || null
+  } catch (e) {
+    if (e.code === '42703' || e.code === '42P01') {
+      const rows = await executeQuery(
+        'SELECT first_name, last_name, employee_code, cnic_number, address FROM employees WHERE employee_id = $1',
+        [employeeId]
+      )
+      return rows[0] ? { ...rows[0], ntn: null, city_name: null } : null
+    }
+    throw e
+  }
+}
+
+/** Latest pay month across payroll_slip, old_salary_slip, and legacy salary_slip. Null when no slips exist. */
+export async function getLatestSlipPayMonth(employeeId, hrEmpIds) {
+  const dates = []
+  const collect = async (sql, params) => {
+    try {
+      const rows = await executeQuery(sql, params)
+      if (rows[0]?.d) dates.push(new Date(rows[0].d))
+    } catch (e) {
+      if (e.code !== '42P01') throw e
+    }
+  }
+  await collect(
+    'SELECT MAX(p.start_date) AS d FROM payroll_slip s JOIN payroll_period p ON p.id = s.payroll_period_id WHERE s.employee_id = $1',
+    [employeeId]
+  )
+  await collect('SELECT MAX(pay_month) AS d FROM old_salary_slip WHERE employee_id = $1', [employeeId])
+  if (hrEmpIds && hrEmpIds.length > 0) {
+    await collect(
+      'SELECT MAX(p.pay_month) AS d FROM salary_slip s JOIN payroll p ON p.id = s.payroll_id WHERE s.hr_emp_id = ANY($1::int[])',
+      [hrEmpIds]
+    )
+  }
+  if (dates.length === 0) return null
+  return new Date(Math.max(...dates.map((d) => d.getTime())))
+}
+
+/** Taxable "Total Income" (per HR) = Basic + Medical + House Rent + Utilities + Incremental Arrears + Incentives.
+ * payroll_slip stores only the aggregate gross (which also carries conveyance, overtime, meal, etc.),
+ * so we derive these 6 from the employee's current salary structure. NOTE: this uses the current
+ * structure for every month — exact for a stable salary; for month-varying incentives/arrears the
+ * precise figure would need to be stored per slip (see old_salary_slip, which has itemised columns). */
+const PAYROLL_STRUCT_TAXABLE_INCOME =
+  `NULLIF(COALESCE(ess.basic_salary,0) + COALESCE(ess.medical_allowance,0) + COALESCE(ess.house_rent_allowance,0)
+    + COALESCE(ess.utilities_allowance,0) + COALESCE(ess.incremental_arrears,0) + COALESCE(ess.incentives,0), 0)`
+
+/** Payroll slips (month, gross, income tax) within [from, to] by payroll_period.start_date. */
+export async function listPayrollTaxRowsForRange(employeeId, from, to, options = {}) {
+  const excludeHeld = options.excludeHeldSlips === true
+  const holdSql = excludeHeld ? ' AND COALESCE(s.slip_on_hold, false) = false' : ''
+  const grossOnlySql =
+    `SELECT p.start_date AS pay_month, s.gross_salary, s.income_tax
+     FROM payroll_slip s
+     JOIN payroll_period p ON p.id = s.payroll_period_id
+     WHERE s.employee_id = $1 AND p.start_date >= $2 AND p.start_date <= $3${holdSql}`
+  try {
+    // Prefer the 6-element taxable income (derived from salary structure); fall back to slip gross.
+    return await executeQuery(
+      `SELECT p.start_date AS pay_month,
+              COALESCE(${PAYROLL_STRUCT_TAXABLE_INCOME}, s.gross_salary) AS gross_salary,
+              s.income_tax
+       FROM payroll_slip s
+       JOIN payroll_period p ON p.id = s.payroll_period_id
+       LEFT JOIN employee_salary_structure ess ON ess.employee_id = s.employee_id
+       WHERE s.employee_id = $1 AND p.start_date >= $2 AND p.start_date <= $3${holdSql}`,
+      [employeeId, from, to]
+    )
+  } catch (e) {
+    // Salary-structure table/columns unavailable → use the slip's stored gross.
+    if (e.code === '42703' || e.code === '42P01') {
+      try {
+        return await executeQuery(grossOnlySql, [employeeId, from, to])
+      } catch (e2) {
+        if (e2.code === '42703' && excludeHeld) return listPayrollTaxRowsForRange(employeeId, from, to, { excludeHeldSlips: false })
+        if (e2.code === '42P01' || e2.code === '42703') return []
+        throw e2
+      }
+    }
+    throw e
+  }
+}
+
+/** Old (imported) slips (month, gross, income tax) within [from, to].
+ * Tax-certificate "Total Income" (per HR) = Basic + Medical + House Rent + Utilities
+ * + Incremental Arrears + Incentives — NOT the full gross (which also carries conveyance,
+ * overtime, meal, communication, bike, device, arrears, etc.). We sum the itemised pay-sheet
+ * columns; if a slip was imported without them (all zero), fall back to the stored gross. */
+const OLD_SLIP_TAXABLE_INCOME =
+  `(COALESCE(basic_salary_1,0) + COALESCE(medical_allowance_2,0) + COALESCE(house_rent_allowance_5,0)
+    + COALESCE(utilities_allowance_6,0) + COALESCE(incremental_arrears_31,0) + COALESCE(incentives_tech_10,0))`
+export async function listOldSlipTaxRowsForRange(employeeId, from, to) {
+  try {
+    return await executeQuery(
+      `SELECT pay_month,
+              CASE WHEN ${OLD_SLIP_TAXABLE_INCOME} > 0 THEN ${OLD_SLIP_TAXABLE_INCOME}
+                   ELSE COALESCE(tot_gross_salary, gross_salary) END AS gross_salary,
+              income_tax_18 AS income_tax
+       FROM old_salary_slip
+       WHERE employee_id = $1 AND pay_month >= $2 AND pay_month <= $3`,
+      [employeeId, from, to]
+    )
+  } catch (e) {
+    // Pay-sheet detail columns absent on this DB — fall back to the stored gross.
+    if (e.code === '42703') {
+      return await executeQuery(
+        `SELECT pay_month, COALESCE(tot_gross_salary, gross_salary) AS gross_salary, income_tax_18 AS income_tax
+         FROM old_salary_slip
+         WHERE employee_id = $1 AND pay_month >= $2 AND pay_month <= $3`,
+        [employeeId, from, to]
+      ).catch(() => [])
+    }
+    if (e.code === '42P01') return []
+    throw e
+  }
+}
+
+/** Legacy slips (month, gross, income tax) within [from, to] by payroll.pay_month. */
+export async function listLegacyTaxRowsForRange(hrEmpIds, from, to) {
+  if (!hrEmpIds || hrEmpIds.length === 0) return []
+  try {
+    return await executeQuery(
+      `SELECT p.pay_month, COALESCE(s.tot_gross_salary, s.gross_salary) AS gross_salary, s.income_tax_18 AS income_tax
+       FROM salary_slip s
+       JOIN payroll p ON p.id = s.payroll_id
+       WHERE s.hr_emp_id = ANY($1::int[]) AND p.pay_month >= $2 AND p.pay_month <= $3`,
+      [hrEmpIds, from, to]
+    )
+  } catch (e) {
+    if (e.code === '42P01' || e.code === '42703') return []
+    throw e
+  }
+}

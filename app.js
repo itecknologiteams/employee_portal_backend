@@ -17,6 +17,7 @@ import {
   authRoutes,
   administrationRoutes,
   payrollRoutes,
+  payrollDbRoutes,
   autoPayrollRoutes,
   rolePermissionsRoutes,
   cardsRoutes,
@@ -150,6 +151,7 @@ app.use('/api/extensions', extensionsRoutes)
 app.use('/api/auth', authRoutes)
 app.use('/api/administration', administrationRoutes)
 app.use('/api/payroll', payrollRoutes)
+app.use('/api/payroll-db', payrollDbRoutes)
 app.use('/api/auto-payroll', autoPayrollRoutes)
 app.use('/api/role-permissions', rolePermissionsRoutes)
 app.use('/api/cards', cardsRoutes)

@@ -46,44 +46,17 @@ export async function getEmployeeJoinDate(employeeId) {
   return rows[0]?.join_date ?? null
 }
 
-/** Calculate prorated annual leave based on join date.
- * Formula: 14(AL)/12 * Remaining Months in completion of year
- * After completing 1 year, employee gets full 14 days
+/** Annual-leave entitlement for a join date.
+ * Annual leave is EARNED only after completing one full year of service:
+ *  - Before the 1-year anniversary: 0 days (a new hire has no annual entitlement yet).
+ *  - On/after the 1-year anniversary: full 14 days.
+ * The one-time prorated grant at the anniversary (e.g. 14/12 * remaining months of the
+ * joining year) is applied by the yearly allocation job — see runAnnualAllocation() and
+ * src/utils/annualLeave.js. This function only decides the point-in-time seed/quota value.
  */
 export function calculateProratedAnnualLeave(joinDate) {
-  if (!joinDate) return DEFAULT_ANNUAL
-
-  const today = new Date()
-  const join = new Date(joinDate)
-
-  // Calculate one year anniversary date
-  const oneYearAnniversary = new Date(join)
-  oneYearAnniversary.setFullYear(oneYearAnniversary.getFullYear() + 1)
-
-  // If employee has completed 1 year, return full annual leave
-  if (today >= oneYearAnniversary) {
-    return DEFAULT_ANNUAL
-  }
-
-  // Calculate remaining months until 1 year completion
-  // Count full months from next month after joining until the 1-year mark
-  let remainingMonths = 0
-
-  // Start from the month after join month
-  const startMonth = new Date(join.getFullYear(), join.getMonth() + 1, 1)
-
-  // Count months until one year anniversary
-  let current = new Date(startMonth)
-  while (current < oneYearAnniversary) {
-    remainingMonths++
-    current.setMonth(current.getMonth() + 1)
-  }
-
-  // Formula: 14/12 * Remaining Months
-  // Round to nearest integer (at least 1 day if they just joined)
-  const prorated = Math.max(1, Math.round((DEFAULT_ANNUAL / 12) * remainingMonths))
-
-  return prorated
+  if (!joinDate) return DEFAULT_ANNUAL // tenure unknown → fall back to full quota
+  return hasCompletedOneYear(joinDate) ? DEFAULT_ANNUAL : 0
 }
 
 /** Calculate prorated annual leave by employee code. */
@@ -97,6 +70,19 @@ export async function calculateProratedAnnualLeaveByCode(employeeCode) {
   )
 
   return calculateProratedAnnualLeave(rows[0]?.join_date)
+}
+
+/** Check if employee has completed at least 1 year of service (reached their 1-year anniversary). */
+export function hasCompletedOneYear(joinDate) {
+  if (!joinDate) return false
+
+  const today = new Date()
+  const join = new Date(joinDate)
+
+  const oneYearAnniversary = new Date(join)
+  oneYearAnniversary.setFullYear(oneYearAnniversary.getFullYear() + 1)
+
+  return today >= oneYearAnniversary
 }
 
 /** Check if employee has completed 2 or more years. */

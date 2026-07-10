@@ -25,7 +25,8 @@ const NO_BOQ = [
   'Loan & Advance Salary',
   'Event',
   'Specialized Projects',
-  'General Procurements Electric Appliances'
+  'General Procurements Electric Appliances',
+  'General Procurement Electric Appliances' // singular spelling (defensive — match live data either way)
 ]
 const HR_AFTER_HOD = ['Loan & Advance Salary']
 const NO_DATE = ['Loan & Advance Salary', 'Stationary']

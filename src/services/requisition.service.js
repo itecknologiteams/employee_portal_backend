@@ -555,6 +555,14 @@ export async function createRequisition(body) {
   if (!noDateCategory && !urgent && (!requiredByDate || typeof requiredByDate !== 'string' || !String(requiredByDate).trim())) {
     return { error: 'Required by date is required', status: 400 }
   }
+  // Loan & Advance Salary: an employee may request at most 10 installments.
+  // (HR can later raise this up to 20 for exceptional cases with a recorded reason.)
+  if (loanInstallmentMonths != null && String(loanInstallmentMonths).trim() !== '') {
+    const li = parseInt(String(loanInstallmentMonths), 10)
+    if (!Number.isFinite(li) || li < 1 || li > 10) {
+      return { error: 'Installments must be between 1 and 10', status: 400 }
+    }
+  }
   const itemsList = Array.isArray(items) ? items : []
   let validItems = itemsList.filter(it => {
     const qty = it.itemQty ?? it.item_qty ?? 0
@@ -1429,6 +1437,30 @@ export async function getPendingCommittee(employeeId) {
   return list
 }
 
+/**
+ * Validate an HR-approved installment count (Loan & Advance Salary).
+ * Rule: 1–20. Above the employee cap of 10 is allowed only as an exceptional case and
+ * REQUIRES a reason (stored as an HR note/comment on the requisition by the caller).
+ * @returns {{inst:number, reason:string}} on success, or {error, status} on failure.
+ */
+function checkHrInstallments(rawInst, reason) {
+  const inst = parseInt(String(rawInst), 10)
+  if (!Number.isFinite(inst) || inst < 1) return { error: 'Approved installments must be a positive number', status: 400 }
+  if (inst > 20) return { error: 'Approved installments cannot exceed 20', status: 400 }
+  const r = reason != null ? String(reason).trim() : ''
+  if (inst > 10 && !r) {
+    return { error: 'A reason is required to approve more than 10 installments (exceptional case)', status: 400 }
+  }
+  return { inst, reason: r }
+}
+
+/** Record the exceptional-installments reason (>10) as an HR note on the requisition. */
+async function noteHrInstallmentException(reqId, inst, reason, approverId) {
+  if (inst > 10 && reason) {
+    await reqRepo.insertRequisitionComment(reqId, 'hr', `Installments raised to ${inst} (exceptional): ${reason}`, approverId)
+  }
+}
+
 export async function approveHR(body) {
   const { requisitionId, approved, hrApprovedAmount, hrEmploymentStatus, hrApprovedInstallments } = body
   const reqId = requisitionId != null ? parseInt(requisitionId, 10) : null
@@ -1466,6 +1498,12 @@ export async function approveHR(body) {
     }
     return { message: 'Requisition rejected', status: 'Rejected' }
   }
+  // Validate installments BEFORE committing the approval (1–20; >10 needs a reason).
+  let hrInstCheck = null
+  if (hrApprovedInstallments != null) {
+    hrInstCheck = checkHrInstallments(hrApprovedInstallments, body.installmentReason ?? body.remarks ?? body.note)
+    if (hrInstCheck.error) return hrInstCheck
+  }
   await reqRepo.approveHr(reqId)
 
   if (hrApprovedAmount != null) {
@@ -1475,9 +1513,9 @@ export async function approveHR(body) {
   if (hrEmploymentStatus && ['Permanent', 'Not Confirmed'].includes(String(hrEmploymentStatus).trim())) {
     await reqRepo.saveHrEmploymentStatus(reqId, String(hrEmploymentStatus).trim())
   }
-  if (hrApprovedInstallments != null) {
-    const inst = parseInt(String(hrApprovedInstallments), 10)
-    if (!isNaN(inst) && inst > 0) await reqRepo.saveHrApprovedInstallments(reqId, inst)
+  if (hrInstCheck != null) {
+    await reqRepo.saveHrApprovedInstallments(reqId, hrInstCheck.inst)
+    await noteHrInstallmentException(reqId, hrInstCheck.inst, hrInstCheck.reason, eid)
   }
   const reqRow = await reqRepo.getRequisitionAndDepartment(reqId)
   const categoryName = reqRow[0]?.req_category
@@ -1528,9 +1566,16 @@ export async function saveHrSection3(body) {
     const out = parseFloat(String(body.outstandingLoan).replace(/[^0-9.]/g, ''))
     fields.outstandingLoan = Number.isFinite(out) && out > 0 ? out : null
   }
+  let hrInstException = null
   if (body.approvedInstallments !== undefined) {
-    const inst = parseInt(String(body.approvedInstallments), 10)
-    fields.approvedInstallments = Number.isFinite(inst) && inst > 0 ? inst : null
+    if (body.approvedInstallments === null || String(body.approvedInstallments).trim() === '') {
+      fields.approvedInstallments = null
+    } else {
+      const v = checkHrInstallments(body.approvedInstallments, body.installmentReason ?? body.remarks ?? body.note)
+      if (v.error) return v
+      fields.approvedInstallments = v.inst
+      hrInstException = v // record the exceptional-reason note after the section saves
+    }
   }
   if (body.employmentStatus !== undefined) {
     const s = String(body.employmentStatus).trim()
@@ -1546,6 +1591,9 @@ export async function saveHrSection3(body) {
   }
 
   await reqRepo.saveHrSection3(reqId, fields)
+  if (hrInstException) {
+    await noteHrInstallmentException(reqId, hrInstException.inst, hrInstException.reason, eid)
+  }
   return { message: 'HR section saved', status: 200 }
 }
 
@@ -1733,7 +1781,9 @@ export async function approveCommittee(body) {
   // only by the "Material" text) carry no quantities to set: the committee simply records approval
   // and it routes onward (line total is 0, so CEO is skipped as with any sub-100k requisition).
   const items = await reqRepo.getRequisitionItems(reqId)
-  if (items.length > 0) {
+  const isNoBoqCategory = isCategoryNoBoq(commStageRow[0]?.req_category)
+  if (items.length > 0 && !isNoBoqCategory) {
+    // BOQ categories: an approved quantity per line item is mandatory.
     const byItemId = Array.isArray(approvedQuantities)
       ? approvedQuantities.reduce((acc, x) => {
           const id = x.itemId != null ? parseInt(x.itemId, 10) : null
@@ -1753,7 +1803,21 @@ export async function approveCommittee(body) {
       await reqRepo.updateItemCommitteeApprovedQty(itemId, byItemId[itemId])
     }
     await refreshRequisitionItemTaxes(reqId)
-  } else if (!isCategoryNoBoq(commStageRow[0]?.req_category)) {
+  } else if (items.length > 0 && isNoBoqCategory) {
+    // No-BOQ categories (e.g. General Procurements Electric Appliances): the Committee approves
+    // WITHOUT a BOQ — per-item approved quantities are not required. If any were supplied, apply
+    // them; otherwise just record approval and route onward.
+    if (Array.isArray(approvedQuantities) && approvedQuantities.length > 0) {
+      for (const x of approvedQuantities) {
+        const id = x.itemId != null ? parseInt(x.itemId, 10) : null
+        const qty = x.approvedQty != null ? parseInt(x.approvedQty, 10) : null
+        if (id != null && !Number.isNaN(id) && qty != null && !Number.isNaN(qty) && qty >= 0) {
+          await reqRepo.updateItemCommitteeApprovedQty(id, qty)
+        }
+      }
+      await refreshRequisitionItemTaxes(reqId)
+    }
+  } else if (items.length === 0 && !isNoBoqCategory) {
     // No line items is only valid for no-BOQ categories (material-only). For BOQ categories an
     // empty item list is an error state, so committee approval must not proceed.
     return { error: 'Requisition has no items', status: 400 }
@@ -2763,6 +2827,11 @@ export async function approveFinance(body) {
     sendLoanFinanceApprovedEmail(reqId).catch((e) =>
       console.error('📧 [Loan Finance Approved] email failed:', e?.message)
     )
+    // Push the loan/advance into the payroll DB (create payroll_loan + installment schedule).
+    // Non-blocking and idempotent (by source_req_id) — never fails the finance approval.
+    import('./payrollDb.service.js')
+      .then((m) => m.syncLoanFromRequisitionSafe(reqId))
+      .catch((e) => console.error('[PayrollLoanSync] dispatch failed:', e?.message))
   } else {
     // Normal category: set stage to procurement so it appears in their bucket
     await setCurrentStage(reqId, 'procurement')

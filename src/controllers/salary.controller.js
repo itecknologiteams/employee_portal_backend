@@ -150,6 +150,41 @@ export async function downloadSalarySlip(req, res) {
   }
 }
 
+/** GET /tax-certificate/:employeeCode — FBR income tax deduction certificate data for the latest fiscal year. */
+export async function getTaxCertificate(req, res) {
+  try {
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const bypass = await bypassSalarySlipHold(req, employeeId)
+    const result = await salaryService.getTaxCertificate(employeeId, { bypassHold: bypass })
+    if (!result) {
+      return res.status(403).json({ error: 'Salary slip access is on hold for this employee.', salarySlipOnHold: true })
+    }
+    if (result.noData) {
+      return res.status(404).json({ error: 'No salary records found to generate a tax certificate.' })
+    }
+    res.json(result)
+  } catch (error) {
+    console.error('Tax certificate error:', error)
+    res.status(500).json({ error: 'Failed to generate tax certificate' })
+  }
+}
+
+/** GET /tax-certificate/:employeeCode/status — whether the employee has an NTN (gates the download button). */
+export async function getTaxCertificateStatus(req, res) {
+  try {
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const result = await salaryService.getTaxCertificateStatus(employeeId)
+    res.json(result)
+  } catch (error) {
+    console.error('Tax certificate status error:', error)
+    res.status(500).json({ error: 'Failed to get tax certificate status' })
+  }
+}
+
 /** Upload/bulk create old salary slips (import from SQL Server). Body: { slips: [{ employeeId, payMonth, periodLabel?, basicSalary?, grossSalary, totalAllowances, totalDeductions, netSalary, status?, remarks?, sourceEmployeeCode? }] } or raw array. */
 export async function createOldSlips(req, res) {
   try {

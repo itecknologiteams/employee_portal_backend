@@ -547,6 +547,98 @@ export async function getSalarySlipForDownload(rawId, employeeId, options = {}) 
   }
 }
 
+// ---------- Income tax certificate (FBR rule 42) ----------
+
+/**
+ * Data for the FBR "Certificate of Collection or Deduction of Income Tax" (rule 42),
+ * covering the latest fiscal year (Jul 1 – Jun 30) that has any salary slip.
+ * Sums income tax and gross salary across all three slip sources, deduping by
+ * calendar month with the same precedence as the slip list UI (payroll > old > legacy)
+ * so a month imported into two tables is not double-counted.
+ */
+export async function getTaxCertificate(employeeId, options = {}) {
+  const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
+  if (onHold && !options.bypassHold) return null
+
+  const hrIds = await salaryRepo.getHrEmpIdsForEmployee(employeeId)
+  const latest = await salaryRepo.getLatestSlipPayMonth(employeeId, hrIds)
+  if (!latest) return { noData: true }
+
+  // Pakistani fiscal year: July 1 – June 30. getMonth() >= 6 means Jul–Dec.
+  const fyStartYear = latest.getMonth() >= 6 ? latest.getFullYear() : latest.getFullYear() - 1
+  const from = `${fyStartYear}-07-01`
+  const to = `${fyStartYear + 1}-06-30`
+
+  const [payrollRows, oldRows, legacyRows] = await Promise.all([
+    salaryRepo.listPayrollTaxRowsForRange(employeeId, from, to, { excludeHeldSlips: !options.bypassHold }),
+    salaryRepo.listOldSlipTaxRowsForRange(employeeId, from, to),
+    salaryRepo.listLegacyTaxRowsForRange(hrIds, from, to)
+  ])
+
+  const monthKey = (d) => {
+    const dt = new Date(d)
+    return `${dt.getFullYear()}-${dt.getMonth()}`
+  }
+  const byMonth = new Map()
+  const put = (rows, rank) => {
+    for (const r of rows) {
+      if (!r.pay_month) continue
+      const key = monthKey(r.pay_month)
+      const existing = byMonth.get(key)
+      if (!existing || rank < existing.rank) {
+        byMonth.set(key, {
+          rank,
+          payMonth: r.pay_month,
+          gross: parseFloat(r.gross_salary ?? 0) || 0,
+          tax: parseFloat(r.income_tax ?? 0) || 0
+        })
+      }
+    }
+  }
+  put(payrollRows, 0)
+  put(oldRows, 1)
+  put(legacyRows, 2)
+
+  const months = [...byMonth.values()].sort((a, b) => new Date(a.payMonth) - new Date(b.payMonth))
+  const totalTax = Math.round(months.reduce((s, m) => s + m.tax, 0))
+  const totalGross = Math.round(months.reduce((s, m) => s + m.gross, 0))
+
+  const emp = await salaryRepo.getEmployeeTaxCertInfo(employeeId)
+  const name = emp ? [emp.first_name, emp.last_name].filter(Boolean).join(' ').trim() : ''
+
+  return {
+    employee: {
+      name: name || '—',
+      employeeCode: emp?.employee_code || '',
+      cnic: emp?.cnic_number || '',
+      ntn: emp?.ntn || '',
+      address: emp?.address || '',
+      city: emp?.city_name || ''
+    },
+    fiscalYear: {
+      label: `${fyStartYear}-${String((fyStartYear + 1) % 100).padStart(2, '0')}`,
+      from,
+      to
+    },
+    totalTax,
+    totalGross,
+    monthsCount: months.length,
+    section: '149',
+    nature: 'Tax on Salary Income'
+  }
+}
+
+/**
+ * Lightweight eligibility check for the tax certificate: does the employee have an NTN on file?
+ * Used by the Salary Slip page to enable/disable the "Download Tax Certificate" button without
+ * running the full certificate generation. Reactive — the moment HR sets the NTN, this flips true.
+ */
+export async function getTaxCertificateStatus(employeeId) {
+  const emp = await salaryRepo.getEmployeeTaxCertInfo(employeeId)
+  const ntn = emp?.ntn != null ? String(emp.ntn).trim() : ''
+  return { hasNtn: ntn.length > 0 }
+}
+
 // ---------- FPIN (salary slip view PIN) ----------
 const FPIN_SALT_ROUNDS = 10
 

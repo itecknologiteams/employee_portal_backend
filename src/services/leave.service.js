@@ -192,7 +192,7 @@ export async function calculateEmployeeAnnualLeave(employeeId) {
     fullAnnualLeave: defaultBalance.annual,
     isProrated: prorated < defaultBalance.annual,
     note: prorated < defaultBalance.annual
-      ? `Prorated annual leave: ${prorated} days (Formula: 14/12 * remaining months in completion of year)`
+      ? `No annual leave yet: ${prorated} days. Annual leave is earned only after completing 1 year of service; it is granted at the 1-year anniversary.`
       : `Full annual leave: ${prorated} days (Employee has completed 1 year)`
   }
 }
@@ -223,7 +223,7 @@ export async function calculateEmployeeAnnualLeaveByCode(employeeCode) {
     fullAnnualLeave: defaultBalance.annual,
     isProrated: prorated < defaultBalance.annual,
     note: prorated < defaultBalance.annual
-      ? `Prorated annual leave: ${prorated} days (Formula: 14/12 * remaining months in completion of year)`
+      ? `No annual leave yet: ${prorated} days. Annual leave is earned only after completing 1 year of service; it is granted at the 1-year anniversary.`
       : `Full annual leave: ${prorated} days (Employee has completed 1 year)`
   }
 }
@@ -523,9 +523,14 @@ export async function getLeaveBalance(employeeId) {
   const result = await leaveRepo.getLeaveBalance(employeeId)
   if (result.length === 0) return defaultBalance
   const b = result[0]
+  // Annual leave is earned only after 1 year of service — a sub-1-year employee always sees 0,
+  // regardless of any stale/prorated value stored on the balance row. (Unknown join date => keep stored.)
+  const joinDate = await leaveRepo.getEmployeeJoinDate(employeeId)
+  const underOneYear = joinDate != null && !leaveRepo.hasCompletedOneYear(joinDate)
+  const annual = underOneYear ? 0 : parseInt(b.annual_leave || 0, 10)
   return {
     employeeCode: b.employee_code || null,
-    annual: parseInt(b.annual_leave || 0, 10),
+    annual,
     casual: parseInt(b.casual_leave ?? 0, 10),
     sick: parseInt(b.sick_leave || 0, 10),
     carried: parseInt(b.carried_forward ?? 0, 10),
@@ -539,11 +544,15 @@ export async function getLeaveBalance(employeeId) {
 /** Get leave balance by employee code - returns data with employee_code field. */
 export async function getLeaveBalanceByCode(employeeCode) {
   const result = await leaveRepo.getLeaveBalanceByEmployeeCode(employeeCode)
+  // Annual leave is earned only after 1 year of service — a sub-1-year employee always sees 0.
+  // (Unknown join date => keep the stored/default value; we can't prove they are under a year.)
+  const joinDate = await leaveRepo.getEmployeeJoinDateByCode(employeeCode)
+  const underOneYear = joinDate != null && !leaveRepo.hasCompletedOneYear(joinDate)
   if (result.length === 0) {
     // Return default balance with employee code
     return {
       employeeCode: employeeCode,
-      annual: defaultBalance.annual,
+      annual: underOneYear ? 0 : defaultBalance.annual,
       casual: defaultBalance.casual,
       sick: defaultBalance.sick,
       carried: 0,
@@ -556,7 +565,7 @@ export async function getLeaveBalanceByCode(employeeCode) {
   const b = result[0]
   return {
     employeeCode: b.employee_code,
-    annual: parseInt(b.annual_leave || 0, 10),
+    annual: underOneYear ? 0 : parseInt(b.annual_leave || 0, 10),
     casual: parseInt(b.casual_leave ?? 0, 10),
     sick: parseInt(b.sick_leave || 0, 10),
     carried: parseInt(b.carried_forward ?? 0, 10),
