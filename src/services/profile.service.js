@@ -65,6 +65,45 @@ export async function getProfile(employeeId) {
 
 const PROFILE_HR_EMAIL = process.env.PROFILE_HR_EMAIL || process.env.LEAVE_EMAIL_ANNUAL || 'hr@itecknologi.com'
 
+/** Human-readable labels for the profile fields an employee can request to change. */
+const PROFILE_FIELD_LABELS = {
+  name: 'Name',
+  email: 'Email',
+  phone: 'Phone',
+  personalCellNumber: 'Personal Cell Number',
+  emergencyContactNumber: 'Emergency Contact Number',
+  department: 'Department',
+  position: 'Position',
+  employeeCode: 'Employee Code',
+  grade: 'Grade',
+  joinDate: 'Join Date',
+  fatherName: "Father's Name",
+  dateOfBirth: 'Date of Birth',
+  gender: 'Gender',
+  maritalStatus: 'Marital Status',
+  religion: 'Religion',
+  cnicNumber: 'CNIC Number',
+  cnicIssueDate: 'CNIC Issue Date',
+  cnicExpiryDate: 'CNIC Expiry Date',
+  homeAddress: 'Home Address',
+  employeeExtension: 'Employee Extension',
+  profileImage: 'Profile Photo'
+}
+
+/** Turn the requested-changes object into a readable "Field: value" summary for the HR email. */
+function formatRequestedChanges(data) {
+  if (!data || typeof data !== 'object') return null
+  const parts = []
+  for (const [key, value] of Object.entries(data)) {
+    if (value == null || value === '') continue
+    const label = PROFILE_FIELD_LABELS[key] || key
+    // Image fields carry base64/URL blobs — note the change without dumping the payload.
+    const shown = key === 'profileImage' ? '(new photo uploaded)' : String(value)
+    parts.push(`${label}: ${shown}`)
+  }
+  return parts.length ? parts.join(' • ') : null
+}
+
 /** Submit profile update request (HR bucket). No direct DB update; HR must approve. */
 export async function updateProfile(employeeId, data) {
   const result = await profileRepo.createOrUpdateProfileChangeRequest(employeeId, data)
@@ -75,16 +114,22 @@ export async function updateProfile(employeeId, data) {
     if (transport) {
       try {
         const to = PROFILE_HR_EMAIL
-        const subject = `New profile change request – pending HR approval (Employee ID: ${employeeId})`
-        const baseUrl = process.env.BASE_URL || 'http://localhost:5173'
+        // Look up name + code so HR can identify the requester (best-effort; falls back to the ID).
+        const profile = await getProfile(employeeId).catch(() => null)
+        const employeeName = profile?.name || `Employee #${employeeId}`
+        const employeeCode = profile?.employeeId || String(employeeId)
+        const changedDetails = formatRequestedChanges(data)
+        const subject = `New profile change request – pending HR approval (${employeeName})`
+        const baseUrl = process.env.PORTAL_URL || process.env.BASE_URL || 'https://emp.itecknologi.com'
         const { html, text } = renderPortalEmail({
           title: 'New Profile Change Request',
           accent: 'amber', // pending HR action
           greeting: 'Dear HR,',
           introLines: ['A profile update request has been submitted and is now in your HR bucket for review.'],
           details: [
-            { label: 'Employee ID', value: employeeId },
-            ...(requestId != null ? [{ label: 'Request ID', value: requestId }] : []),
+            { label: 'Employee Name', value: employeeName },
+            { label: 'Employee Code', value: employeeCode },
+            { label: 'Requested Changes', value: changedDetails },
             { label: 'View pending requests', value: baseUrl }
           ],
           footerNote: 'This is an automated message from the Employee Portal. Please do not reply.'
