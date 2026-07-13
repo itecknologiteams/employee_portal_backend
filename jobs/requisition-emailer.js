@@ -220,7 +220,7 @@ async function sendCreatorAckRequiredEmail(reqId) {
     return
   }
   const refNo = creator.req_reference_no || `#${reqId}`
-  const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
+  const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'https://emp.itecknologi.com/').replace(/\/$/, '') + '/'
   const ackUrl = `${portalUrl}requisition/acknowledgment`
   const subject = `Requisition ${refNo} – Please acknowledge within 5 minutes – ${APP_NAME}`
   const html = `
@@ -266,7 +266,7 @@ async function processCreatorAckReminder(job) {
     return
   }
   const refNo = row.req_reference_no || `#${reqId}`
-  const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
+  const portalUrl = (process.env.REQUISITION_PORTAL_URL || process.env.REQUEST_PORTAL_URL || 'https://emp.itecknologi.com/').replace(/\/$/, '') + '/'
   const ackUrl = `${portalUrl}requisition/acknowledgment`
   const subject = `Reminder: Please acknowledge requisition ${refNo} – ${APP_NAME}`
   const html = `

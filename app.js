@@ -53,7 +53,7 @@ const IS_HTTPS = (process.env.PORTAL_PUBLIC_URL || '').startsWith('https://')
  * Session cookie `Secure` flag.
  * Defaults to true when PORTAL_PUBLIC_URL is https:// (production).
  * Set SESSION_COOKIE_SECURE=0 in .env ONLY for pure HTTP internal deployments
- * (e.g. http://rfm.itecknologi.internal) where PORTAL_PUBLIC_URL is not https.
+ * (e.g. https://emp.itecknologi.com) where PORTAL_PUBLIC_URL is not https.
  */
 const SESSION_COOKIE_SECURE =
   process.env.SESSION_COOKIE_SECURE === '0'
@@ -69,7 +69,7 @@ const allowedOrigins = [
   `http://${NETWORK_IP}:${FRONTEND_PORT}`,
   `http://${NETWORK_IP}:4173`,
   'https://emp.itecknologi.com',
-  'http://rfm.itecknologi.internal',
+  'https://emp.itecknologi.com',
   'http://192.168.20.180',
   'http://192.168.20.180/',
   'https://webtrack.itecknologi.com',

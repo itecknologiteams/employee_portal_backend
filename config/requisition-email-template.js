@@ -1,7 +1,7 @@
 import { REQUISITION_PORTAL_URL } from './email.js'
 
 export function getPortalUrl() {
-  return (REQUISITION_PORTAL_URL || 'http://rfm.itecknologi.internal/').replace(/\/$/, '') + '/'
+  return (REQUISITION_PORTAL_URL || 'https://emp.itecknologi.com/').replace(/\/$/, '') + '/'
 }
 
 /**
