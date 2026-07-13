@@ -14,3 +14,7 @@ test('evaluateSuperAdmin: wrong role → 403', () => {
 test('evaluateSuperAdmin: SuperAdmin → ok', () => {
   assert.deepEqual(evaluateSuperAdmin(5, 'SuperAdmin'), { ok: true, status: 200 })
 })
+
+test('evaluateSuperAdmin: lowercase superadmin → ok (case-insensitive)', () => {
+  assert.deepEqual(evaluateSuperAdmin(5, 'superadmin'), { ok: true, status: 200 })
+})

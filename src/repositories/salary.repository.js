@@ -570,11 +570,19 @@ export async function insertNormalizedOldSlips(normalized) {
   return created
 }
 
-/** Stable key for duplicate detection. Normalizes date-ish values to YYYY-MM-DD. */
+/** Stable key for duplicate detection. Normalizes date-ish values to YYYY-MM-DD.
+ * IMPORTANT: node-postgres deserializes a `date` column to a LOCAL-midnight JS Date.
+ * Using .toISOString() would convert to UTC and shift the calendar day backward in
+ * positive-offset timezones (e.g. UTC+5). Format from local components instead so the
+ * key is TZ-independent. */
 export function oldSlipDedupeKey(employeeId, payMonth) {
   let d = payMonth
-  if (payMonth instanceof Date) d = payMonth.toISOString().slice(0, 10)
-  else if (typeof payMonth === 'string') d = payMonth.slice(0, 10)
+  if (payMonth instanceof Date) {
+    const y = payMonth.getFullYear()
+    const m = String(payMonth.getMonth() + 1).padStart(2, '0')
+    const day = String(payMonth.getDate()).padStart(2, '0')
+    d = `${y}-${m}-${day}`
+  } else if (typeof payMonth === 'string') d = payMonth.slice(0, 10)
   return `${employeeId}|${d}`
 }
 
@@ -597,7 +605,7 @@ export async function getExistingOldSlipKeys(normalizedRows) {
   const ids = [...new Set(normalizedRows.map((s) => s.employee_id).filter((v) => v != null))]
   if (ids.length === 0) return new Set()
   const rows = await executeQuery(
-    'SELECT employee_id, pay_month FROM old_salary_slip WHERE employee_id = ANY($1::int[])',
+    "SELECT employee_id, to_char(pay_month, 'YYYY-MM-DD') AS pay_month FROM old_salary_slip WHERE employee_id = ANY($1::int[])",
     [ids]
   )
   return new Set(rows.map((r) => oldSlipDedupeKey(r.employee_id, r.pay_month)))

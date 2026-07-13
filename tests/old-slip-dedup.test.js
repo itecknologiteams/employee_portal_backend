@@ -8,6 +8,12 @@ test('oldSlipDedupeKey normalizes date to YYYY-MM-DD', () => {
   assert.equal(oldSlipDedupeKey(7, '2024-01-01T00:00:00.000Z'), '7|2024-01-01')
 })
 
+test('oldSlipDedupeKey is TZ-independent for a local-midnight Date (node-postgres `date` deserialization)', () => {
+  // node-postgres deserializes a `date` column to a LOCAL-midnight JS Date. Constructing from
+  // components (not a UTC ISO string) simulates that, regardless of the host TZ running the test.
+  assert.equal(oldSlipDedupeKey(7, new Date(2024, 0, 1)), '7|2024-01-01')
+})
+
 test('partitionByExistingKeys drops existing and intra-batch dupes', () => {
   const rows = [
     { employee_id: 7, pay_month: '2024-01-01' }, // exists → duplicate

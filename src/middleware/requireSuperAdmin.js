@@ -3,7 +3,7 @@ import * as authRepo from '../repositories/auth.repository.js'
 /** Pure decision: given the resolved employeeId and the DB user_type, decide the outcome. */
 export function evaluateSuperAdmin(employeeId, userType) {
   if (!employeeId) return { ok: false, status: 401 }
-  if (userType !== 'SuperAdmin') return { ok: false, status: 403 }
+  if (String(userType || '').trim().toLowerCase() !== 'superadmin') return { ok: false, status: 403 }
   return { ok: true, status: 200 }
 }
 
