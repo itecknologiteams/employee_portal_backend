@@ -1,5 +1,7 @@
 import express from 'express'
 import * as adminController from '../controllers/administration.controller.js'
+import { requireSuperAdmin } from '../middleware/requireSuperAdmin.js'
+import { payrollExcelUpload } from '../utils/file.utils.js'
 
 const router = express.Router()
 
@@ -42,5 +44,10 @@ router.get('/requisition-categories', adminController.listRequisitionCategories)
 router.post('/requisition-categories', adminController.createRequisitionCategory)
 router.put('/requisition-categories/:id', adminController.updateRequisitionCategory)
 router.delete('/requisition-categories/:id', adminController.deleteRequisitionCategory)
+
+// Old Tax Certificate Candidates Sheet (SuperAdmin only)
+router.get('/old-salary-slips/template', requireSuperAdmin(), adminController.downloadOldSlipTemplate)
+router.post('/old-salary-slips/upload', requireSuperAdmin(), payrollExcelUpload.single('file'), adminController.uploadOldSlips)
+router.post('/old-salary-slips', requireSuperAdmin(), adminController.addOldSlip)
 
 export default router
