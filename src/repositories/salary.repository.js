@@ -517,7 +517,8 @@ function rowToParams(s) {
 
 const PARAMS_PER_ROW = 57
 
-export async function createOldSalarySlips(slips) {
+/** Normalize + resolve employee_id for a batch of raw slip rows. Drops rows lacking employee_id/pay_month. */
+export async function normalizeSlips(slips) {
   const needHrMap = slips.some((r) => (r.employeeId ?? r.employee_id) == null && (r.HR_Emp_ID ?? r.hrEmpId) != null)
   let hrToPortalMap = new Map()
   if (needHrMap) {
@@ -532,11 +533,14 @@ export async function createOldSalarySlips(slips) {
     if (s.employee_id == null || s.pay_month == null) continue
     normalized.push(s)
   }
-  if (normalized.length === 0) return []
+  return normalized
+}
 
+/** Batch-insert already-normalized rows into old_salary_slip. Returns inserted {id,employee_id,pay_month}. */
+export async function insertNormalizedOldSlips(normalized) {
+  if (normalized.length === 0) return []
   const created = []
   const useFullColumns = true
-
   for (let i = 0; i < normalized.length; i += BATCH_SIZE) {
     const chunk = normalized.slice(i, i + BATCH_SIZE)
     const params = []
@@ -546,7 +550,6 @@ export async function createOldSalarySlips(slips) {
       params.push(...rowParams)
       return '(' + rowParams.map((_, j) => `COALESCE($${base + j + 1}, NULL::${OLD_SLIP_PARAM_CASTS[j]})`).join(', ') + ')'
     }).join(', ')
-
     try {
       const sql = `INSERT INTO old_salary_slip (${OLD_SLIP_FULL_COLUMNS}) VALUES ${placeholders} RETURNING id, employee_id, pay_month`
       const r = await executeQuery(sql, params)
@@ -565,6 +568,45 @@ export async function createOldSalarySlips(slips) {
     }
   }
   return created
+}
+
+/** Stable key for duplicate detection. Normalizes date-ish values to YYYY-MM-DD. */
+export function oldSlipDedupeKey(employeeId, payMonth) {
+  let d = payMonth
+  if (payMonth instanceof Date) d = payMonth.toISOString().slice(0, 10)
+  else if (typeof payMonth === 'string') d = payMonth.slice(0, 10)
+  return `${employeeId}|${d}`
+}
+
+/** Split normalized rows into those to insert vs. duplicates (existing in DB or repeated in batch). */
+export function partitionByExistingKeys(normalizedRows, existingKeySet) {
+  const seen = new Set()
+  const toInsert = []
+  let duplicates = 0
+  for (const s of normalizedRows) {
+    const key = oldSlipDedupeKey(s.employee_id, s.pay_month)
+    if (existingKeySet.has(key) || seen.has(key)) { duplicates++; continue }
+    seen.add(key)
+    toInsert.push(s)
+  }
+  return { toInsert, duplicates }
+}
+
+/** Fetch existing (employee_id, pay_month) keys for the batch's employees. */
+export async function getExistingOldSlipKeys(normalizedRows) {
+  const ids = [...new Set(normalizedRows.map((s) => s.employee_id).filter((v) => v != null))]
+  if (ids.length === 0) return new Set()
+  const rows = await executeQuery(
+    'SELECT employee_id, pay_month FROM old_salary_slip WHERE employee_id = ANY($1::int[])',
+    [ids]
+  )
+  return new Set(rows.map((r) => oldSlipDedupeKey(r.employee_id, r.pay_month)))
+}
+
+/** CLI/legacy path: normalize then insert everything (no dedup). Unchanged behavior. */
+export async function createOldSalarySlips(slips) {
+  const normalized = await normalizeSlips(slips)
+  return insertNormalizedOldSlips(normalized)
 }
 
 // ---------- Income tax certificate (FBR rule 42) ----------
