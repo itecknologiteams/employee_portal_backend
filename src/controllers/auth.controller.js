@@ -1,5 +1,7 @@
 import crypto from 'crypto'
+import signature from 'cookie-signature'
 import * as authService from '../services/auth.service.js'
+import { SESSION_SECRET } from '../../config/sessionSecret.js'
 import { issueNotificationStreamToken, revokeNotificationStreamToken } from '../../config/notificationStream.js'
 import {
   issueSsoConsumeToken,
@@ -265,7 +267,14 @@ export async function ssoConsume(req, res) {
 
     const base = portalPublicBase(req)
     const target = safeRedirectPath(base, req.query.redirect)
-    res.redirect(302, target)
+    // Hand the SPA a bearer token (= the signed session id) in the URL fragment. Inside a
+    // cross-site iframe (e.g. the CRM at a raw IP) the browser blocks the session cookie, so
+    // the SPA falls back to sending this as `Authorization: Bearer <token>` (see
+    // bearerCookieBridge). Fragment (not query) keeps it out of server logs and the Referer.
+    const bearer = 's:' + signature.sign(req.sessionID, SESSION_SECRET)
+    const fragment = `sso_bearer=${encodeURIComponent(bearer)}`
+    const sep = target.includes('#') ? '&' : '#'
+    res.redirect(302, `${base}${target}${sep}${fragment}`)
   } catch (error) {
     console.error('ssoConsume error:', error)
     res.status(500).send('<!DOCTYPE html><html><body><p>SSO failed</p></body></html>')

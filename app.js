@@ -31,6 +31,8 @@ import { errorHandler } from './src/middleware/errorHandler.js'
 import { ssoRevocationMiddleware } from './src/middleware/ssoRevocation.js'
 import delegateSessionMiddleware from './src/middleware/delegateSession.js'
 import { createSessionStore } from './config/sessionStore.js'
+import { SESSION_SECRET } from './config/sessionSecret.js'
+import { bearerCookieBridge } from './src/middleware/bearerCookieBridge.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -134,9 +136,15 @@ if (!process.env.SESSION_SECRET) {
     console.warn('WARNING: SESSION_SECRET is not set. Using an insecure default — set SESSION_SECRET in .env before deploying.')
   }
 }
+// Cross-site iframe auth: browsers block the session cookie inside a cross-site iframe
+// (e.g. the CRM served from a raw IP). There the SPA authenticates with an
+// `Authorization: Bearer <signed-session-id>` header instead. This bridge turns that
+// header back into the cookie express-session reads, so the session loads normally and
+// no per-route code changes are needed. Must run BEFORE the session middleware.
+app.use(bearerCookieBridge)
 app.use(session({
   name: 'emp.portal.sid',
-  secret: process.env.SESSION_SECRET || 'emp-portal-dev-secret-do-not-use-in-production',
+  secret: SESSION_SECRET,
   store: createSessionStore(),
   resave: false,
   saveUninitialized: false,
