@@ -59,6 +59,21 @@ const SESSION_COOKIE_SECURE =
   process.env.SESSION_COOKIE_SECURE === '0'
     ? false
     : (process.env.SESSION_COOKIE_SECURE === '1' || IS_HTTPS)
+// Cross-site cookie mode: Secure + SameSite=None. Needed when the portal is served over HTTPS
+// and embedded in an iframe by another site (e.g. the CRM).
+const SESSION_COOKIE_CROSS_SITE = SESSION_COOKIE_SECURE && IS_HTTPS
+/**
+ * CHIPS / Partitioned cookie. A cross-site iframe parent (e.g. rfm.itecknologi.internal, a
+ * different registrable domain than emp.itecknologi.com) makes the session cookie THIRD-PARTY,
+ * which modern browsers block by default even when Secure+SameSite=None — so the SSO-consumed
+ * session is never stored and every /api/auth/me returns 401 inside the CRM. Marking the cookie
+ * `Partitioned` opts into CHIPS so the browser keeps it (scoped to the top-level site).
+ * Only meaningful in cross-site mode; set SESSION_COOKIE_PARTITIONED=0 to force it off.
+ */
+const SESSION_COOKIE_PARTITIONED =
+  process.env.SESSION_COOKIE_PARTITIONED === '0'
+    ? false
+    : (process.env.SESSION_COOKIE_PARTITIONED === '1' || SESSION_COOKIE_CROSS_SITE)
 const envCorsOrigins = (process.env.CORS_ORIGINS || '')
   .split(',')
   .map((o) => o.trim())
@@ -130,12 +145,13 @@ app.use(session({
     httpOnly: true,
     path: '/',
     secure: SESSION_COOKIE_SECURE,
-    sameSite: SESSION_COOKIE_SECURE && IS_HTTPS ? 'none' : 'lax',
+    sameSite: SESSION_COOKIE_CROSS_SITE ? 'none' : 'lax',
+    partitioned: SESSION_COOKIE_PARTITIONED,
     maxAge: SESSION_MAX_AGE_MS
   }
 }))
 if (process.env.NODE_ENV !== 'test') {
-  console.log(`[session] emp.portal.sid secure=${SESSION_COOKIE_SECURE} IS_HTTPS=${IS_HTTPS} (override: SESSION_COOKIE_SECURE=0 for HTTP-only deployments)`)
+  console.log(`[session] emp.portal.sid secure=${SESSION_COOKIE_SECURE} sameSite=${SESSION_COOKIE_CROSS_SITE ? 'none' : 'lax'} partitioned=${SESSION_COOKIE_PARTITIONED} IS_HTTPS=${IS_HTTPS} (override: SESSION_COOKIE_SECURE=0 for HTTP-only; SESSION_COOKIE_PARTITIONED=0 to disable CHIPS)`)
 }
 app.use(ssoRevocationMiddleware)
 app.use(delegateSessionMiddleware)
