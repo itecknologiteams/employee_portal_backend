@@ -412,3 +412,34 @@ export async function deleteRequisitionCategory(req, res) {
   }
 }
 
+// Old salary slip (tax certificate candidates) sheet — SuperAdmin only
+export async function downloadOldSlipTemplate(req, res) {
+  try {
+    const { buffer, filename } = adminService.buildOldSlipTemplate()
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
+  } catch (error) {
+    handleError(error, res, 'Failed to build template')
+  }
+}
+
+export async function uploadOldSlips(req, res) {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ error: 'An Excel file (field "file") is required' })
+    const result = await adminService.importOldSlips(req.file.buffer)
+    res.json(result)
+  } catch (error) {
+    handleError(error, res, 'Failed to import old salary slips')
+  }
+}
+
+export async function addOldSlip(req, res) {
+  try {
+    const result = await adminService.addOldSlip(req.body)
+    res.status(201).json(result)
+  } catch (error) {
+    handleError(error, res, 'Failed to add old salary slip')
+  }
+}
+

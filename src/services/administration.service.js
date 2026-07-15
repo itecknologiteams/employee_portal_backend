@@ -3,6 +3,8 @@ import * as adminRepo from '../repositories/administration.repository.js'
 import * as reqRepo from '../repositories/requisition.repository.js'
 import * as historyService from './employeeHistory.service.js'
 import { PERMISSION_KEYS } from '../../config/permissions.js'
+import XLSX from 'xlsx'
+import * as salaryRepo from '../repositories/salary.repository.js'
 
 const ROLES_WITH_PERMISSIONS = ['Admin', 'Staff', 'User', 'Technician']
 
@@ -590,4 +592,78 @@ export async function updateRequisitionCategoryAdmin(id, name, flags) {
 
 export async function deleteRequisitionCategoryAdmin(id) {
   return reqRepo.deleteRequisitionCategory(id)
+}
+
+// ---------- Old salary slip (tax certificate candidates) sheet ----------
+
+/** Header columns for the upload template. Employee_Code resolves against employees.employee_code. */
+export const OLD_SLIP_TEMPLATE_COLUMNS = [
+  'Employee_Code', 'Pay_Month', 'Period_Label',
+  'Basic_Salary_1', 'Medical_Allowance_2', 'Conveyance_Fixed_Allowance_3', 'Overtime_Allowance_4',
+  'House_Rent_Allowance_5', 'Utilities_Allowance_6', 'Meal_Allowance_7', 'Arrears_8',
+  'Bike_Maintainence_9', 'Incentives_Tech_10', 'Device_Reimbursment_11', 'Communication_12',
+  'Incentives_KPI_13', 'Other_Allowance_14', 'Loan_15', 'Advance_Salary_16', 'EOBI_17', 'Income_Tax_18',
+  'Absent_Days_19', 'Device_Deduction_20', 'Over_Utilization_Mobile_21', 'Vehicle_Fuel_Deduction_22',
+  'Pandamic_Deduction_23', 'Late_Days_24', 'Other_Deduction_25', 'Mobile_Installment_26', 'Food_Panda_27',
+  'Conveyance_Liters_Allowance_28', 'Leaves_29', 'Incremental_Arrears_31',
+  'Tot_Gross_Salary', 'Tot_Allowances', 'Tot_Deductions', 'Tot_Net_Salary', 'Salary_Status', 'Remarks'
+]
+
+/** Map a sheet's Employee_Code to the fields the normalizer resolves by (employee_code lookup). Pure. */
+export function aliasEmployeeCode(row) {
+  const out = { ...row }
+  const code = out.Employee_Code ?? out.employee_code
+  const hasId = out.HR_Emp_ID != null || out.employeeId != null || out.employee_id != null
+  if (code != null && String(code).trim() !== '' && !hasId) {
+    out.HR_Emp_ID = code
+    if (out.Source_Employee_Code == null) out.Source_Employee_Code = code
+  }
+  return out
+}
+
+/** Build the downloadable XLSX template (header row + one blank example row). */
+export function buildOldSlipTemplate() {
+  const header = OLD_SLIP_TEMPLATE_COLUMNS
+  const example = header.map((h) => (h === 'Pay_Month' ? '2024-01-01' : ''))
+  const ws = XLSX.utils.aoa_to_sheet([header, example])
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Old Salary Slips')
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  return { buffer, filename: 'Old-Tax-Certificate-Sheet-Template.xlsx' }
+}
+
+/** Shared: normalize → skip duplicates → insert. Returns counts. */
+async function importRows(rawRows) {
+  const aliased = rawRows.map(aliasEmployeeCode)
+  const normalized = await salaryRepo.normalizeSlips(aliased)
+  const skipped = aliased.length - normalized.length
+  const existing = await salaryRepo.getExistingOldSlipKeys(normalized)
+  const { toInsert, duplicates } = salaryRepo.partitionByExistingKeys(normalized, existing)
+  const created = await salaryRepo.insertNormalizedOldSlips(toInsert)
+  return { total: rawRows.length, inserted: created.length, skipped, duplicates }
+}
+
+/** Parse an uploaded workbook and import its rows into old_salary_slip (skipping duplicates). */
+export async function importOldSlips(buffer) {
+  let sheet
+  try {
+    const wb = XLSX.read(buffer, { type: 'buffer' })
+    sheet = wb.Sheets[wb.SheetNames[0]]
+  } catch {
+    const e = new Error('Could not read the uploaded file'); e.status = 400; throw e
+  }
+  if (!sheet) { const e = new Error('The uploaded file has no sheet'); e.status = 400; throw e }
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' })
+  if (!rows.length) { const e = new Error('No data rows found in the sheet'); e.status = 400; throw e }
+  return importRows(rows)
+}
+
+/** Add a single manually-entered old salary slip row. */
+export async function addOldSlip(row) {
+  if (!row || typeof row !== 'object') { const e = new Error('A row object is required'); e.status = 400; throw e }
+  const result = await importRows([row])
+  if (result.inserted === 0 && result.skipped > 0) {
+    const e = new Error('Could not resolve the employee (Employee_Code) or Pay_Month'); e.status = 400; throw e
+  }
+  return { inserted: result.inserted, duplicate: result.duplicates > 0, skipped: result.skipped > 0 }
 }
