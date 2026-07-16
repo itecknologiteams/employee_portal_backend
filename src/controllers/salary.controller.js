@@ -191,6 +191,20 @@ export async function getTaxCertificate(req, res) {
   }
 }
 
+/** GET /tax-certificate/:employeeCode/fiscal-years — fiscal years available for this employee (for the download dropdown). */
+export async function getTaxCertificateFiscalYears(req, res) {
+  try {
+    const { employeeCode } = req.params
+    const employeeId = await getEmployeeIdByCode(employeeCode)
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
+    const fiscalYears = await salaryService.getTaxCertificateFiscalYears(employeeCode)
+    res.json({ fiscalYears })
+  } catch (error) {
+    console.error('Tax certificate fiscal years error:', error)
+    res.status(500).json({ error: 'Failed to load tax certificate fiscal years' })
+  }
+}
+
 /** GET /tax-certificate/:employeeCode/status — whether the employee has an NTN (gates the download button). */
 export async function getTaxCertificateStatus(req, res) {
   try {

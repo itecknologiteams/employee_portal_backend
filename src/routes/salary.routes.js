@@ -28,6 +28,8 @@ router.get('/download/:salarySlipId', salaryController.downloadSalarySlip)
 router.get('/tax-certificate/:employeeCode', salaryController.getTaxCertificate)
 // Eligibility: whether the employee has an NTN (gates the download button on the Salary Slip page)
 router.get('/tax-certificate/:employeeCode/status', salaryController.getTaxCertificateStatus)
+// Fiscal years with a stored certificate for this employee (powers the fiscal-year dropdown)
+router.get('/tax-certificate/:employeeCode/fiscal-years', salaryController.getTaxCertificateFiscalYears)
 
 // FPIN: status (has set?), set, verify – for salary slip view protection
 router.get('/fpin/status/:employeeCode', salaryController.getFpinStatus)

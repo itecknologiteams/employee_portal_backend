@@ -556,6 +556,14 @@ export async function getSalarySlipForDownload(rawId, employeeId, options = {}) 
  * calendar month with the same precedence as the slip list UI (payroll > old > legacy)
  * so a month imported into two tables is not double-counted.
  */
+/** "2025-26" -> { label: '2025-26', from: '2025-07-01', to: '2026-06-30' }. Null if unparseable. */
+function fiscalYearToRange(fy) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(fy || ''))
+  if (!m) return null
+  const startYear = Number(m[1])
+  return { label: fy, from: `${startYear}-07-01`, to: `${startYear + 1}-06-30` }
+}
+
 export async function getTaxCertificate(employeeId, employeeCode, fiscalYear, options = {}) {
   const onHold = await salaryRepo.isSalarySlipOnHold(employeeId)
 
@@ -587,13 +595,19 @@ export async function getTaxCertificate(employeeId, employeeCode, fiscalYear, op
       status: cert.status,
       address: cert.address
     },
-    fiscalYear: cert.fiscal_year,
+    fiscalYear: fiscalYearToRange(cert.fiscal_year),
     totalGross: Number(cert.total_income),
     totalTax: Number(cert.total_tax),
     updatedAt: cert.updated_at,
     section: "149",
     nature: "Tax on Salary Income"
   }
+}
+
+/** Fiscal years (newest first) that have a stored tax certificate for this employee — powers the download dropdown. */
+export async function getTaxCertificateFiscalYears(employeeCode) {
+  const rows = await salaryRepo.getTaxCertificateFiscalYears(employeeCode)
+  return rows.map((r) => r.fiscal_year)
 }
 
 /**
