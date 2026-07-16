@@ -153,21 +153,41 @@ export async function downloadSalarySlip(req, res) {
 /** GET /tax-certificate/:employeeCode — FBR income tax deduction certificate data for the latest fiscal year. */
 export async function getTaxCertificate(req, res) {
   try {
-    const { employeeCode } = req.params
-    const employeeId = await getEmployeeIdByCode(employeeCode)
-    if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const bypass = await bypassSalarySlipHold(req, employeeId)
-    const result = await salaryService.getTaxCertificate(employeeId, { bypassHold: bypass })
+    const { employeeCode } = req.params;
+    const { fiscalYear } = req.query;
+
+    const employeeId = await getEmployeeIdByCode(employeeCode);
+    if (!employeeId) return res.status(404).json({ error: 'Employee not found' });
+
+    const bypass = await bypassSalarySlipHold(req, employeeId);
+
+    const result = await salaryService.getTaxCertificate(
+    employeeId,
+    employeeCode,
+    fiscalYear,
+    {
+        bypassHold: bypass
+    });
+
     if (!result) {
-      return res.status(403).json({ error: 'Salary slip access is on hold for this employee.', salarySlipOnHold: true })
+      return res.status(403).json({
+        error: "Salary slip access is on hold for this employee.",
+        salarySlipOnHold: true,
+      });
     }
+
     if (result.noData) {
-      return res.status(404).json({ error: 'No salary records found to generate a tax certificate.' })
+      return res.status(404).json({
+        error: "No salary records found to generate a tax certificate.",
+      });
     }
-    res.json(result)
+
+    return res.json(result);
   } catch (error) {
-    console.error('Tax certificate error:', error)
-    res.status(500).json({ error: 'Failed to generate tax certificate' })
+    console.error("Tax certificate error:", error);
+    return res.status(500).json({
+      error: "Failed to generate tax certificate",
+    });
   }
 }
 
@@ -177,7 +197,7 @@ export async function getTaxCertificateStatus(req, res) {
     const { employeeCode } = req.params
     const employeeId = await getEmployeeIdByCode(employeeCode)
     if (!employeeId) return res.status(404).json({ error: 'Employee not found' })
-    const result = await salaryService.getTaxCertificateStatus(employeeId)
+    const result = await salaryService.getTaxCertificateStatus(employeeCode)
     res.json(result)
   } catch (error) {
     console.error('Tax certificate status error:', error)

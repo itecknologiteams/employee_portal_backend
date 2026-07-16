@@ -621,6 +621,170 @@ export function aliasEmployeeCode(row) {
   return out
 }
 
+// ---- Tax Certificate Sheet (SuperAdmin-uploaded annual income-tax register) ----
+const CERT_COMPANY_NAME = 'iTecknologi Tracking Services (Pvt) Ltd.'
+const CERT_COMPANY_ADDRESS = '9th & 10th Floor, QM Building, Roomi Street, Block-7, Clifton, Karachi-Pakistan'
+const CERT_COMPANY_NTN = '8939436-6'
+
+// HR's register format + a leading Fiscal Year column. Two "Name" and two "Address" columns are
+// intentional (employee's own vs. as-registered name; employee vs. company address). Column order
+// is authoritative — the parser reads uploads and the builder writes downloads by these positions.
+export const TAX_CERT_SHEET_HEADER = [
+  'Fiscal Year', 'Employee ID', 'Name', 'Designation', 'Department', 'CNIC', 'Name', 'Address',
+  'NTN', 'Status', 'Company Name', 'Address', 'Company NTN', 'Total Income', 'Total Tax'
+]
+
+const s = (v) => (v == null ? '' : String(v).trim())
+const num = (v) => {
+  if (v == null || v === '') return null
+  const n = Number(String(v).replace(/[, ]/g, ''))
+  return Number.isNaN(n) ? null : n
+}
+
+// Canonical fiscal-year hint shown in the template's Fiscal Year column header.
+export const FISCAL_YEAR_HINT = 'Fiscal Year (e.g. 2025-26)'
+
+/**
+ * Normalize a fiscal-year value to canonical Pakistani-FY form `YYYY-YY` (e.g. "2025-26",
+ * meaning Jul 1 2025 – Jun 30 2026). Accepts common variants: "2025-2026", "2025/26",
+ * "2025 2026", "FY2025-26", and a lone start year "2025". Returns null if it can't be parsed
+ * or the end year isn't start+1. Pure.
+ */
+export function normalizeFiscalYear(raw) {
+  if (raw == null) return null
+  const str = String(raw).trim().toUpperCase().replace(/^FY\s*/, '').trim()
+  if (!str) return null
+  const parts = str.split(/[\s\-/]+/).filter(Boolean)
+  if (parts.length === 1) {
+    if (!/^\d{4}$/.test(parts[0])) return null
+    const start = parseInt(parts[0], 10)
+    return `${start}-${String((start + 1) % 100).padStart(2, '0')}`
+  }
+  if (parts.length === 2) {
+    const [a, b] = parts
+    if (!/^\d{4}$/.test(a)) return null
+    const start = parseInt(a, 10)
+    let end
+    if (/^\d{4}$/.test(b)) end = parseInt(b, 10)
+    else if (/^\d{2}$/.test(b)) {
+      end = Math.floor(start / 100) * 100 + parseInt(b, 10)
+      if (end < start) end += 100
+    } else return null
+    if (end !== start + 1) return null
+    return `${start}-${String(end % 100).padStart(2, '0')}`
+  }
+  return null
+}
+
+/** Parse an uploaded tax-cert-sheet workbook (by column position) into normalized DB rows. Pure. */
+export function parseTaxCertSheetRows(buffer) {
+  const wb = XLSX.read(buffer, { type: 'buffer' })
+  const sheet = wb.Sheets[wb.SheetNames[0]]
+  if (!sheet) return { rows: [], skipped: 0 }
+  const aoa = XLSX.utils.sheet_to_json(sheet, { header: 1, blankrows: false })
+  const body = aoa.slice(1) // drop header row
+  const rows = []
+  let skipped = 0
+  for (const r of body) {
+    const employee_code = s(r[1])
+    const fiscal_year = normalizeFiscalYear(r[0])
+    if (!employee_code || !fiscal_year) { skipped++; continue }
+    rows.push({
+      fiscal_year,
+      employee_code,
+      employee_name: s(r[2]) || null,
+      designation: s(r[3]) || null,
+      department: s(r[4]) || null,
+      cnic: s(r[5]) || null,
+      ntn: s(r[8]) || null,
+      status: s(r[9]) || null,
+      address: s(r[7]) || null,
+      total_income: num(r[13]),
+      total_tax: num(r[14])
+      // Columns 6 (as-registered Name) and 10–12 (company Name/Address/NTN) are derived/constant — not stored.
+    })
+  }
+  return { rows, skipped }
+}
+
+/** Map a stored DB row to a sheet row array (header order), injecting the constant company fields. Pure. */
+export function storedRowToSheetRow(row) {
+  return [
+    row.fiscal_year || '',
+    row.employee_code || '',
+    row.employee_name || '',
+    row.designation || '',
+    row.department || '',
+    row.cnic || '',
+    (row.employee_name || '').toUpperCase(),
+    row.address || '',
+    row.ntn || '',
+    row.status || '',
+    CERT_COMPANY_NAME,
+    CERT_COMPANY_ADDRESS,
+    CERT_COMPANY_NTN,
+    Number(row.total_income) || 0,
+    Number(row.total_tax) || 0
+  ]
+}
+
+/** Friendly JSON shape for the Administration preview table. Pure. */
+export function storedRowToJson(row) {
+  return {
+    fiscalYear: row.fiscal_year || '',
+    employeeCode: row.employee_code || '',
+    name: row.employee_name || '',
+    designation: row.designation || '',
+    department: row.department || '',
+    cnic: row.cnic || '',
+    ntn: row.ntn || '',
+    status: row.status || '',
+    address: row.address || '',
+    totalIncome: Number(row.total_income) || 0,
+    totalTax: Number(row.total_tax) || 0
+  }
+}
+
+/** Build the blank upload template (header row only). The Fiscal Year header carries a format hint;
+ *  the parser reads by column position so the hint doesn't affect uploads. Pure. */
+export function buildTaxCertificateTemplate() {
+  const header = TAX_CERT_SHEET_HEADER.map((h) => (h === 'Fiscal Year' ? FISCAL_YEAR_HINT : h))
+  const ws = XLSX.utils.aoa_to_sheet([header])
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Tax Certificate Sheet')
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  return { buffer, filename: 'Tax-Certificate-Sheet-Template.xlsx' }
+}
+
+/** Build the download XLSX from stored DB rows. Pure. */
+export function buildTaxCertificateSheet(storedRows) {
+  const rows = (storedRows || []).map(storedRowToSheetRow)
+  const ws = XLSX.utils.aoa_to_sheet([TAX_CERT_SHEET_HEADER, ...rows])
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, 'Tax Certificate Sheet')
+  const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' })
+  return { buffer, filename: 'Tax-Certificates.xlsx' }
+}
+
+/** Parse + upsert an uploaded sheet. Returns { imported, skipped }. */
+export async function importTaxCertificateSheet(buffer) {
+  const { rows, skipped } = parseTaxCertSheetRows(buffer)
+  const imported = rows.length ? await adminRepo.upsertTaxCertSheetRows(rows) : 0
+  return { imported, skipped, total: rows.length + skipped }
+}
+
+/** List stored rows as preview JSON. */
+export async function listTaxCertificateSheet(opts = {}) {
+  const rows = await adminRepo.listTaxCertSheetRows(opts)
+  return rows.map(storedRowToJson)
+}
+
+/** Build the download sheet from all stored rows (optionally one fiscal year). */
+export async function buildTaxCertificateSheetFromStore(opts = {}) {
+  const rows = await adminRepo.listTaxCertSheetRows(opts)
+  return buildTaxCertificateSheet(rows)
+}
+
 /** Build the downloadable XLSX template (header row + one blank example row). */
 export function buildOldSlipTemplate() {
   const header = OLD_SLIP_TEMPLATE_COLUMNS

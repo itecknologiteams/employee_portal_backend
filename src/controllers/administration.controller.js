@@ -443,3 +443,50 @@ export async function addOldSlip(req, res) {
   }
 }
 
+// ---- Tax Certificate Sheet (SuperAdmin-uploaded annual register) ----
+
+/** Download the blank upload template (header row only). */
+export function downloadTaxCertificateTemplate(req, res) {
+  try {
+    const { buffer, filename } = adminService.buildTaxCertificateTemplate()
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
+  } catch (error) {
+    handleError(error, res, 'Failed to build template')
+  }
+}
+
+/** Upload a filled sheet: parse + upsert rows by (employee_code, fiscal_year). */
+export async function uploadTaxCertificateSheet(req, res) {
+  try {
+    if (!req.file?.buffer) return res.status(400).json({ error: 'An Excel file (field "file") is required' })
+    const result = await adminService.importTaxCertificateSheet(req.file.buffer)
+    res.json(result)
+  } catch (error) {
+    handleError(error, res, 'Failed to import tax certificate sheet')
+  }
+}
+
+/** JSON preview of the stored tax-certificate sheet. */
+export async function listTaxCertificates(req, res) {
+  try {
+    const rows = await adminService.listTaxCertificateSheet()
+    res.json({ count: rows.length, rows })
+  } catch (error) {
+    handleError(error, res, 'Failed to load tax certificate sheet')
+  }
+}
+
+/** Download the stored tax-certificate sheet as XLSX. */
+export async function downloadTaxCertificateSheet(req, res) {
+  try {
+    const { buffer, filename } = await adminService.buildTaxCertificateSheetFromStore()
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`)
+    res.send(buffer)
+  } catch (error) {
+    handleError(error, res, 'Failed to build tax certificate sheet')
+  }
+}
+

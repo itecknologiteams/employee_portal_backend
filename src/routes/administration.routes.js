@@ -50,4 +50,10 @@ router.get('/old-salary-slips/template', requireSuperAdmin(), adminController.do
 router.post('/old-salary-slips/upload', requireSuperAdmin(), payrollExcelUpload.single('file'), adminController.uploadOldSlips)
 router.post('/old-salary-slips', requireSuperAdmin(), adminController.addOldSlip)
 
+// Tax Certificate Sheet (SuperAdmin only): blank template, upload, JSON preview, XLSX download
+router.get('/tax-certificates/template', requireSuperAdmin(), adminController.downloadTaxCertificateTemplate)
+router.post('/tax-certificates/upload', requireSuperAdmin(), payrollExcelUpload.single('file'), adminController.uploadTaxCertificateSheet)
+router.get('/tax-certificates', requireSuperAdmin(), adminController.listTaxCertificates)
+router.get('/tax-certificates/sheet', requireSuperAdmin(), adminController.downloadTaxCertificateSheet)
+
 export default router

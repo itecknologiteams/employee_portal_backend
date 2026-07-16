@@ -784,3 +784,68 @@ export async function setEmployeeDepartmentMemberships(employeeId, departmentIds
     )
   }
 }
+
+// ---- Tax Certificate Sheet (SuperAdmin-uploaded annual income-tax register) ----
+// Mirrors migrations/create_tax_certificate_sheet.sql so the feature self-provisions on first use.
+export async function ensureTaxCertSheetTable() {
+  await executeQuery(
+    `CREATE TABLE IF NOT EXISTS tax_certificate_sheet (
+       id SERIAL PRIMARY KEY,
+       employee_code TEXT NOT NULL,
+       fiscal_year TEXT NOT NULL,
+       employee_name TEXT,
+       designation TEXT,
+       department TEXT,
+       cnic TEXT,
+       ntn TEXT,
+       status TEXT,
+       address TEXT,
+       total_income NUMERIC(18,2),
+       total_tax NUMERIC(18,2),
+       updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+       CONSTRAINT uq_tax_cert_sheet_emp_fy UNIQUE (employee_code, fiscal_year)
+     )`,
+    []
+  )
+  await executeQuery('CREATE INDEX IF NOT EXISTS idx_tax_cert_sheet_fy ON tax_certificate_sheet (fiscal_year)', [])
+}
+
+/** Upsert normalized tax-cert-sheet rows by (employee_code, fiscal_year). Returns count written. */
+export async function upsertTaxCertSheetRows(rows) {
+  await ensureTaxCertSheetTable()
+  let written = 0
+  for (const r of rows) {
+    await executeQuery(
+      `INSERT INTO tax_certificate_sheet
+         (employee_code, fiscal_year, employee_name, designation, department, cnic, ntn, status, address, total_income, total_tax, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11, NOW())
+       ON CONFLICT (employee_code, fiscal_year) DO UPDATE SET
+         employee_name = EXCLUDED.employee_name,
+         designation   = EXCLUDED.designation,
+         department    = EXCLUDED.department,
+         cnic          = EXCLUDED.cnic,
+         ntn           = EXCLUDED.ntn,
+         status        = EXCLUDED.status,
+         address       = EXCLUDED.address,
+         total_income  = EXCLUDED.total_income,
+         total_tax     = EXCLUDED.total_tax,
+         updated_at    = NOW()`,
+      [r.employee_code, r.fiscal_year, r.employee_name, r.designation, r.department,
+        r.cnic, r.ntn, r.status, r.address, r.total_income, r.total_tax]
+    )
+    written++
+  }
+  return written
+}
+
+/** List stored tax-cert-sheet rows, newest-updated first. Optional fiscalYear filter. */
+export async function listTaxCertSheetRows({ fiscalYear } = {}) {
+  await ensureTaxCertSheetTable()
+  if (fiscalYear) {
+    return executeQuery(
+      'SELECT * FROM tax_certificate_sheet WHERE fiscal_year = $1 ORDER BY employee_code',
+      [fiscalYear]
+    )
+  }
+  return executeQuery('SELECT * FROM tax_certificate_sheet ORDER BY fiscal_year DESC, employee_code', [])
+}

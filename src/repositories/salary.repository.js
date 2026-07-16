@@ -620,26 +620,33 @@ export async function createOldSalarySlips(slips) {
 // ---------- Income tax certificate (FBR rule 42) ----------
 
 /** Employee identity fields for the income tax certificate. Falls back when employees.ntn is not yet migrated. */
-export async function getEmployeeTaxCertInfo(employeeId) {
-  const sql = (withNtn) => `
-    SELECT e.first_name, e.last_name, e.employee_code, e.cnic_number, e.address${withNtn ? ', e.ntn' : ''},
-           c.city_name
-    FROM employees e
-    LEFT JOIN city c ON e.city_id = c.city_id
-    WHERE e.employee_id = $1`
-  try {
-    const rows = await executeQuery(sql(true), [employeeId])
-    return rows[0] || null
-  } catch (e) {
-    if (e.code === '42703' || e.code === '42P01') {
-      const rows = await executeQuery(
-        'SELECT first_name, last_name, employee_code, cnic_number, address FROM employees WHERE employee_id = $1',
-        [employeeId]
-      )
-      return rows[0] ? { ...rows[0], ntn: null, city_name: null } : null
-    }
-    throw e
-  }
+export async function getTaxCertificateFiscalYears(employeeCode) {
+  const rows = await executeQuery(
+    `
+    SELECT fiscal_year
+    FROM tax_certificate_sheet
+    WHERE employee_code = $1
+    ORDER BY fiscal_year DESC
+    `,
+    [employeeCode]
+  );
+
+  return rows;
+}
+
+export async function getTaxCertificate(employeeCode, fiscalYear) {
+  const rows = await executeQuery(
+    `
+    SELECT *
+    FROM tax_certificate_sheet
+    WHERE employee_code = $1
+      AND fiscal_year = $2
+    LIMIT 1
+    `,
+    [employeeCode, fiscalYear]
+  );
+
+  return rows[0] || null;
 }
 
 /** Latest pay month across payroll_slip, old_salary_slip, and legacy salary_slip. Null when no slips exist. */
