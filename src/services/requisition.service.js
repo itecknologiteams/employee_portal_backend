@@ -1959,8 +1959,16 @@ export async function getPendingCeo(employeeId) {
   }
   rows = repaired
   const reqIds = rows.map((r) => r.req_id)
-  const items = reqIds.length ? await reqRepo.getItemsByReqIds(reqIds) : []
-  return rows.map((req) => ({ ...req, status: 'Pending CEO', items: items.filter((i) => i.req_id === req.req_id) }))
+  const [items, commentsByReqId] = await Promise.all([
+    reqIds.length ? reqRepo.getItemsByReqIds(reqIds) : [],
+    reqIds.length ? reqRepo.getRequisitionCommentsByReqIds(reqIds) : new Map()
+  ])
+  return rows.map((req) => ({
+    ...req,
+    status: 'Pending CEO',
+    items: items.filter((i) => i.req_id === req.req_id),
+    comments: commentsByReqId.get(req.req_id) || []
+  }))
 }
 
 export async function approveCeo(body) {
@@ -3393,6 +3401,7 @@ export async function getById(reqId) {
     requiredByDate: reqRow.req_required_by_date || null,
     status: getRequisitionStatus(reqRow),
     rejection_stage: rejectionStage,
+    comments: comments || [],
     items: items.map(i => ({
       item_id: i.item_id,
       req_id: i.req_id,
